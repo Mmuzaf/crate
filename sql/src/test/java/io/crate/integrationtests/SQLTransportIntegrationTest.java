@@ -131,6 +131,18 @@ public abstract class SQLTransportIntegrationTest extends ElasticsearchIntegrati
         waitForMappingUpdateOnAll(index, fieldNames);
     }
 
+    public static String toSingleLine(String s) {
+        String[] parts = s.split("\n");
+        for (int i = 0; i < parts.length; i++) {
+            parts[i] = parts[i].trim();
+        }
+        StringBuilder sb = new StringBuilder();
+        for (String p : parts) {
+            sb.append(p);
+        }
+        return sb.toString();
+    }
+
     @After
     public void assertNoJobExecutionContextAreLeftOpen() throws Exception {
         final Field activeContexts = JobContextService.class.getDeclaredField("activeContexts");

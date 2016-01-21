@@ -53,43 +53,6 @@ public class DDLIntegrationTest extends SQLTransportIntegrationTest {
     @Rule
     public ExpectedException expectedException = ExpectedException.none();
 
-
-    @Test
-    public void testCreateTable() throws Exception {
-        execute("create table test (col1 integer primary key, col2 string) " +
-                "clustered into 5 shards with (number_of_replicas = 1)");
-        assertThat(response.duration(), greaterThanOrEqualTo(0L));
-        ensureYellow();
-        assertTrue(client().admin().indices().exists(new IndicesExistsRequest("test"))
-                .actionGet().isExists());
-
-        String expectedMapping = "{\"default\":{" +
-                "\"dynamic\":\"true\"," +
-                "\"_meta\":{\"primary_keys\":[\"col1\"]}," +
-                "\"_all\":{\"enabled\":false}," +
-                "\"properties\":{" +
-                "\"col1\":{\"type\":\"integer\",\"doc_values\":true}," +
-                "\"col2\":{\"type\":\"string\",\"index\":\"not_analyzed\",\"doc_values\":true}" +
-                "}}}";
-
-        String expectedSettings = "{\"test\":{" +
-                "\"settings\":{" +
-                "\"index.number_of_replicas\":\"1\"," +
-                "\"index.number_of_shards\":\"5\"," +
-                "\"index.version.created\":\"" + Version.CURRENT.esVersion.id + "\"" +
-                "}}}";
-
-        assertEquals(expectedMapping, getIndexMapping("test"));
-        JSONAssert.assertEquals(expectedSettings, getIndexSettings("test"), false);
-
-        // test index usage
-        execute("insert into test (col1, col2) values (1, 'foo')");
-        assertEquals(1, response.rowCount());
-        refresh();
-        execute("SELECT * FROM test");
-        assertEquals(1L, response.rowCount());
-    }
-
     @Test
     public void testCreateTableWithRefreshIntervalDisableRefresh() throws Exception {
         execute("create table test (id int primary key, content string) " +
