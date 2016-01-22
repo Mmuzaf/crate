@@ -110,6 +110,10 @@ public class ShardCollectSource implements CollectSource {
         this.nodeSysExpression = nodeSysExpression;
     }
 
+    public NodeSysExpression nodeSysExpression() {
+        return nodeSysExpression;
+    }
+
     @Override
     public Collection<CrateCollector> getCollectors(CollectPhase collectPhase, RowReceiver downstream, JobCollectContext jobCollectContext) {
         NodeSysReferenceResolver referenceResolver = new NodeSysReferenceResolver(nodeSysExpression);

@@ -27,7 +27,6 @@ import io.crate.operation.reference.NestedObjectExpression;
 import org.elasticsearch.cluster.ClusterService;
 import org.elasticsearch.common.inject.Inject;
 import org.elasticsearch.discovery.Discovery;
-import org.elasticsearch.env.NodeEnvironment;
 import org.elasticsearch.monitor.jvm.JvmService;
 import org.elasticsearch.monitor.os.OsService;
 import org.elasticsearch.monitor.os.OsStats;
@@ -37,6 +36,7 @@ import org.elasticsearch.threadpool.ThreadPool;
 import java.io.IOException;
 import java.util.Arrays;
 import java.util.Collection;
+import java.util.Map;
 
 public class NodeSysExpression extends NestedObjectExpression {
 
@@ -55,16 +55,15 @@ public class NodeSysExpression extends NestedObjectExpression {
                              OsService osService,
                              NodeService nodeService,
                              JvmService jvmService,
-                             NodeEnvironment nodeEnvironment,
                              Discovery discovery,
                              ThreadPool threadPool) {
         this.nodeService = nodeService;
         this.osService = osService;
         this.jvmService = jvmService;
-        /* FIXME
-        childImplementations.put(SysNodesTableInfo.SYS_COL_FS,
-                new NodeFsExpression(sigarService, nodeEnvironment));
-        */
+        if (!childImplementations.containsKey(SysNodesTableInfo.SYS_COL_FS)) {
+            childImplementations.put(SysNodesTableInfo.SYS_COL_FS,
+                    new NodeDefaultExpression());
+        }
         childImplementations.put(SysNodesTableInfo.SYS_COL_HOSTNAME,
                 new NodeHostnameExpression(clusterService));
         childImplementations.put(SysNodesTableInfo.SYS_COL_REST_URL,
@@ -83,6 +82,10 @@ public class NodeSysExpression extends NestedObjectExpression {
                 new NodeOsInfoExpression(osService.info()));
     }
 
+    public Map<String, ReferenceImplementation> childImplementations() {
+        return childImplementations;
+    }
+
     @Override
     public ReferenceImplementation getChildImplementation(String name) {
         if (EXPRESSIONS_WITH_OS_STATS.contains(name)) {
@@ -95,17 +98,17 @@ public class NodeSysExpression extends NestedObjectExpression {
                 return new NodeOsExpression(osStats);
             }
         } else if (SysNodesTableInfo.SYS_COL_PROCESS.equals(name)) {
-            // TODO: FIX ME!
             try {
                 return new NodeProcessExpression(nodeService.info().getProcess(),
                         nodeService.stats().getProcess());
             } catch (IOException e) {
-                // TODO: FIX ME! Add code!
+                // TODO: wtf
+                e.printStackTrace();
             }
         } else if (SysNodesTableInfo.SYS_COL_HEAP.equals(name)) {
             return new NodeHeapExpression(jvmService.stats());
         } else if (SysNodesTableInfo.SYS_COL_NETWORK.equals(name)) {
-            throw new UnsupportedOperationException();
+            //return new NodeNetworkExpression(networkService.stats());
         }
         return super.getChildImplementation(name);
     }

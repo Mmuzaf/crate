@@ -19,21 +19,22 @@
  * software solely pursuant to the terms of the relevant commercial agreement.
  */
 
-package io.crate.operation.reference.sys.node.fs;
+package io.crate.plugin.sigar.sys.node.fs;
 
 import io.crate.metadata.sys.SysNodesTableInfo;
 import io.crate.operation.reference.sys.SysNodeObjectReference;
+import io.crate.plugin.sigar.SigarService;
+import org.elasticsearch.common.inject.Inject;
 import org.elasticsearch.env.NodeEnvironment;
 
 public class NodeFsExpression extends SysNodeObjectReference {
 
-    public NodeFsExpression(
+    @Inject
+    public NodeFsExpression(SigarService sigarService,
                             NodeEnvironment nodeEnvironment) {
-        /*
         childImplementations.put(SysNodesTableInfo.SYS_COL_FS_TOTAL, new NodeFsTotalExpression(sigarService));
         childImplementations.put(SysNodesTableInfo.SYS_COL_FS_DISKS, new NodeFsDisksExpression(sigarService));
         childImplementations.put(SysNodesTableInfo.SYS_COL_FS_DATA, new NodeFsDataExpression(sigarService, nodeEnvironment));
-        */
     }
 
 }

@@ -76,6 +76,10 @@ public class MapSideDataCollectOperation {
         clusterNormalizer = new EvaluatingNormalizer(functions, RowGranularity.CLUSTER, clusterReferenceResolver);
     }
 
+    public NodeSysExpression nodeSysExpression() {
+        return nodeSysExpression;
+    }
+
     /**
      * dispatch by the following criteria:
      * <p>
