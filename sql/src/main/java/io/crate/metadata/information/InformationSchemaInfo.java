@@ -25,6 +25,7 @@ import com.google.common.collect.ImmutableMap;
 import com.google.common.collect.ImmutableSortedMap;
 import io.crate.metadata.table.SchemaInfo;
 import io.crate.metadata.table.TableInfo;
+import org.elasticsearch.cluster.ClusterChangedEvent;
 import org.elasticsearch.cluster.ClusterService;
 import org.elasticsearch.common.inject.Inject;
 import org.elasticsearch.common.inject.Singleton;
@@ -42,13 +43,14 @@ public class InformationSchemaInfo implements SchemaInfo {
     @Inject
     public InformationSchemaInfo(ClusterService clusterService) {
         this.tableInfoMap = ImmutableSortedMap.<String, TableInfo>naturalOrder()
-                .put(InformationTablesTableInfo.NAME, new InformationTablesTableInfo(clusterService))
-                .put(InformationColumnsTableInfo.NAME, new InformationColumnsTableInfo(clusterService))
-                .put(InformationPartitionsTableInfo.NAME, new InformationPartitionsTableInfo(clusterService))
-                .put(InformationTableConstraintsTableInfo.NAME, new InformationTableConstraintsTableInfo(clusterService))
-                .put(InformationRoutinesTableInfo.NAME, new InformationRoutinesTableInfo(clusterService))
-                .put(InformationSchemataTableInfo.NAME, new InformationSchemataTableInfo(clusterService))
-        .build();
+            .put(InformationTablesTableInfo.NAME, new InformationTablesTableInfo(clusterService))
+            .put(InformationColumnsTableInfo.NAME, new InformationColumnsTableInfo(clusterService))
+            .put(InformationPartitionsTableInfo.NAME, new InformationPartitionsTableInfo(clusterService))
+            .put(InformationTableConstraintsTableInfo.NAME, new InformationTableConstraintsTableInfo(clusterService))
+            .put(InformationRoutinesTableInfo.NAME, new InformationRoutinesTableInfo(clusterService))
+            .put(InformationSchemataTableInfo.NAME, new InformationSchemataTableInfo(clusterService))
+            .put(InformationSqlFeaturesTableInfo.NAME, new InformationSqlFeaturesTableInfo(clusterService))
+            .build();
     }
 
     @Override
@@ -59,11 +61,6 @@ public class InformationSchemaInfo implements SchemaInfo {
     @Override
     public String name() {
         return NAME;
-    }
-
-    @Override
-    public boolean systemSchema() {
-        return true;
     }
 
     @Override
@@ -78,6 +75,11 @@ public class InformationSchemaInfo implements SchemaInfo {
 
     @Override
     public void close() throws Exception {
+
+    }
+
+    @Override
+    public void update(ClusterChangedEvent event) {
 
     }
 }

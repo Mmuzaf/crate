@@ -22,23 +22,21 @@
 package io.crate.operation.projectors;
 
 import io.crate.breaker.RamAccountingContext;
-import io.crate.core.collections.Row;
-import io.crate.core.collections.RowN;
+import io.crate.data.Row;
+import io.crate.data.RowN;
 import io.crate.operation.AggregationContext;
 import io.crate.operation.aggregation.Aggregator;
 import io.crate.operation.collect.CollectExpression;
 
-import java.util.Set;
-
 public class AggregationPipe extends AbstractProjector {
 
     private final Aggregator[] aggregators;
-    private final Set<CollectExpression<Row, ?>> collectExpressions;
+    private final Iterable<CollectExpression<Row, ?>> collectExpressions;
     private final Object[] cells;
     private final Row row;
     private final Object[] states;
 
-    public AggregationPipe(Set<CollectExpression<Row, ?>> collectExpressions,
+    public AggregationPipe(Iterable<CollectExpression<Row, ?>> collectExpressions,
                            AggregationContext[] aggregations,
                            RamAccountingContext ramAccountingContext) {
         cells = new Object[aggregations.length];
@@ -48,10 +46,10 @@ public class AggregationPipe extends AbstractProjector {
         aggregators = new Aggregator[aggregations.length];
         for (int i = 0; i < aggregators.length; i++) {
             aggregators[i] = new Aggregator(
-                    ramAccountingContext,
-                    aggregations[i].symbol(),
-                    aggregations[i].function(),
-                    aggregations[i].inputs()
+                ramAccountingContext,
+                aggregations[i].symbol(),
+                aggregations[i].function(),
+                aggregations[i].inputs()
             );
             // prepareState creates the aggregationState. In case of the AggregationProjector
             // we only want to have 1 global state not 1 state per node/shard or even document.
@@ -60,7 +58,7 @@ public class AggregationPipe extends AbstractProjector {
     }
 
     @Override
-    public boolean setNextRow(Row row) {
+    public Result setNextRow(Row row) {
         for (CollectExpression<Row, ?> collectExpression : collectExpressions) {
             collectExpression.setNextRow(row);
         }
@@ -68,7 +66,7 @@ public class AggregationPipe extends AbstractProjector {
             Aggregator aggregator = aggregators[i];
             states[i] = aggregator.processRow(states[i]);
         }
-        return true;
+        return Result.CONTINUE;
     }
 
     @Override
@@ -77,11 +75,11 @@ public class AggregationPipe extends AbstractProjector {
     }
 
     @Override
-    public void finish() {
+    public void finish(RepeatHandle repeatHandle) {
         for (int i = 0; i < aggregators.length; i++) {
             cells[i] = aggregators[i].finishCollect(states[i]);
         }
         downstream.setNextRow(row);
-        downstream.finish();
+        downstream.finish(RepeatHandle.UNSUPPORTED);
     }
 }

@@ -22,15 +22,14 @@
 package io.crate.operation.projectors;
 
 import com.google.common.base.MoreObjects;
-import com.google.common.base.Supplier;
-import com.google.common.util.concurrent.Futures;
 import io.crate.analyze.symbol.Assignments;
-import io.crate.analyze.symbol.Reference;
 import io.crate.analyze.symbol.Symbol;
-import io.crate.core.collections.Row;
+import io.crate.data.Row;
 import io.crate.executor.transport.ShardUpsertRequest;
 import io.crate.executor.transport.TransportActionProvider;
 import io.crate.metadata.ColumnIdent;
+import io.crate.metadata.Functions;
+import io.crate.metadata.Reference;
 import io.crate.metadata.settings.CrateSettings;
 import io.crate.operation.Input;
 import io.crate.operation.InputRow;
@@ -39,6 +38,7 @@ import io.crate.operation.collect.RowShardResolver;
 import org.elasticsearch.action.bulk.BulkRetryCoordinatorPool;
 import org.elasticsearch.action.bulk.BulkShardProcessor;
 import org.elasticsearch.cluster.ClusterService;
+import org.elasticsearch.cluster.metadata.IndexNameExpressionResolver;
 import org.elasticsearch.common.collect.Tuple;
 import org.elasticsearch.common.settings.Settings;
 
@@ -47,6 +47,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.UUID;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.function.Supplier;
 
 public class ColumnIndexWriterProjector extends AbstractProjector {
 
@@ -61,12 +62,14 @@ public class ColumnIndexWriterProjector extends AbstractProjector {
 
 
     protected ColumnIndexWriterProjector(ClusterService clusterService,
+                                         Functions functions,
+                                         IndexNameExpressionResolver indexNameExpressionResolver,
                                          Settings settings,
                                          Supplier<String> indexNameResolver,
                                          TransportActionProvider transportActionProvider,
                                          BulkRetryCoordinatorPool bulkRetryCoordinatorPool,
                                          List<ColumnIdent> primaryKeyIdents,
-                                         List<Symbol> primaryKeySymbols,
+                                         List<? extends Symbol> primaryKeySymbols,
                                          @Nullable Symbol routingSymbol,
                                          ColumnIdent clusteredByColumn,
                                          List<Reference> columnReferences,
@@ -78,8 +81,9 @@ public class ColumnIndexWriterProjector extends AbstractProjector {
                                          UUID jobId) {
         this.indexNameResolver = indexNameResolver;
         this.collectExpressions = collectExpressions;
-        rowShardResolver = new RowShardResolver(primaryKeyIdents, primaryKeySymbols, clusteredByColumn, routingSymbol);
-        assert columnReferences.size() == insertInputs.size();
+        rowShardResolver = new RowShardResolver(functions, primaryKeyIdents, primaryKeySymbols, clusteredByColumn, routingSymbol);
+        assert columnReferences.size() == insertInputs.size()
+            : "number of insert inputs must be equal to the number of columns";
 
         String[] updateColumnNames;
         if (updateAssignments == null) {
@@ -91,46 +95,59 @@ public class ColumnIndexWriterProjector extends AbstractProjector {
             assignments = convert.v2();
         }
         ShardUpsertRequest.Builder builder = new ShardUpsertRequest.Builder(
-                CrateSettings.BULK_REQUEST_TIMEOUT.extractTimeValue(settings),
-                false, // overwriteDuplicates
-                true, // continueOnErrors
-                updateColumnNames,
-                columnReferences.toArray(new Reference[columnReferences.size()]),
-                jobId);
+            CrateSettings.BULK_REQUEST_TIMEOUT.extractTimeValue(settings),
+            false, // overwriteDuplicates
+            true, // continueOnErrors
+            updateColumnNames,
+            columnReferences.toArray(new Reference[columnReferences.size()]),
+            jobId);
 
         insertValues = new InputRow(insertInputs);
         bulkShardProcessor = new BulkShardProcessor<>(
-                clusterService,
-                transportActionProvider.transportBulkCreateIndicesAction(),
-                bulkRetryCoordinatorPool,
-                autoCreateIndices,
-                MoreObjects.firstNonNull(bulkActions, 100),
-                builder,
-                transportActionProvider.transportShardUpsertActionDelegate(),
-                jobId
+            clusterService,
+            transportActionProvider.transportBulkCreateIndicesAction(),
+            indexNameExpressionResolver,
+            settings,
+            bulkRetryCoordinatorPool,
+            autoCreateIndices,
+            MoreObjects.firstNonNull(bulkActions, 100),
+            builder,
+            transportActionProvider.transportShardUpsertAction()::execute,
+            jobId
         );
     }
 
     @Override
     public void downstream(RowReceiver rowReceiver) {
         super.downstream(rowReceiver);
-        Futures.addCallback(bulkShardProcessor.result(), new BulkProcessorFutureCallback(failed, rowReceiver));
+        BulkProcessorFutureCallback bulkProcessorFutureCallback = new BulkProcessorFutureCallback(failed, rowReceiver);
+        bulkShardProcessor.result().whenComplete(bulkProcessorFutureCallback);
     }
 
     @Override
-    public boolean setNextRow(Row row) {
+    public Result setNextRow(Row row) {
         for (CollectExpression<Row, ?> collectExpression : collectExpressions) {
             collectExpression.setNextRow(row);
         }
         rowShardResolver.setNextRow(row);
         ShardUpsertRequest.Item item = new ShardUpsertRequest.Item(
-                rowShardResolver.id(), assignments, insertValues.materialize(), null);
-        return bulkShardProcessor.add(indexNameResolver.get(), item, rowShardResolver.routing());
+            rowShardResolver.id(), assignments, insertValues.materialize(), null);
+        if (bulkShardProcessor.add(indexNameResolver.get(), item, rowShardResolver.routing())) {
+            return Result.CONTINUE;
+        }
+        return Result.STOP;
     }
 
     @Override
-    public void finish() {
+    public void finish(RepeatHandle repeatHandle) {
         bulkShardProcessor.close();
+    }
+
+    @Override
+    public void kill(Throwable throwable) {
+        super.kill(throwable);
+        failed.set(true);
+        bulkShardProcessor.kill(throwable);
     }
 
     @Override

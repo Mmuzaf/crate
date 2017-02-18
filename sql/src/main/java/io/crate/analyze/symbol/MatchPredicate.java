@@ -23,7 +23,6 @@ package io.crate.analyze.symbol;
 
 import io.crate.types.DataType;
 import io.crate.types.DataTypes;
-import org.elasticsearch.common.io.stream.StreamInput;
 import org.elasticsearch.common.io.stream.StreamOutput;
 
 import java.io.IOException;
@@ -31,36 +30,27 @@ import java.util.Map;
 
 public class MatchPredicate extends Symbol {
 
-    public static final SymbolFactory FACTORY = new SymbolFactory() {
-        @Override
-        public Symbol newInstance() {
-            throw new UnsupportedOperationException("Streaming a MatchPredicate is not supported");
-        }
-    };
-
-    private final Map<Field, Double> identBoostMap;
-    private final DataType columnType;
-    private final Object queryTerm;
+    private final Map<Field, Symbol> identBoostMap;
+    private final Symbol queryTerm;
     private final String matchType;
-    private final Map<String, Object> options;
+    private final Symbol options;
 
-    public MatchPredicate(Map<Field, Double> identBoostMap,
-                          DataType columnType,
-                          Object queryTerm,
+    public MatchPredicate(Map<Field, Symbol> identBoostMap,
+                          Symbol queryTerm,
                           String matchType,
-                          Map<String, Object> options) {
+                          Symbol options) {
+        assert options.valueType().equals(DataTypes.OBJECT) : "options symbol must be of type object";
         this.identBoostMap = identBoostMap;
-        this.columnType = columnType;
         this.queryTerm = queryTerm;
         this.matchType = matchType;
         this.options = options;
     }
 
-    public Map<Field, Double> identBoostMap() {
+    public Map<Field, Symbol> identBoostMap() {
         return identBoostMap;
     }
 
-    public Object queryTerm() {
+    public Symbol queryTerm() {
         return queryTerm;
     }
 
@@ -68,12 +58,8 @@ public class MatchPredicate extends Symbol {
         return matchType;
     }
 
-    public Map<String, Object> options() {
+    public Symbol options() {
         return options;
-    }
-
-    public DataType columnType() {
-        return columnType;
     }
 
     @Override
@@ -89,11 +75,6 @@ public class MatchPredicate extends Symbol {
     @Override
     public DataType valueType() {
         return DataTypes.BOOLEAN;
-    }
-
-    @Override
-    public void readFrom(StreamInput in) throws IOException {
-        throw new UnsupportedOperationException("Cannot stream MatchPredicate");
     }
 
     @Override

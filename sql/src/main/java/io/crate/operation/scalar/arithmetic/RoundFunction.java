@@ -22,9 +22,6 @@
 package io.crate.operation.scalar.arithmetic;
 
 import com.google.common.collect.ImmutableList;
-import io.crate.analyze.symbol.Function;
-import io.crate.analyze.symbol.Literal;
-import io.crate.analyze.symbol.Symbol;
 import io.crate.metadata.FunctionIdent;
 import io.crate.metadata.FunctionInfo;
 import io.crate.metadata.Scalar;
@@ -50,7 +47,8 @@ public abstract class RoundFunction extends Scalar<Number, Number> {
     static class FloatRoundFunction extends RoundFunction {
 
         private final static FunctionInfo INFO = new FunctionInfo(
-                new FunctionIdent(NAME, ImmutableList.<DataType>of(DataTypes.FLOAT)), DataTypes.INTEGER, FunctionInfo.Type.SCALAR, true, true);
+            new FunctionIdent(NAME, ImmutableList.<DataType>of(DataTypes.FLOAT)), DataTypes.INTEGER, FunctionInfo.Type.SCALAR,
+            FunctionInfo.DETERMINISTIC_AND_COMPARISON_REPLACEMENT);
 
         @Override
         public FunctionInfo info() {
@@ -70,7 +68,8 @@ public abstract class RoundFunction extends Scalar<Number, Number> {
     static class DoubleRoundFunction extends RoundFunction {
 
         private final static FunctionInfo INFO = new FunctionInfo(
-                new FunctionIdent(NAME, ImmutableList.<DataType>of(DataTypes.DOUBLE)), DataTypes.LONG, FunctionInfo.Type.SCALAR, true, true);
+            new FunctionIdent(NAME, ImmutableList.<DataType>of(DataTypes.DOUBLE)), DataTypes.LONG, FunctionInfo.Type.SCALAR,
+            FunctionInfo.DETERMINISTIC_AND_COMPARISON_REPLACEMENT);
 
         @Override
         public FunctionInfo info() {
@@ -91,7 +90,8 @@ public abstract class RoundFunction extends Scalar<Number, Number> {
         private final FunctionInfo info;
 
         public NoopRoundFunction(DataType type) {
-            info = new FunctionInfo(new FunctionIdent(NAME, ImmutableList.of(type)), type, FunctionInfo.Type.SCALAR, true, true);
+            info = new FunctionInfo(new FunctionIdent(NAME, ImmutableList.of(type)), type, FunctionInfo.Type.SCALAR,
+                                    FunctionInfo.DETERMINISTIC_AND_COMPARISON_REPLACEMENT);
         }
 
         @Override

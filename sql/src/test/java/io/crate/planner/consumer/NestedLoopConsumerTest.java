@@ -21,149 +21,106 @@
 
 package io.crate.planner.consumer;
 
+import com.carrotsearch.hppc.ObjectLongHashMap;
+import com.carrotsearch.hppc.ObjectLongMap;
 import com.google.common.collect.ImmutableMap;
-import io.crate.Constants;
-import io.crate.analyze.*;
-import io.crate.analyze.relations.PlannedAnalyzedRelation;
-import io.crate.analyze.repositories.RepositorySettingsModule;
-import io.crate.analyze.symbol.Function;
+import io.crate.action.sql.SessionContext;
+import io.crate.analyze.EvaluatingNormalizer;
+import io.crate.analyze.QueriedTable;
+import io.crate.analyze.TableDefinitions;
+import io.crate.analyze.symbol.Aggregation;
 import io.crate.analyze.symbol.Symbol;
 import io.crate.exceptions.ValidationException;
-import io.crate.metadata.MetaDataModule;
-import io.crate.metadata.Routing;
-import io.crate.metadata.Schemas;
-import io.crate.metadata.TableIdent;
+import io.crate.metadata.*;
 import io.crate.metadata.doc.DocSchemaInfo;
-import io.crate.metadata.information.MetaDataInformationModule;
-import io.crate.metadata.table.SchemaInfo;
-import io.crate.metadata.table.TableInfo;
+import io.crate.metadata.doc.DocTableInfo;
 import io.crate.metadata.table.TestingTableInfo;
-import io.crate.operation.aggregation.impl.AggregationImplModule;
-import io.crate.operation.operator.OperatorModule;
-import io.crate.operation.predicate.PredicateModule;
-import io.crate.operation.scalar.ScalarFunctionModule;
-import io.crate.planner.NoopPlan;
-import io.crate.planner.Plan;
-import io.crate.planner.Planner;
-import io.crate.planner.TableStatsService;
+import io.crate.planner.*;
 import io.crate.planner.distribution.DistributionType;
-import io.crate.planner.node.dql.CollectAndMerge;
-import io.crate.planner.node.dql.CollectPhase;
-import io.crate.planner.node.dql.MergePhase;
-import io.crate.planner.node.dql.QueryThenFetch;
+import io.crate.planner.node.dql.*;
 import io.crate.planner.node.dql.join.NestedLoop;
 import io.crate.planner.node.dql.join.NestedLoopPhase;
-import io.crate.planner.projection.FetchProjection;
-import io.crate.planner.projection.FilterProjection;
-import io.crate.planner.projection.TopNProjection;
-import io.crate.sql.parser.SqlParser;
+import io.crate.planner.projection.*;
 import io.crate.test.integration.CrateUnitTest;
-import io.crate.testing.MockedClusterServiceModule;
+import io.crate.testing.SQLExecutor;
 import io.crate.types.DataTypes;
 import org.elasticsearch.cluster.ClusterService;
-import org.elasticsearch.common.inject.Injector;
-import org.elasticsearch.common.inject.ModulesBuilder;
-import org.elasticsearch.threadpool.ThreadPool;
+import org.elasticsearch.test.cluster.NoopClusterService;
 import org.hamcrest.Matchers;
 import org.junit.Before;
-import org.junit.Rule;
 import org.junit.Test;
-import org.junit.rules.ExpectedException;
 
 import java.util.List;
 import java.util.Map;
 import java.util.UUID;
 
-import static io.crate.testing.TestingHelpers.*;
-import static org.hamcrest.CoreMatchers.*;
+import static io.crate.testing.SymbolMatchers.*;
+import static io.crate.testing.TestingHelpers.isSQL;
+import static org.hamcrest.CoreMatchers.instanceOf;
+import static org.hamcrest.CoreMatchers.notNullValue;
 import static org.hamcrest.Matchers.contains;
 import static org.hamcrest.Matchers.nullValue;
 import static org.hamcrest.core.Is.is;
-import static org.mockito.Matchers.eq;
 import static org.mockito.Mockito.mock;
-import static org.mockito.Mockito.when;
 
 public class NestedLoopConsumerTest extends CrateUnitTest {
 
-    private Analyzer analyzer;
-    private Planner planner;
+    private final DocTableInfo emptyRoutingTable = TestingTableInfo.builder(new TableIdent(DocSchemaInfo.NAME, "empty"),
+        new Routing(ImmutableMap.<String, Map<String, List<Integer>>>of()))
+        .add("nope", DataTypes.BOOLEAN)
+        .build();
 
-    @Rule
-    public ExpectedException expectedException = ExpectedException.none();
-
-    private final ClusterService clusterService = mock(ClusterService.class);
     private NestedLoopConsumer consumer;
-    private final Planner.Context plannerContext = new Planner.Context(clusterService, UUID.randomUUID(), null);
-    private TableStatsService statsService;
+    private Planner.Context plannerContext;
+    private SQLExecutor e;
 
     @Before
     public void initPlanner() throws Exception {
-        Injector injector = new ModulesBuilder()
-                .add(new MockedClusterServiceModule())
-                .add(new TestModule())
-                .add(new MetaDataInformationModule())
-                .add(new AggregationImplModule())
-                .add(new ScalarFunctionModule())
-                .add(new PredicateModule())
-                .add(new OperatorModule())
-                .add(new RepositorySettingsModule())
-                .createInjector();
-        analyzer = injector.getInstance(Analyzer.class);
-        planner = injector.getInstance(Planner.class);
-        consumer = new NestedLoopConsumer(clusterService, mock(AnalysisMetaData.class), statsService);
-    }
-
-    private static final TableInfo EMPTY_ROUTING_TABLE = TestingTableInfo.builder(new TableIdent(DocSchemaInfo.NAME, "empty"),
-            new Routing(ImmutableMap.<String, Map<String, List<Integer>>>of()))
-            .add("nope", DataTypes.BOOLEAN)
+        ClusterService clusterService = new NoopClusterService();
+        TableStats tableStats = getTableStats();
+        e = SQLExecutor.builder(clusterService)
+            .enableDefaultTables()
+            .setTableStats(tableStats)
+            .addDocTable(emptyRoutingTable)
             .build();
-
-
-    private class TestModule extends MetaDataModule {
-
-        @Override
-        protected void configure() {
-            super.configure();
-            bind(ThreadPool.class).toInstance(newMockedThreadPool());
-            statsService = mock(TableStatsService.class);
-            when(statsService.numDocs(eq(BaseAnalyzerTest.USER_TABLE_IDENT))).thenReturn(10L);
-            when(statsService.numDocs(eq(BaseAnalyzerTest.USER_TABLE_IDENT_MULTI_PK))).thenReturn(5000L);
-            when(statsService.numDocs(eq(EMPTY_ROUTING_TABLE.ident()))).thenReturn(0L);
-            bind(TableStatsService.class).toInstance(statsService);
-        }
-
-        @Override
-        protected void bindSchemas() {
-            super.bindSchemas();
-            SchemaInfo schemaInfo = mock(SchemaInfo.class);
-            when(schemaInfo.getTableInfo(BaseAnalyzerTest.USER_TABLE_IDENT.name())).thenReturn(BaseAnalyzerTest.USER_TABLE_INFO);
-            when(schemaInfo.getTableInfo(BaseAnalyzerTest.USER_TABLE_IDENT_MULTI_PK.name())).thenReturn(BaseAnalyzerTest.USER_TABLE_INFO_MULTI_PK);
-            when(schemaInfo.getTableInfo(EMPTY_ROUTING_TABLE.ident().name())).thenReturn(EMPTY_ROUTING_TABLE);
-            schemaBinder.addBinding(Schemas.DEFAULT_SCHEMA_NAME).toInstance(schemaInfo);
-        }
+        Functions functions = e.functions();
+        EvaluatingNormalizer normalizer = EvaluatingNormalizer.functionOnlyNormalizer(functions, ReplaceMode.COPY);
+        plannerContext = new Planner.Context(
+            e.planner,
+            clusterService,
+            UUID.randomUUID(),
+            new ConsumingPlanner(clusterService, functions, tableStats),
+            normalizer,
+            new TransactionContext(SessionContext.SYSTEM_SESSION),
+            0,
+            0);
+        consumer = new NestedLoopConsumer(clusterService, functions, tableStats);
     }
 
-    public <T> T plan(String statement) {
-        Analysis analysis = analyzer.analyze(
-                SqlParser.createStatement(statement),
-                new ParameterContext(new Object[0], new Object[0][], null));
-        //noinspection unchecked
-        return (T) planner.plan(analysis, UUID.randomUUID());
+    private TableStats getTableStats() {
+        ObjectLongMap<TableIdent> stats = new ObjectLongHashMap<>(3);
+        stats.put(TableDefinitions.USER_TABLE_IDENT, 10L);
+        stats.put(TableDefinitions.USER_TABLE_IDENT_MULTI_PK, 5000L);
+        stats.put(emptyRoutingTable.ident(), 0L);
+        TableStats tableStats = new TableStats();
+        tableStats.updateTableStats(stats);
+        return tableStats;
+    }
+
+    public <T extends Plan> T plan(String statement) {
+        return e.plan(statement, UUID.randomUUID(), 0, 0);
     }
 
     @Test
     public void testWhereWithNoMatchShouldReturnNoopPlan() throws Exception {
-        // TODO: once fetch is supported for cross joins, reset query to:
-        // select u1.name, u2.name from users u1, users u2 where 1 = 2
-        Plan plan = plan("select u1.name, u2.name from users u1, users u2 where 1 = 2 order by u1.name, u2.name");
+        Plan plan = plan("select u1.name, u2.name from users u1, users u2 where 1 = 2");
         assertThat(plan, instanceOf(NoopPlan.class));
     }
 
     @Test
     public void testInvalidRelation() throws Exception {
         QueriedTable queriedTable = mock(QueriedTable.class);
-        PlannedAnalyzedRelation relation = consumer.consume(
-                queriedTable, new ConsumerContext(queriedTable, plannerContext));
+        Plan relation = consumer.consume(queriedTable, new ConsumerContext(plannerContext));
 
         assertThat(relation, Matchers.nullValue());
     }
@@ -171,10 +128,19 @@ public class NestedLoopConsumerTest extends CrateUnitTest {
     @Test
     public void testFetch() throws Exception {
         QueryThenFetch plan = plan("select u1.name, u2.id from users u1, users u2 order by 2");
-        NestedLoopPhase nlp = (NestedLoopPhase) ((NestedLoop) plan.subPlan()).resultPhase();
+        NestedLoopPhase nlp = ((NestedLoop) plan.subPlan()).nestedLoopPhase();
         assertThat(nlp.projections().get(0).outputs(), isSQL("INPUT(1), INPUT(0)"));
     }
 
+    @Test
+    public void testGlobalAggWithWhereDoesNotResultInFilterProjection() throws Exception {
+        NestedLoop nl = plan("select min(u1.name) from users u1, users u2 where u1.name like 'A%'");
+        assertThat(nl.nestedLoopPhase().projections(), contains(
+            instanceOf(EvalProjection.class),
+            instanceOf(AggregationProjection.class),
+            instanceOf(EvalProjection.class)
+        ));
+    }
 
     @Test
     public void testFunctionWithJoinCondition() throws Exception {
@@ -185,49 +151,41 @@ public class NestedLoopConsumerTest extends CrateUnitTest {
 
     @Test
     public void testNoLimitPushDownWithJoinConditionOnDocTables() throws Exception {
-        NestedLoop plan = plan("select u1.name, u2.name from users u1, users u2 where u1.name = u2.name  order by 1, 2 limit 10");
-        assertThat(((CollectAndMerge) plan.left()).collectPhase().projections().size(), is(0));
-        assertThat(((CollectAndMerge) plan.right()).collectPhase().projections().size(), is(0));
+        Merge merge = plan("select u1.name, u2.name from users u1, users u2 where u1.name = u2.name  order by 1, 2 limit 10");
+        NestedLoop nl = (NestedLoop) merge.subPlan();
+        assertThat(((Collect) nl.left()).collectPhase().projections().size(), is(0));
+        assertThat(((Collect) nl.right()).collectPhase().projections().size(), is(0));
     }
 
     @SuppressWarnings("unchecked")
     @Test
     public void testJoinConditionInWhereClause() throws Exception {
-        QueryThenFetch plan = plan("select u1.floats, u2.name from users u1, users u2 where u1.name || u2.name = 'foobar'");
+        QueryThenFetch qtf = plan("select u1.floats, u2.name from users u1, users u2 where u1.name || u2.name = 'foobar'");
+        Merge merge = (Merge) qtf.subPlan();
 
-        NestedLoop nestedLoop = (NestedLoop) plan.subPlan();
+        NestedLoop nestedLoop = (NestedLoop) merge.subPlan();
         assertThat(nestedLoop.nestedLoopPhase().projections(),
-                Matchers.contains(instanceOf(FilterProjection.class), instanceOf(TopNProjection.class)));
-        FilterProjection fp = ((FilterProjection) nestedLoop.nestedLoopPhase().projections().get(0));
+            Matchers.contains(instanceOf(FilterProjection.class), instanceOf(EvalProjection.class)));
 
-        assertThat(((Function)fp.query()).arguments().size(), is(2));
-        assertThat(fp.outputs().size(), is(3));
+        EvalProjection eval = ((EvalProjection) nestedLoop.nestedLoopPhase().projections().get(1));
+        assertThat(eval.outputs().size(), is(3));
 
-        TopNProjection topN = ((TopNProjection) nestedLoop.nestedLoopPhase().projections().get(1));
-        assertThat(topN.limit(), is(Constants.DEFAULT_SELECT_LIMIT));
-        assertThat(topN.offset(), is(0));
-        assertThat(topN.outputs().size(), is(3));
-
-        assertThat(plan.localMerge(), nullValue()); // NL Plan is non-distributed and contains localMerge
-        MergePhase localMergePhase = ((MergePhase) ((NestedLoop) plan.subPlan()).resultPhase());
+        MergePhase localMergePhase = merge.mergePhase();
         assertThat(localMergePhase.projections(),
-                Matchers.contains(instanceOf(TopNProjection.class), instanceOf(FetchProjection.class)));
+            Matchers.contains(instanceOf(FetchProjection.class)));
 
-        TopNProjection finalTopN = ((TopNProjection) localMergePhase.projections().get(0));
-        assertThat(finalTopN.limit(), is(Constants.DEFAULT_SELECT_LIMIT));
-        assertThat(finalTopN.offset(), is(0));
-        assertThat(finalTopN.outputs().size(), is(3));
-
-        FetchProjection fetchProjection = (FetchProjection) localMergePhase.projections().get(1);
+        FetchProjection fetchProjection = (FetchProjection) localMergePhase.projections().get(0);
         assertThat(fetchProjection.outputs(), isSQL("FETCH(INPUT(0), doc.users._doc['floats']), INPUT(2)"));
     }
 
     @Test
     public void testLeftSideIsBroadcastIfLeftTableIsSmaller() throws Exception {
-        NestedLoop plan = plan("select users.name, u2.name from users, users_multi_pk u2 " +
-                               "where users.name = u2.name " +
-                               "order by users.name, u2.name ");
-        assertThat(plan.left().resultPhase().distributionInfo().distributionType(), is(DistributionType.BROADCAST));
+        Merge merge = plan("select users.name, u2.name from users, users_multi_pk u2 " +
+                           "where users.name = u2.name " +
+                           "order by users.name, u2.name ");
+        NestedLoop nl = (NestedLoop) merge.subPlan();
+        Collect collect = (Collect) nl.left();
+        assertThat(collect.collectPhase().distributionInfo().distributionType(), is(DistributionType.BROADCAST));
     }
 
 
@@ -236,11 +194,9 @@ public class NestedLoopConsumerTest extends CrateUnitTest {
         QueryThenFetch plan = plan("select u1.name, u2.name from users u1 cross join users u2");
         NestedLoop nestedLoop = (NestedLoop) plan.subPlan();
         assertThat(nestedLoop.nestedLoopPhase().projections(),
-                Matchers.contains(instanceOf(TopNProjection.class), instanceOf(FetchProjection.class)));
-        TopNProjection topN = ((TopNProjection) nestedLoop.nestedLoopPhase().projections().get(0));
-        assertThat(topN.limit(), is(Constants.DEFAULT_SELECT_LIMIT));
-        assertThat(topN.offset(), is(0));
-        assertThat(topN.outputs().size(), is(2));
+            Matchers.contains(instanceOf(EvalProjection.class), instanceOf(FetchProjection.class)));
+        EvalProjection eval = ((EvalProjection) nestedLoop.nestedLoopPhase().projections().get(0));
+        assertThat(eval.outputs().size(), is(2));
 
         MergePhase leftMerge = nestedLoop.nestedLoopPhase().leftMergePhase();
         assertThat(leftMerge.projections().size(), is(0));
@@ -253,39 +209,29 @@ public class NestedLoopConsumerTest extends CrateUnitTest {
     @Test
     public void testNoLimitPushDownWithJoinCondition() throws Exception {
         NestedLoop plan = plan("select * from information_schema.tables, information_schema .columns " +
-                               "where tables.schema_name = columns.schema_name " +
+                               "where tables.table_schema = columns.table_schema " +
                                "and tables.table_name = columns.table_name limit 10");
-        assertThat(((CollectAndMerge) plan.left()).collectPhase().projections().size(), is(0));
-        assertThat(((CollectAndMerge) plan.right()).collectPhase().projections().size(), is(0));
+        assertThat(((Collect) plan.left()).collectPhase().projections().size(), is(0));
+        assertThat(((Collect) plan.right()).collectPhase().projections().size(), is(0));
     }
 
     @Test
     public void testNoNodePageSizeHintPushDownWithJoinCondition() throws Exception {
         NestedLoop plan = plan("select * from information_schema.tables, information_schema .columns " +
-                               "where tables.schema_name = columns.schema_name " +
+                               "where tables.table_schema = columns.table_schema " +
                                "and tables.table_name = columns.table_name limit 10");
-        assertThat(((CollectAndMerge) plan.left()).collectPhase().nodePageSizeHint(), nullValue());
-        assertThat(((CollectAndMerge) plan.right()).collectPhase().nodePageSizeHint(), nullValue());
-    }
-
-    @Test
-    public void testNLPhaseHasFilterProjection() throws Exception {
-        NestedLoop plan = plan("select * from information_schema.tables, information_schema .columns " +
-                               "where tables.schema_name = columns.schema_name " +
-                               "and tables.table_name = columns.table_name limit 10");
-        assertThat(plan.nestedLoopPhase().projections().get(0), instanceOf(FilterProjection.class));
+        assertThat(((RoutedCollectPhase) ((Collect) plan.left()).collectPhase()).nodePageSizeHint(), nullValue());
+        assertThat(((RoutedCollectPhase) ((Collect) plan.right()).collectPhase()).nodePageSizeHint(), nullValue());
     }
 
     @SuppressWarnings("ConstantConditions")
     @Test
     public void testOrderByPushDown() throws Exception {
-        // TODO: once fetch is supported for cross joins, reset query to:
-        // select u1.name, u2.name from users u1, users u2 order by u1.name
+        QueryThenFetch qtf = plan("select u1.name, u2.name from users u1, users u2 order by u1.name");
+        NestedLoop nl = (NestedLoop) qtf.subPlan();
 
-        NestedLoop plan = plan("select u1.name, u2.name from users u1, users u2 order by u1.name, u2.name");
-
-        assertThat(plan.left().resultPhase(), instanceOf(CollectPhase.class));
-        CollectAndMerge leftPlan = (CollectAndMerge) plan.left().plan();
+        assertThat(nl.left().resultDescription(), instanceOf(Collect.class));
+        Collect leftPlan = (Collect) nl.left();
         CollectPhase collectPhase = leftPlan.collectPhase();
         assertThat(collectPhase.projections().size(), is(0));
         assertThat(collectPhase.toCollect().get(0), isReference("name"));
@@ -294,63 +240,100 @@ public class NestedLoopConsumerTest extends CrateUnitTest {
     @Test
     public void testNodePageSizePushDown() throws Exception {
         NestedLoop plan = plan("select u1.name from users u1, users u2 order by 1 limit 1000");
-        CollectPhase cpL = ((CollectAndMerge) plan.left().plan()).collectPhase();
+        RoutedCollectPhase cpL = ((RoutedCollectPhase) ((Collect) plan.left()).collectPhase());
         assertThat(cpL.nodePageSizeHint(), is(750));
 
-        CollectPhase cpR = ((CollectAndMerge) plan.right().plan()).collectPhase();
+        RoutedCollectPhase cpR = ((RoutedCollectPhase) ((Collect) plan.right()).collectPhase());
         assertThat(cpR.nodePageSizeHint(), is(750));
     }
 
     @Test
     public void testCrossJoinWithGroupBy() throws Exception {
         expectedException.expect(ValidationException.class);
-        expectedException.expectMessage("GROUP BY on CROSS JOIN is not supported");
+        expectedException.expectMessage("GROUP BY on JOINS is not supported");
         plan("select u1.name, count(*) from users u1, users u2 group by u1.name");
     }
 
     @Test
     public void testAggregationOnCrossJoin() throws Exception {
-        expectedException.expect(ValidationException.class);
-        expectedException.expectMessage("AGGREGATIONS on CROSS JOIN is not supported");
-        // TODO: once fetch is supported for cross joins, reset query to:
-        // select min(u1.name) from users u1, users u2
+        NestedLoop nl = plan("select min(u1.name) from users u1, users u2");
+        NestedLoopPhase nlPhase = nl.nestedLoopPhase();
+        assertThat(nlPhase.projections(), contains(
+            instanceOf(EvalProjection.class),
+            instanceOf(AggregationProjection.class),
+            instanceOf(EvalProjection.class)
+        ));
+        AggregationProjection aggregationProjection = (AggregationProjection) nlPhase.projections().get(1);
+        Aggregation minAgg = aggregationProjection.aggregations().get(0);
+        assertThat(minAgg.fromStep(), is(Aggregation.Step.ITER));
+        assertThat(minAgg.toStep(), is(Aggregation.Step.FINAL));
+    }
 
-        plan("select min(u1.name) from users u1, users u2");
+    @Test
+    public void testAggregationOnNoMatch() throws Exception {
+        // shouldn't result in a NoopPlan because aggregations still need to be executed
+        NestedLoop nl = plan("select count(*) from users u1, users u2 where false");
+        assertThat(nl.nestedLoopPhase().projections(), contains(
+            instanceOf(EvalProjection.class),
+            instanceOf(AggregationProjection.class),
+            instanceOf(EvalProjection.class)
+        ));
     }
 
     @Test
     public void testOrderByOnJoinCondition() throws Exception {
         NestedLoop nl = plan("select u1.name || u2.name from users u1, users u2 order by u1.name, u1.name || u2.name");
-        List<Symbol> orderBy = ((TopNProjection) nl.nestedLoopPhase().projections().get(0)).orderBy();
+        List<Symbol> orderBy = ((OrderedTopNProjection) nl.nestedLoopPhase().projections().get(0)).orderBy();
         assertThat(orderBy, notNullValue());
-        assertThat(orderBy, Matchers.contains(isFunction("concat")));
+        assertThat(orderBy.size(), is(2));
+        assertThat(orderBy.get(0), isInputColumn(0));
+        assertThat(orderBy.get(1), isFunction("concat"));
     }
 
     @Test
     public void testLimitIncludesOffsetOnNestedLoopTopNProjection() throws Exception {
-        NestedLoop nl = plan("select u1.name, u2.name from users u1, users u2 where u1.id = u2.id order by u1.name, u2.name limit 15 offset 10");
+        Merge merge = plan("select u1.name, u2.name from users u1, users u2 where u1.id = u2.id order by u1.name, u2.name limit 15 offset 10");
+        NestedLoop nl = (NestedLoop) merge.subPlan();
         TopNProjection distTopN = (TopNProjection) nl.nestedLoopPhase().projections().get(1);
 
         assertThat(distTopN.limit(), is(25));
         assertThat(distTopN.offset(), is(0));
 
-        TopNProjection localTopN = (TopNProjection) nl.localMerge().projections().get(0);
+        TopNProjection localTopN = (TopNProjection) merge.mergePhase().projections().get(0);
         assertThat(localTopN.limit(), is(15));
         assertThat(localTopN.offset(), is(10));
     }
 
     @Test
     public void testRefsAreNotConvertedToSourceLookups() throws Exception {
-        NestedLoop nl = plan("select u1.name from users u1, users u2 where u1.id = u2.id order by 1");
-        CollectPhase cpLeft = ((CollectAndMerge) nl.left().plan()).collectPhase();
+        Merge merge = plan("select u1.name from users u1, users u2 where u1.id = u2.id order by 1");
+        NestedLoop nl = (NestedLoop) merge.subPlan();
+        CollectPhase cpLeft = ((Collect) nl.left()).collectPhase();
         assertThat(cpLeft.toCollect(), contains(isReference("id"), isReference("name")));
-        CollectPhase cpRight = ((CollectAndMerge) nl.right().plan()).collectPhase();
+        CollectPhase cpRight = ((Collect) nl.right()).collectPhase();
         assertThat(cpRight.toCollect(), contains(isReference("id")));
     }
 
     @Test
     public void testEmptyRoutingSource() throws Exception {
         Plan plan = plan("select e.nope, u.name from empty e, users u order by e.nope, u.name");
-        assertThat(plan, instanceOf(NoopPlan.class));
+        assertThat(plan, instanceOf(NestedLoop.class));
+    }
+
+    @Test
+    public void testLimitNotAppliedWhenFilteringRemains() throws Exception {
+        QueryThenFetch plan = plan("select * from users u1 " +
+                                   "left join users u2 on u1.id=u2.id " +
+                                   "left join users u3 on u2.id=u3.id " +
+                                   "left join users u4 on u3.id=u4.id " +
+                                   "where u1.name = u4.name " +
+                                   "limit 10");
+        NestedLoopPhase nl = ((NestedLoop) plan.subPlan()).nestedLoopPhase();
+        assertThat(nl.projections().get(1), instanceOf(TopNProjection.class));
+        assertThat(((TopNProjection)nl.projections().get(1)).limit(), is(10));
+        nl = ((NestedLoop) ((NestedLoop) plan.subPlan()).left()).nestedLoopPhase();
+        assertThat(nl.projections().get(0), instanceOf(EvalProjection.class));
+        nl = ((NestedLoop) ((NestedLoop) ((NestedLoop) plan.subPlan()).left()).left()).nestedLoopPhase();
+        assertThat(nl.projections().get(0), instanceOf(EvalProjection.class));
     }
 }

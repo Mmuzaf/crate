@@ -22,60 +22,32 @@
 package io.crate.executor.transport.task;
 
 import com.google.common.collect.ImmutableList;
-import com.google.common.util.concurrent.ListenableFuture;
-import com.google.common.util.concurrent.SettableFuture;
+import io.crate.data.Row;
 import io.crate.executor.JobTask;
-import io.crate.executor.RowCountResult;
-import io.crate.executor.TaskResult;
+import io.crate.executor.transport.OneRowActionListener;
 import io.crate.executor.transport.kill.KillJobsRequest;
-import io.crate.executor.transport.kill.KillResponse;
 import io.crate.executor.transport.kill.TransportKillJobsNodeAction;
-import org.elasticsearch.action.ActionListener;
+import io.crate.operation.projectors.RowReceiver;
 
-import java.util.List;
 import java.util.UUID;
 
 public class KillJobTask extends JobTask {
 
-    private final SettableFuture<TaskResult> result;
-    private final List<ListenableFuture<TaskResult>> results;
     private final UUID jobToKill;
     private final TransportKillJobsNodeAction nodeAction;
-
 
     public KillJobTask(TransportKillJobsNodeAction nodeAction,
                        UUID jobId,
                        UUID jobToKill) {
         super(jobId);
         this.nodeAction = nodeAction;
-        result = SettableFuture.create();
-        results = ImmutableList.of((ListenableFuture<TaskResult>) result);
         this.jobToKill = jobToKill;
     }
 
     @Override
-    public void start() {
+    public void execute(RowReceiver rowReceiver, Row parameters) {
         KillJobsRequest request = new KillJobsRequest(ImmutableList.of(jobToKill));
-
-        nodeAction.executeKillOnAllNodes(request, new ActionListener<KillResponse>() {
-            @Override
-            public void onResponse(KillResponse killResponse) {
-                result.set(new RowCountResult(killResponse.numKilled()));
-            }
-
-            @Override
-            public void onFailure(Throwable e) {
-                result.setException(e);
-            }
-        });
-    }
-
-    @Override
-    public List<ListenableFuture<TaskResult>> result() {
-        return results;
-    }
-
-    @Override
-    public void upstreamResult(List<? extends ListenableFuture<TaskResult>> result) {
+        nodeAction.broadcast(request,
+            new OneRowActionListener<>(rowReceiver, KillTask.KILL_RESPONSE_TO_ROW_FUNCTION));
     }
 }

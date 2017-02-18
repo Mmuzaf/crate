@@ -22,7 +22,7 @@
 package io.crate.action.job;
 
 import io.crate.Streamer;
-import io.crate.core.collections.Bucket;
+import io.crate.data.Bucket;
 import io.crate.executor.transport.StreamBucket;
 import org.elasticsearch.common.io.stream.StreamInput;
 import org.elasticsearch.common.io.stream.StreamOutput;
@@ -53,7 +53,7 @@ public class JobResponse extends TransportResponse {
         List<Bucket> directResponse = directResponse();
         for (Bucket bucket : directResponse) {
             if (bucket instanceof StreamBucket) {
-                assert streamers != null;
+                assert streamers != null : "streamers must not be null";
                 ((StreamBucket) bucket).streamers(streamers);
             }
         }

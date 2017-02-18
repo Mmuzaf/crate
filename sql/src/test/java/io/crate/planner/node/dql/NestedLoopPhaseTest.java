@@ -23,18 +23,22 @@ package io.crate.planner.node.dql;
 
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.Sets;
+import io.crate.analyze.symbol.Symbol;
 import io.crate.planner.distribution.DistributionInfo;
+import io.crate.planner.node.dql.join.JoinType;
 import io.crate.planner.node.dql.join.NestedLoopPhase;
-import io.crate.planner.projection.Projection;
 import io.crate.planner.projection.TopNProjection;
 import io.crate.test.integration.CrateUnitTest;
+import io.crate.testing.SqlExpressions;
+import io.crate.testing.T3;
 import io.crate.types.DataType;
 import io.crate.types.DataTypes;
-import org.elasticsearch.common.io.stream.BytesStreamInput;
 import org.elasticsearch.common.io.stream.BytesStreamOutput;
+import org.elasticsearch.common.io.stream.StreamInput;
 import org.hamcrest.core.Is;
 import org.junit.Test;
 
+import java.util.Collections;
 import java.util.UUID;
 
 import static org.hamcrest.CoreMatchers.is;
@@ -43,31 +47,57 @@ public class NestedLoopPhaseTest extends CrateUnitTest {
 
     @Test
     public void testSerialization() throws Exception {
-        TopNProjection topNProjection = new TopNProjection(10, 0);
+        TopNProjection topNProjection = new TopNProjection(10, 0, Collections.emptyList());
         UUID jobId = UUID.randomUUID();
-        MergePhase mp1 = new MergePhase(jobId, 2, "merge", 1,
-                ImmutableList.<DataType>of(DataTypes.STRING),
-                ImmutableList.<Projection>of(),
-                DistributionInfo.DEFAULT_BROADCAST);
-        MergePhase mp2 = new MergePhase(jobId, 3, "merge", 1,
-                ImmutableList.<DataType>of(DataTypes.STRING),
-                ImmutableList.<Projection>of(),
-                DistributionInfo.DEFAULT_BROADCAST);
-        NestedLoopPhase node = new NestedLoopPhase(jobId, 1, "nestedLoop", ImmutableList.<Projection>of(topNProjection),
-                mp1,
-                mp2,
-                Sets.newHashSet("node1", "node2"));
+        MergePhase mp1 = new MergePhase(
+            jobId,
+            2,
+            "merge",
+            1,
+            Collections.emptyList(),
+            ImmutableList.<DataType>of(DataTypes.STRING),
+            ImmutableList.of(),
+            DistributionInfo.DEFAULT_BROADCAST,
+            null);
+        MergePhase mp2 = new MergePhase(
+            jobId,
+            3,
+            "merge",
+            1,
+            Collections.emptyList(),
+            ImmutableList.<DataType>of(DataTypes.STRING),
+            ImmutableList.of(),
+            DistributionInfo.DEFAULT_BROADCAST,
+            null);
+        SqlExpressions sqlExpressions = new SqlExpressions(T3.SOURCES, T3.TR_1);
+        Symbol joinCondition = sqlExpressions.normalize(sqlExpressions.asSymbol("t1.x = t1.i"));
+        NestedLoopPhase node = new NestedLoopPhase(
+            jobId,
+            1,
+            "nestedLoop",
+            ImmutableList.of(topNProjection),
+            mp1,
+            mp2,
+            Sets.newHashSet("node1", "node2"),
+            JoinType.INNER,
+            joinCondition,
+            1,
+            1
+        );
 
         BytesStreamOutput output = new BytesStreamOutput();
         node.writeTo(output);
 
-        BytesStreamInput input = new BytesStreamInput(output.bytes());
+        StreamInput input = StreamInput.wrap(output.bytes());
         NestedLoopPhase node2 = new NestedLoopPhase();
         node2.readFrom(input);
 
-        assertThat(node.executionNodes(), Is.is(node2.executionNodes()));
+        assertThat(node.nodeIds(), Is.is(node2.nodeIds()));
         assertThat(node.jobId(), Is.is(node2.jobId()));
         assertThat(node.name(), is(node2.name()));
         assertThat(node.outputTypes(), is(node2.outputTypes()));
+        assertThat(node.joinType(), is(node2.joinType()));
+        assertThat(node.numLeftOutputs(), is(node2.numLeftOutputs()));
+        assertThat(node.numRightOutputs(), is(node2.numRightOutputs()));
     }
 }

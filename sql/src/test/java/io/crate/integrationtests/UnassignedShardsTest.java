@@ -22,12 +22,14 @@
 package io.crate.integrationtests;
 
 import io.crate.testing.TestingHelpers;
-import org.elasticsearch.test.ElasticsearchIntegrationTest;
+import io.crate.testing.UseJdbc;
+import org.elasticsearch.test.ESIntegTestCase;
 import org.junit.Test;
 
 import static org.hamcrest.Matchers.is;
 
-@ElasticsearchIntegrationTest.ClusterScope(numDataNodes = 2)
+@ESIntegTestCase.ClusterScope(numDataNodes = 2)
+@UseJdbc
 public class UnassignedShardsTest extends SQLTransportIntegrationTest {
 
     @Test
@@ -39,7 +41,7 @@ public class UnassignedShardsTest extends SQLTransportIntegrationTest {
             assertThat(response.rowCount(), is(15L));
             Object[] stateColumn = TestingHelpers.getColumn(response.rows(), 0);
             for (Object val : stateColumn) {
-                assertThat((String)val, is("UNASSIGNED"));
+                assertThat((String) val, is("UNASSIGNED"));
             }
         } finally {
             execute("reset global cluster.routing.allocation.enable");

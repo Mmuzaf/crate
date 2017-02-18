@@ -1,8 +1,4 @@
 .DS_Store
-.idea/
-*.iml
-*.ipr
-*.iws
 .classpath
 .project
 .settings
@@ -11,7 +7,6 @@
 *~
 .gradle
 *build/
-data/
 /out
 /sandbox
 /docs/eggs
@@ -20,3 +15,9 @@ data/
 /reports
 config/logging.yml
 
+# intellij files
+.idea/
+*.iml
+*.ipr
+*.iws
+build-idea/

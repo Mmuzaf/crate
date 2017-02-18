@@ -21,19 +21,29 @@
 
 package io.crate.analyze;
 
-import org.elasticsearch.common.settings.Settings;
+import io.crate.sql.tree.Expression;
+import io.crate.sql.tree.SetStatement;
+
+import java.util.List;
+import java.util.Map;
 
 public class SetAnalyzedStatement implements AnalyzedStatement {
 
-    private final Settings settings;
+    private final Map<String, List<Expression>> settings;
+    private final SetStatement.Scope scope;
     private final boolean persistent;
 
-    public SetAnalyzedStatement(Settings settings, boolean persistent) {
+    SetAnalyzedStatement(SetStatement.Scope scope, Map<String, List<Expression>> settings, boolean persistent) {
+        this.scope = scope;
         this.settings = settings;
         this.persistent = persistent;
     }
 
-    public Settings settings() {
+    public SetStatement.Scope scope() {
+        return scope;
+    }
+
+    public Map<String, List<Expression>> settings() {
         return settings;
     }
 
@@ -44,5 +54,10 @@ public class SetAnalyzedStatement implements AnalyzedStatement {
     @Override
     public <C, R> R accept(AnalyzedStatementVisitor<C, R> analyzedStatementVisitor, C context) {
         return analyzedStatementVisitor.visitSetStatement(this, context);
+    }
+
+    @Override
+    public boolean isWriteOperation() {
+        return SetStatement.Scope.GLOBAL.equals(scope);
     }
 }

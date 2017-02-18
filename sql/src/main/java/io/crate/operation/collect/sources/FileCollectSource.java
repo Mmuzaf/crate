@@ -22,66 +22,77 @@
 package io.crate.operation.collect.sources;
 
 import com.google.common.collect.ImmutableList;
-import com.google.common.collect.ImmutableMap;
+import io.crate.analyze.CopyFromAnalyzedStatement;
+import io.crate.analyze.symbol.Symbol;
 import io.crate.analyze.symbol.ValueSymbolVisitor;
 import io.crate.metadata.Functions;
+import io.crate.operation.InputFactory;
 import io.crate.operation.collect.CrateCollector;
 import io.crate.operation.collect.JobCollectContext;
-import io.crate.operation.collect.RowsCollector;
-import io.crate.operation.collect.files.FileCollectInputSymbolVisitor;
 import io.crate.operation.collect.files.FileInputFactory;
 import io.crate.operation.collect.files.FileReadingCollector;
+import io.crate.operation.collect.files.LineCollectorExpression;
 import io.crate.operation.projectors.RowReceiver;
 import io.crate.operation.reference.file.FileLineReferenceResolver;
 import io.crate.planner.node.dql.CollectPhase;
 import io.crate.planner.node.dql.FileUriCollectPhase;
+import io.crate.types.CollectionType;
+import io.crate.types.DataTypes;
 import org.elasticsearch.cluster.ClusterService;
 import org.elasticsearch.common.inject.Inject;
 import org.elasticsearch.common.inject.Singleton;
 
-import java.util.Arrays;
-import java.util.Collection;
+import java.util.*;
 
 @Singleton
 public class FileCollectSource implements CollectSource {
 
     private final ClusterService clusterService;
-    private final FileCollectInputSymbolVisitor fileInputSymbolVisitor;
+    private final Map<String, FileInputFactory> fileInputFactoryMap;
+    private final InputFactory inputFactory;
 
     @Inject
-    public FileCollectSource(Functions functions, ClusterService clusterService) {
-        fileInputSymbolVisitor = new FileCollectInputSymbolVisitor(functions, FileLineReferenceResolver.INSTANCE);
+    public FileCollectSource(Functions functions, ClusterService clusterService, Map<String, FileInputFactory> fileInputFactoryMap) {
+        this.fileInputFactoryMap = fileInputFactoryMap;
+        inputFactory = new InputFactory(functions);
         this.clusterService = clusterService;
     }
 
     @Override
     public Collection<CrateCollector> getCollectors(CollectPhase collectPhase, RowReceiver downstream, JobCollectContext jobCollectContext) {
+        FileUriCollectPhase fileUriCollectPhase = (FileUriCollectPhase) collectPhase;
+        InputFactory.Context<LineCollectorExpression<?>> ctx =
+            inputFactory.ctxForRefs(FileLineReferenceResolver::getImplementation);
+        ctx.add(collectPhase.toCollect());
 
-        if (collectPhase.whereClause().noMatch()){
-            return ImmutableList.<CrateCollector>of(RowsCollector.empty(downstream));
+        String[] readers = fileUriCollectPhase.nodeIds().toArray(
+            new String[fileUriCollectPhase.nodeIds().size()]);
+        Arrays.sort(readers);
+
+        List<String> fileUris;
+        fileUris = targetUriToStringList(fileUriCollectPhase.targetUri());
+        return ImmutableList.of(new FileReadingCollector(
+            fileUris,
+            ctx.topLevelInputs(),
+            ctx.expressions(),
+            downstream,
+            fileUriCollectPhase.compression(),
+            fileInputFactoryMap,
+            fileUriCollectPhase.sharedStorage(),
+            readers.length,
+            Arrays.binarySearch(readers, clusterService.state().nodes().getLocalNodeId())
+        ));
+    }
+
+    private static List<String> targetUriToStringList(Symbol targetUri) {
+        if (targetUri.valueType() == DataTypes.STRING) {
+            return Collections.singletonList(ValueSymbolVisitor.STRING.process(targetUri));
+        } else if (targetUri.valueType() instanceof CollectionType
+                   && ((CollectionType) targetUri.valueType()).innerType() == DataTypes.STRING) {
+            return ValueSymbolVisitor.STRING_LIST.process(targetUri);
         }
 
-        FileCollectInputSymbolVisitor.Context context = fileInputSymbolVisitor.extractImplementations(collectPhase.toCollect());
-        FileUriCollectPhase fileUriCollectPhase = (FileUriCollectPhase) collectPhase;
-
-        // FileUriCollectPhase is only used in copy plans which never require ordering
-        assert fileUriCollectPhase.orderBy() == null : "FileReadingCollector doesn't support order by";
-
-        String[] readers = fileUriCollectPhase.executionNodes().toArray(
-                new String[fileUriCollectPhase.executionNodes().size()]);
-        Arrays.sort(readers);
-        return ImmutableList.<CrateCollector>of(new FileReadingCollector(
-                    ValueSymbolVisitor.STRING.process(fileUriCollectPhase.targetUri()),
-                    context.topLevelInputs(),
-                    context.expressions(),
-                    downstream,
-                    fileUriCollectPhase.fileFormat(),
-                    fileUriCollectPhase.compression(),
-                    ImmutableMap.<String, FileInputFactory>of(),
-                    fileUriCollectPhase.sharedStorage(),
-                    jobCollectContext.keepAliveListener(),
-                    readers.length,
-                    Arrays.binarySearch(readers, clusterService.state().nodes().localNodeId())
-        ));
+        // this case actually never happens because the check is already done in the analyzer
+        throw CopyFromAnalyzedStatement.raiseInvalidType(targetUri.valueType());
     }
 }

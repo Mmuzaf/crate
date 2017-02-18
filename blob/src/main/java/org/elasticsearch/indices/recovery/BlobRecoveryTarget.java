@@ -21,8 +21,8 @@
 
 package org.elasticsearch.indices.recovery;
 
-import io.crate.blob.BlobWriteException;
 import io.crate.blob.exceptions.IllegalBlobRecoveryStateException;
+import io.crate.blob.v2.BlobIndicesService;
 import io.crate.blob.v2.BlobShard;
 import io.crate.common.Hex;
 import org.elasticsearch.common.bytes.BytesReference;
@@ -31,15 +31,17 @@ import org.elasticsearch.common.inject.Inject;
 import org.elasticsearch.common.settings.Settings;
 import org.elasticsearch.common.util.concurrent.ConcurrentCollections;
 import org.elasticsearch.common.util.concurrent.ConcurrentMapLong;
-import org.elasticsearch.index.shard.IndexShard;
 import org.elasticsearch.index.shard.IndexShardClosedException;
-import org.elasticsearch.indices.IndicesLifecycle;
-import org.elasticsearch.indices.IndicesService;
 import org.elasticsearch.threadpool.ThreadPool;
-import org.elasticsearch.transport.*;
+import org.elasticsearch.transport.TransportChannel;
+import org.elasticsearch.transport.TransportRequestHandler;
+import org.elasticsearch.transport.TransportResponse;
+import org.elasticsearch.transport.TransportService;
 
-import java.io.File;
 import java.io.FileOutputStream;
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.nio.file.StandardCopyOption;
 
 
 public class BlobRecoveryTarget extends AbstractComponent {
@@ -74,7 +76,7 @@ public class BlobRecoveryTarget extends AbstractComponent {
 
     private final ConcurrentMapLong<BlobRecoveryStatus> onGoingRecoveries = ConcurrentCollections.newConcurrentMapLong();
     private final RecoveryTarget indexRecoveryTarget;
-    private final IndicesService indicesService;
+    private final BlobIndicesService blobIndicesService;
 
     public static class Actions {
         public static final String FINALIZE_RECOVERY = "crate/blob/shard/recovery/finalize_recovery";
@@ -86,73 +88,51 @@ public class BlobRecoveryTarget extends AbstractComponent {
     }
 
     @Inject
-    public BlobRecoveryTarget(Settings settings, IndicesLifecycle indicesLifecycle, RecoveryTarget indexRecoveryTarget,
-            IndicesService indicesService, TransportService transportService) {
+    public BlobRecoveryTarget(Settings settings, RecoveryTarget indexRecoveryTarget,
+                              BlobIndicesService blobIndicesService, TransportService transportService) {
         super(settings);
         this.indexRecoveryTarget = indexRecoveryTarget;
-        this.indicesService = indicesService;
+        this.blobIndicesService = blobIndicesService;
 
-        transportService.registerHandler(Actions.START_RECOVERY, new StartRecoveryRequestHandler());
-        transportService.registerHandler(Actions.START_PREFIX, new StartPrefixSyncRequestHandler());
-        transportService.registerHandler(Actions.TRANSFER_CHUNK, new TransferChunkRequestHandler());
-        transportService.registerHandler(Actions.START_TRANSFER, new StartTransferRequestHandler());
-        transportService.registerHandler(Actions.DELETE_FILE, new DeleteFileRequestHandler());
-        transportService.registerHandler(Actions.FINALIZE_RECOVERY, new FinalizeRecoveryRequestHandler());
+        transportService.registerRequestHandler(Actions.START_RECOVERY, BlobStartRecoveryRequest.class, ThreadPool.Names.GENERIC, new StartRecoveryRequestHandler());
+        transportService.registerRequestHandler(Actions.START_PREFIX, BlobStartPrefixSyncRequest.class, ThreadPool.Names.GENERIC, new StartPrefixSyncRequestHandler());
+        transportService.registerRequestHandler(Actions.TRANSFER_CHUNK, BlobRecoveryChunkRequest.class, ThreadPool.Names.GENERIC, new TransferChunkRequestHandler());
+        transportService.registerRequestHandler(Actions.START_TRANSFER, BlobRecoveryStartTransferRequest.class, ThreadPool.Names.GENERIC, new StartTransferRequestHandler());
+        transportService.registerRequestHandler(Actions.DELETE_FILE, BlobRecoveryDeleteRequest.class, ThreadPool.Names.GENERIC, new DeleteFileRequestHandler());
+        transportService.registerRequestHandler(Actions.FINALIZE_RECOVERY, BlobFinalizeRecoveryRequest.class, ThreadPool.Names.GENERIC, new FinalizeRecoveryRequestHandler());
     }
 
-    abstract class BaseHandler<T extends TransportRequest> extends BaseTransportRequestHandler<T> {
-
-        @Override
-        public String executor() {
-            return ThreadPool.Names.GENERIC;
-        }
-    }
-
-    class StartRecoveryRequestHandler extends BaseHandler<BlobStartRecoveryRequest> {
-
-        @Override
-        public BlobStartRecoveryRequest newInstance() {
-            return new BlobStartRecoveryRequest();
-        }
-
+    class StartRecoveryRequestHandler extends TransportRequestHandler<BlobStartRecoveryRequest> {
         @Override
         public void messageReceived(BlobStartRecoveryRequest request, TransportChannel channel) throws Exception {
 
             logger.info("[{}] StartRecoveryRequestHandler start recovery with recoveryId {}",
                 request.shardId().getId(), request.recoveryId);
 
-            IndexShard indexShard = indicesService.indexServiceSafe(request.shardId().index().name())
-                                                  .shardSafe(request.shardId().id());
-            RecoveryStatus onGoingIndexRecovery = indexRecoveryTarget.recoveryStatus(request.recoveryId(), indexShard);
+            try (RecoveriesCollection.StatusRef statusSafe = indexRecoveryTarget.onGoingRecoveries.getStatusSafe(
+                request.recoveryId(), request.shardId())) {
+                RecoveryStatus onGoingIndexRecovery = statusSafe.status();
 
-            if (onGoingIndexRecovery.CancellableThreads().isCancelled()) {
-                throw new IndexShardClosedException(request.shardId());
+                if (onGoingIndexRecovery.CancellableThreads().isCancelled()) {
+                    throw new IndexShardClosedException(request.shardId());
+                }
+
+                BlobShard blobShard = blobIndicesService.blobShardSafe(onGoingIndexRecovery.shardId());
+                BlobRecoveryStatus status = new BlobRecoveryStatus(onGoingIndexRecovery, blobShard);
+                onGoingRecoveries.put(request.recoveryId(), status);
+                channel.sendResponse(TransportResponse.Empty.INSTANCE);
             }
-
-            BlobShard blobShard = indicesService.indexServiceSafe(
-                    onGoingIndexRecovery.shardId().getIndex()).shardInjectorSafe(
-                    onGoingIndexRecovery.shardId().id()).getInstance(BlobShard.class);
-
-            BlobRecoveryStatus status = new BlobRecoveryStatus(onGoingIndexRecovery, blobShard);
-            onGoingRecoveries.put(request.recoveryId(), status);
-            channel.sendResponse(TransportResponse.Empty.INSTANCE);
         }
     }
 
 
-    class TransferChunkRequestHandler extends BaseHandler<BlobRecoveryChunkRequest> {
-
-        @Override
-        public BlobRecoveryChunkRequest newInstance() {
-            return new BlobRecoveryChunkRequest();
-        }
-
+    class TransferChunkRequestHandler extends TransportRequestHandler<BlobRecoveryChunkRequest> {
         @Override
         public void messageReceived(BlobRecoveryChunkRequest request, TransportChannel channel) throws Exception {
 
             BlobRecoveryStatus onGoingRecovery = onGoingRecoveries.get(request.recoveryId());
             if (onGoingRecovery == null) {
-                 // shard is getting closed on us
+                // shard is getting closed on us
                 throw new IllegalBlobRecoveryStateException("Could not retrieve onGoingRecoveryStatus");
             }
 
@@ -160,7 +140,7 @@ public class BlobRecoveryTarget extends AbstractComponent {
             BlobShard shard = onGoingRecovery.blobShard;
             if (onGoingRecovery.canceled()) {
                 onGoingRecovery.sentCanceledToSource();
-                 throw new IndexShardClosedException(onGoingRecovery.shardId());
+                throw new IndexShardClosedException(onGoingRecovery.shardId());
             }
 
             if (transferStatus == null) {
@@ -177,23 +157,11 @@ public class BlobRecoveryTarget extends AbstractComponent {
 
             if (request.isLast()) {
                 transferStatus.outputStream().close();
-                File source = new File(shard.blobContainer().getBaseDirectory(),
-                    transferStatus.sourcePath()
-                );
-                File target = new File(shard.blobContainer().getBaseDirectory(),
-                    transferStatus.targetPath()
-                );
+                Path baseDirectory = shard.blobContainer().getBaseDirectory();
+                Path source = baseDirectory.resolve(transferStatus.sourcePath());
+                Path target = baseDirectory.resolve(transferStatus.targetPath());
 
-                if (target.exists()) {
-                    logger.info("target file {} exists already.", target.getName());
-                    // this might happen on bad timing while recovering/relocating.
-                    // noop
-                } else {
-                    if (!source.renameTo(target)) {
-                        throw new BlobWriteException(target.getName(), target.length(), null);
-                    }
-                }
-
+                Files.move(source, target, StandardCopyOption.ATOMIC_MOVE, StandardCopyOption.REPLACE_EXISTING);
                 onGoingRecovery.onGoingTransfers().remove(request.transferId());
             }
 
@@ -202,13 +170,7 @@ public class BlobRecoveryTarget extends AbstractComponent {
     }
 
 
-    class StartPrefixSyncRequestHandler extends BaseHandler<BlobStartPrefixSyncRequest> {
-
-        @Override
-        public BlobStartPrefixSyncRequest newInstance() {
-            return new BlobStartPrefixSyncRequest();
-        }
-
+    class StartPrefixSyncRequestHandler extends TransportRequestHandler<BlobStartPrefixSyncRequest> {
         @Override
         public void messageReceived(BlobStartPrefixSyncRequest request, TransportChannel channel) throws Exception {
             BlobRecoveryStatus status = onGoingRecoveries.get(request.recoveryId());
@@ -227,14 +189,7 @@ public class BlobRecoveryTarget extends AbstractComponent {
     }
 
 
-    private class StartTransferRequestHandler extends BaseHandler<BlobRecoveryStartTransferRequest> {
-
-
-        @Override
-        public BlobRecoveryStartTransferRequest newInstance() {
-            return new BlobRecoveryStartTransferRequest();
-        }
-
+    private class StartTransferRequestHandler extends TransportRequestHandler<BlobRecoveryStartTransferRequest> {
         @Override
         public void messageReceived(BlobRecoveryStartTransferRequest request, TransportChannel channel) throws Exception {
             BlobRecoveryStatus status = onGoingRecoveries.get(request.recoveryId());
@@ -249,9 +204,8 @@ public class BlobRecoveryTarget extends AbstractComponent {
 
             BlobShard shard = status.blobShard;
             String tmpPath = request.path() + "." + request.transferId();
-            FileOutputStream outputStream = new FileOutputStream(
-                new File(shard.blobContainer().getBaseDirectory(), tmpPath)
-            );
+            Path baseDirectory = shard.blobContainer().getBaseDirectory();
+            FileOutputStream outputStream = new FileOutputStream(baseDirectory.resolve(tmpPath).toFile());
 
             BytesReference content = request.content();
             if (!content.hasArray()) {
@@ -261,17 +215,12 @@ public class BlobRecoveryTarget extends AbstractComponent {
 
             if (request.size() == request.content().length()) {  // start request contains the whole file.
                 outputStream.close();
-                File source = new File(shard.blobContainer().getBaseDirectory(), tmpPath);
-                File target = new File(shard.blobContainer().getBaseDirectory(), request.path());
-                if (!target.exists()) {
-                    if (!source.renameTo(target)) {
-                        throw new IllegalBlobRecoveryStateException(
-                            "couldn't rename file to " + request.path()
-                        );
-                    }
-                }
+                Path source = baseDirectory.resolve(tmpPath);
+                Path target = baseDirectory.resolve(request.path());
+
+                Files.move(source, target, StandardCopyOption.REPLACE_EXISTING, StandardCopyOption.ATOMIC_MOVE);
             } else {
-                BlobRecoveryTransferStatus transferStatus= new BlobRecoveryTransferStatus(
+                BlobRecoveryTransferStatus transferStatus = new BlobRecoveryTransferStatus(
                     request.transferId(), outputStream, tmpPath, request.path()
                 );
                 status.onGoingTransfers().put(request.transferId(), transferStatus);
@@ -281,12 +230,7 @@ public class BlobRecoveryTarget extends AbstractComponent {
         }
     }
 
-    private class DeleteFileRequestHandler extends BaseHandler<BlobRecoveryDeleteRequest> {
-        @Override
-        public BlobRecoveryDeleteRequest newInstance() {
-            return new BlobRecoveryDeleteRequest();
-        }
-
+    private class DeleteFileRequestHandler extends TransportRequestHandler<BlobRecoveryDeleteRequest> {
         @Override
         public void messageReceived(BlobRecoveryDeleteRequest request, TransportChannel channel) throws Exception {
             BlobRecoveryStatus status = onGoingRecoveries.get(request.recoveryId());
@@ -300,13 +244,7 @@ public class BlobRecoveryTarget extends AbstractComponent {
         }
     }
 
-    private class FinalizeRecoveryRequestHandler extends BaseHandler<BlobFinalizeRecoveryRequest> {
-
-        @Override
-        public BlobFinalizeRecoveryRequest newInstance() {
-            return new BlobFinalizeRecoveryRequest();
-        }
-
+    private class FinalizeRecoveryRequestHandler extends TransportRequestHandler<BlobFinalizeRecoveryRequest> {
         @Override
         public void messageReceived(BlobFinalizeRecoveryRequest request, TransportChannel channel) throws Exception {
 

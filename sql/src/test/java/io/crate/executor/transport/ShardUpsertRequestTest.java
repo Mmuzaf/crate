@@ -22,17 +22,16 @@
 package io.crate.executor.transport;
 
 import io.crate.analyze.symbol.Literal;
-import io.crate.analyze.symbol.Reference;
 import io.crate.analyze.symbol.Symbol;
+import io.crate.metadata.Reference;
 import io.crate.metadata.ReferenceIdent;
-import io.crate.metadata.ReferenceInfo;
 import io.crate.metadata.RowGranularity;
 import io.crate.metadata.TableIdent;
 import io.crate.test.integration.CrateUnitTest;
 import io.crate.types.DataTypes;
 import org.apache.lucene.util.BytesRef;
-import org.elasticsearch.common.io.stream.BytesStreamInput;
 import org.elasticsearch.common.io.stream.BytesStreamOutput;
+import org.elasticsearch.common.io.stream.StreamInput;
 import org.elasticsearch.index.shard.ShardId;
 import org.junit.Test;
 
@@ -42,42 +41,44 @@ import static org.hamcrest.Matchers.equalTo;
 
 public class ShardUpsertRequestTest extends CrateUnitTest {
 
-    TableIdent charactersIdent = new TableIdent(null, "characters");
+    private static final TableIdent CHARACTERS_IDENTS = new TableIdent(null, "characters");
 
-    Reference idRef = new Reference(new ReferenceInfo(
-            new ReferenceIdent(charactersIdent, "id"), RowGranularity.DOC, DataTypes.INTEGER));
-    Reference nameRef = new Reference(new ReferenceInfo(
-            new ReferenceIdent(charactersIdent, "name"), RowGranularity.DOC, DataTypes.STRING));
+    private static final Reference ID_REF = new Reference(
+        new ReferenceIdent(CHARACTERS_IDENTS, "id"), RowGranularity.DOC, DataTypes.INTEGER);
+    private static final Reference NAME_REF = new Reference(
+        new ReferenceIdent(CHARACTERS_IDENTS, "name"), RowGranularity.DOC, DataTypes.STRING);
 
     @Test
     public void testStreaming() throws Exception {
         ShardId shardId = new ShardId("test", 1);
         String[] assignmentColumns = new String[]{"id", "name"};
         UUID jobId = UUID.randomUUID();
-        Reference[] missingAssignmentColumns = new Reference[]{idRef, nameRef};
-        ShardUpsertRequest request = new ShardUpsertRequest(
-                shardId,
-                assignmentColumns,
-                missingAssignmentColumns,
-                "42",
-                jobId);
-        request.validateGeneratedColumns(false);
+        Reference[] missingAssignmentColumns = new Reference[]{ID_REF, NAME_REF};
+        ShardUpsertRequest request = new ShardUpsertRequest.Builder(
+            false,
+            false,
+            assignmentColumns,
+            missingAssignmentColumns,
+            jobId,
+            false
+        ).newRequest(shardId, "42");
+        request.validateConstraints(false);
 
         request.add(123, new ShardUpsertRequest.Item(
-                "99",
-                null,
-                new Object[]{99, new BytesRef("Marvin")},
-                null));
+            "99",
+            null,
+            new Object[]{99, new BytesRef("Marvin")},
+            null));
         request.add(5, new ShardUpsertRequest.Item(
-                "42",
-                new Symbol[]{Literal.newLiteral(42), Literal.newLiteral("Deep Thought") },
-                null,
-                2L));
+            "42",
+            new Symbol[]{Literal.of(42), Literal.of("Deep Thought")},
+            null,
+            2L));
 
         BytesStreamOutput out = new BytesStreamOutput();
         request.writeTo(out);
 
-        BytesStreamInput in = new BytesStreamInput(out.bytes());
+        StreamInput in = StreamInput.wrap(out.bytes());
         ShardUpsertRequest request2 = new ShardUpsertRequest();
         request2.readFrom(in);
 

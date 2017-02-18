@@ -21,33 +21,20 @@
 
 package io.crate.integrationtests;
 
-import io.crate.action.sql.SQLAction;
-import io.crate.action.sql.SQLBaseRequest;
-import io.crate.action.sql.SQLRequestBuilder;
-import io.crate.action.sql.SQLResponse;
+import io.crate.action.sql.Option;
+import org.elasticsearch.test.ESIntegTestCase;
 import org.junit.Before;
-import org.junit.Rule;
 import org.junit.Test;
-import org.junit.rules.ExpectedException;
 
+import java.util.EnumSet;
+
+@ESIntegTestCase.ClusterScope(transportClientRatio = 0)
 public class OdbcIntegrationTest extends SQLTransportIntegrationTest {
-
-    @Rule
-    public ExpectedException expectedException = ExpectedException.none();
 
     private Setup setup = new Setup(sqlExecutor);
 
-    private SQLResponse execute(SQLRequestBuilder requestBuilder) {
-        response = client().execute(SQLAction.INSTANCE, requestBuilder.request()).actionGet();
-        return response;
-    }
-
-    private SQLRequestBuilder quotedRequest(String stmt) {
-        SQLRequestBuilder requestBuilder = new SQLRequestBuilder(client());
-        requestBuilder.stmt(stmt);
-        // Set Odbc flag
-        requestBuilder.addFlagsToRequestHeader(SQLBaseRequest.HEADER_FLAG_ALLOW_QUOTED_SUBSCRIPT);
-        return requestBuilder;
+    private void executeQuoted(String stmt) {
+        execute(stmt, null, createSession(null, EnumSet.of(Option.ALLOW_QUOTED_SUBSCRIPT)));
     }
 
     @Before
@@ -58,16 +45,16 @@ public class OdbcIntegrationTest extends SQLTransportIntegrationTest {
 
     @Test
     public void testSelectDynamicQuotedObjectLiteral() throws Exception {
-        execute(quotedRequest("select \"author['name']['first_name']\", \"author['name']['last_name']\" " +
-                "from ot"));
+        executeQuoted("select \"author['name']['first_name']\", \"author['name']['last_name']\" " +
+                      "from ot");
         assertEquals(1L, response.rowCount());
     }
 
     @Test
     public void testSelectDynamicQuotedObjectLiteralWithTableAlias() throws Exception {
-        execute(quotedRequest("select \"authors\".\"author['name']['first_name']\", " +
-                                    "\"authors\".\"author['name']['last_name']\" " +
-                                "from \"ot\" \"authors\""));
+        executeQuoted("select \"authors\".\"author['name']['first_name']\", " +
+                      "\"authors\".\"author['name']['last_name']\" " +
+                      "from \"ot\" \"authors\"");
         assertEquals(1L, response.rowCount());
     }
 }

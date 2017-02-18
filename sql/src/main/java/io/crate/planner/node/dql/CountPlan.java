@@ -21,31 +21,38 @@
 
 package io.crate.planner.node.dql;
 
-import io.crate.planner.PlanAndPlannedAnalyzedRelation;
+import io.crate.operation.projectors.TopN;
+import io.crate.planner.Plan;
 import io.crate.planner.PlanVisitor;
-import io.crate.planner.distribution.UpstreamPhase;
+import io.crate.planner.PositionalOrderBy;
+import io.crate.planner.ResultDescription;
+import io.crate.planner.distribution.DistributionInfo;
 import io.crate.planner.projection.Projection;
+import io.crate.types.DataType;
 
+import javax.annotation.Nullable;
+import java.util.Collection;
+import java.util.List;
 import java.util.UUID;
 
-public class CountPlan extends PlanAndPlannedAnalyzedRelation{
+public class CountPlan implements Plan, ResultDescription {
 
-    private final CountPhase countNode;
-    private final MergePhase mergeNode;
+    private final CountPhase countPhase;
+    private final MergePhase mergePhase;
     private final UUID id;
 
-    public CountPlan(CountPhase countNode, MergePhase mergeNode, UUID id) {
-        this.countNode = countNode;
-        this.mergeNode = mergeNode;
-        this.id = id;
+    public CountPlan(CountPhase countPhase, MergePhase mergePhase) {
+        this.countPhase = countPhase;
+        this.mergePhase = mergePhase;
+        this.id = mergePhase.jobId();
     }
 
-    public CountPhase countNode() {
-        return countNode;
+    public CountPhase countPhase() {
+        return countPhase;
     }
 
-    public MergePhase mergeNode() {
-        return mergeNode;
+    public MergePhase mergePhase() {
+        return mergePhase;
     }
 
     @Override
@@ -59,17 +66,57 @@ public class CountPlan extends PlanAndPlannedAnalyzedRelation{
     }
 
     @Override
-    public void addProjection(Projection projection) {
-        mergeNode.addProjection(projection);
+    public void addProjection(Projection projection,
+                              @Nullable Integer newLimit,
+                              @Nullable Integer newOffset,
+                              @Nullable Integer newNumOutputs,
+                              @Nullable PositionalOrderBy newOrderBy) {
+        mergePhase.addProjection(projection);
     }
 
     @Override
-    public boolean resultIsDistributed() {
-        return false;
+    public ResultDescription resultDescription() {
+        return this;
     }
 
     @Override
-    public UpstreamPhase resultPhase() {
-        return mergeNode;
+    public void setDistributionInfo(DistributionInfo distributionInfo) {
+        mergePhase.distributionInfo(distributionInfo);
+    }
+
+    @Override
+    public Collection<String> nodeIds() {
+        return mergePhase.nodeIds();
+    }
+
+    @Nullable
+    @Override
+    public PositionalOrderBy orderBy() {
+        return null;
+    }
+
+    @Override
+    public int limit() {
+        return TopN.NO_LIMIT;
+    }
+
+    @Override
+    public int maxRowsPerNode() {
+        return 1;
+    }
+
+    @Override
+    public int offset() {
+        return 0;
+    }
+
+    @Override
+    public int numOutputs() {
+        return mergePhase.outputTypes.size();
+    }
+
+    @Override
+    public List<DataType> streamOutputs() {
+        return mergePhase.outputTypes();
     }
 }

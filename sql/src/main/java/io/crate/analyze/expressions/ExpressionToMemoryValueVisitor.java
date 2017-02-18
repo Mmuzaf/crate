@@ -21,6 +21,7 @@
 
 package io.crate.analyze.expressions;
 
+import io.crate.data.Row;
 import io.crate.sql.tree.*;
 import org.elasticsearch.ElasticsearchParseException;
 import org.elasticsearch.common.unit.ByteSizeValue;
@@ -28,53 +29,67 @@ import org.elasticsearch.common.unit.MemorySizeValue;
 
 import java.util.Locale;
 
-public class ExpressionToMemoryValueVisitor extends AstVisitor<ByteSizeValue, Object[]> {
+public class ExpressionToMemoryValueVisitor {
 
-    private static final ExpressionToMemoryValueVisitor INSTANCE = new ExpressionToMemoryValueVisitor();
+    private static final Visitor VISITOR = new Visitor();
 
-    private ExpressionToMemoryValueVisitor() {}
-
-    public static ByteSizeValue convert(Node node, Object[] parameters) {
-        return INSTANCE.process(node, parameters);
+    private ExpressionToMemoryValueVisitor() {
     }
 
-    @Override
-    protected ByteSizeValue visitStringLiteral(StringLiteral node, Object[] context) {
-        try {
-            return MemorySizeValue.parseBytesSizeValueOrHeapRatio(node.getValue());
-        } catch (ElasticsearchParseException e) {
-            throw new IllegalArgumentException(
-                    String.format(Locale.ENGLISH, "Invalid byte size value '%s'", node.getValue()));
+    public static ByteSizeValue convert(Node node, Row parameters, String settingName) {
+        return VISITOR.process(node, new Context(settingName, parameters));
+    }
+
+    private static class Context {
+        private final String settingName;
+        private final Row params;
+
+        public Context(String settingName, Row params) {
+            this.settingName = settingName;
+            this.params = params;
         }
     }
 
-    @Override
-    protected ByteSizeValue visitLongLiteral(LongLiteral node, Object[] context) {
-        return new ByteSizeValue(node.getValue());
-    }
+    private static class Visitor extends AstVisitor<ByteSizeValue, Context> {
 
-    @Override
-    public ByteSizeValue visitParameterExpression(ParameterExpression node, Object[] context) {
-        ByteSizeValue value;
-        Object param = context[node.index()];
-        if (param instanceof Number) {
-            value = new ByteSizeValue(((Number) param).longValue());
-        } else if (param instanceof String) {
+        @Override
+        protected ByteSizeValue visitStringLiteral(StringLiteral node, Context context) {
             try {
-                value = MemorySizeValue.parseBytesSizeValueOrHeapRatio((String) param);
+                return MemorySizeValue.parseBytesSizeValueOrHeapRatio(node.getValue(), context.settingName);
             } catch (ElasticsearchParseException e) {
                 throw new IllegalArgumentException(
-                        String.format(Locale.ENGLISH, "Invalid byte size value '%s'", param));
+                    String.format(Locale.ENGLISH, "Invalid byte size value '%s'", node.getValue()));
             }
-        } else {
-            throw new IllegalArgumentException(
-                    String.format(Locale.ENGLISH, "Invalid byte size value %s", param));
         }
-        return value;
-    }
 
-    @Override
-    protected ByteSizeValue visitNode(Node node, Object[] context) {
-        throw new IllegalArgumentException(String.format(Locale.ENGLISH, "Invalid byte size value %s", node));
+        @Override
+        protected ByteSizeValue visitLongLiteral(LongLiteral node, Context context) {
+            return new ByteSizeValue(node.getValue());
+        }
+
+        @Override
+        public ByteSizeValue visitParameterExpression(ParameterExpression node, Context context) {
+            ByteSizeValue value;
+            Object param = context.params.get(node.index());
+            if (param instanceof Number) {
+                value = new ByteSizeValue(((Number) param).longValue());
+            } else if (param instanceof String) {
+                try {
+                    value = MemorySizeValue.parseBytesSizeValueOrHeapRatio((String) param, context.settingName);
+                } catch (ElasticsearchParseException e) {
+                    throw new IllegalArgumentException(
+                        String.format(Locale.ENGLISH, "Invalid byte size value '%s'", param));
+                }
+            } else {
+                throw new IllegalArgumentException(
+                    String.format(Locale.ENGLISH, "Invalid byte size value %s", param));
+            }
+            return value;
+        }
+
+        @Override
+        protected ByteSizeValue visitNode(Node node, Context context) {
+            throw new IllegalArgumentException(String.format(Locale.ENGLISH, "Invalid byte size value %s", node));
+        }
     }
 }

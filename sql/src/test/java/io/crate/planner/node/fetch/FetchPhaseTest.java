@@ -26,15 +26,14 @@ import com.google.common.collect.HashMultimap;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableSet;
 import com.google.common.collect.Multimap;
-import io.crate.analyze.symbol.Reference;
+import io.crate.metadata.Reference;
 import io.crate.metadata.ReferenceIdent;
-import io.crate.metadata.ReferenceInfo;
 import io.crate.metadata.RowGranularity;
 import io.crate.metadata.TableIdent;
 import io.crate.planner.node.ExecutionPhases;
 import io.crate.types.DataTypes;
-import org.elasticsearch.common.io.stream.BytesStreamInput;
 import org.elasticsearch.common.io.stream.BytesStreamOutput;
+import org.elasticsearch.common.io.stream.StreamInput;
 import org.junit.Test;
 
 import java.util.TreeMap;
@@ -59,24 +58,24 @@ public class FetchPhaseTest {
         tableIndices.put(new TableIdent(null, "i2"), "i2_s2");
 
         ReferenceIdent nameIdent = new ReferenceIdent(t1, "name");
-        Reference name = new Reference(new ReferenceInfo(nameIdent, RowGranularity.DOC, DataTypes.STRING));
+        Reference name = new Reference(nameIdent, RowGranularity.DOC, DataTypes.STRING);
 
         FetchPhase orig = new FetchPhase(
-                1,
-                ImmutableSet.<String>of("node1", "node2"),
-                bases,
-                tableIndices,
-                ImmutableList.of(name)
+            1,
+            ImmutableSet.<String>of("node1", "node2"),
+            bases,
+            tableIndices,
+            ImmutableList.of(name)
         );
 
         BytesStreamOutput out = new BytesStreamOutput();
         ExecutionPhases.toStream(out, orig);
 
-        BytesStreamInput in = new BytesStreamInput(out.bytes());
+        StreamInput in = StreamInput.wrap(out.bytes());
         FetchPhase streamed = (FetchPhase) ExecutionPhases.fromStream(in);
 
-        assertThat(orig.executionPhaseId(), is(streamed.executionPhaseId()));
-        assertThat(orig.executionNodes(), is(streamed.executionNodes()));
+        assertThat(orig.phaseId(), is(streamed.phaseId()));
+        assertThat(orig.nodeIds(), is(streamed.nodeIds()));
         assertThat(orig.fetchRefs(), is(streamed.fetchRefs()));
         assertThat(orig.bases(), is(streamed.bases()));
         assertThat(orig.tableIndices(), is(streamed.tableIndices()));

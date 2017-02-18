@@ -22,9 +22,6 @@
 package io.crate.operation.scalar.arithmetic;
 
 import com.google.common.collect.ImmutableSet;
-import io.crate.analyze.symbol.Function;
-import io.crate.analyze.symbol.Literal;
-import io.crate.analyze.symbol.Symbol;
 import io.crate.metadata.FunctionIdent;
 import io.crate.metadata.FunctionInfo;
 import io.crate.metadata.Scalar;
@@ -36,13 +33,13 @@ import io.crate.types.DataTypes;
 import java.util.Arrays;
 import java.util.Set;
 
-public abstract class LogFunction extends Scalar<Number,Number> {
+public abstract class LogFunction extends Scalar<Number, Number> {
 
     public static final String NAME = "log";
     private static final Set<DataType> ALLOWED_TYPES = ImmutableSet.<DataType>builder()
-            .addAll(DataTypes.NUMERIC_PRIMITIVE_TYPES)
-            .add(DataTypes.UNDEFINED)
-            .build();
+        .addAll(DataTypes.NUMERIC_PRIMITIVE_TYPES)
+        .add(DataTypes.UNDEFINED)
+        .build();
 
     protected final FunctionInfo info;
 
@@ -62,7 +59,7 @@ public abstract class LogFunction extends Scalar<Number,Number> {
      * @param caller used in the error message for clarification purposes.
      * @return the validated result
      */
-    protected Double validateResult(Double result, String caller) {
+    Double validateResult(Double result, String caller) {
         if (result == null) {
             return null;
         }
@@ -72,40 +69,43 @@ public abstract class LogFunction extends Scalar<Number,Number> {
         return result;
     }
 
-    public LogFunction(FunctionInfo info) {
+    LogFunction(FunctionInfo info) {
         this.info = info;
     }
 
     static class LogBaseFunction extends LogFunction {
 
-        protected static void registerLogBaseFunctions(ScalarFunctionModule module) {
+        static void registerLogBaseFunctions(ScalarFunctionModule module) {
             // log(valueType, baseType) : double
             for (DataType baseType : ALLOWED_TYPES) {
                 for (DataType valueType : ALLOWED_TYPES) {
                     FunctionInfo info = new FunctionInfo(
-                            new FunctionIdent(
-                                    NAME,
-                                    Arrays.asList(valueType, baseType)
-                            ),
-                            DataTypes.DOUBLE
+                        new FunctionIdent(
+                            NAME,
+                            Arrays.asList(valueType, baseType)
+                        ),
+                        DataTypes.DOUBLE
                     );
                     module.register(new LogBaseFunction(info));
                 }
             }
         }
 
-        public LogBaseFunction(FunctionInfo info) {
+        LogBaseFunction(FunctionInfo info) {
             super(info);
         }
 
         @Override
         public Number evaluate(Input<Number>... args) {
-            assert args.length == 2;
-            if (args[0].value() == null || args[1].value() == null) {
+            assert args.length == 2 : "number of args must be 2";
+            Number value1 = args[0].value();
+            Number value2 = args[1].value();
+
+            if (value1 == null || value2 == null) {
                 return null;
             }
-            double value = args[0].value().doubleValue();
-            double base = args[1].value().doubleValue();
+            double value = value1.doubleValue();
+            double base = value2.doubleValue();
             double baseResult = Math.log(base);
             if (baseResult == 0) {
                 throw new IllegalArgumentException("log(x, b): given 'base' would result in a division by zero.");
@@ -117,7 +117,7 @@ public abstract class LogFunction extends Scalar<Number,Number> {
 
     static class Log10Function extends LogFunction {
 
-        protected static void registerLog10Functions(ScalarFunctionModule module) {
+        static void registerLog10Functions(ScalarFunctionModule module) {
             // log(dataType) : double
             for (DataType dt : ALLOWED_TYPES) {
                 FunctionInfo info = new FunctionInfo(new FunctionIdent(NAME, Arrays.asList(dt)), DataTypes.DOUBLE);
@@ -125,18 +125,18 @@ public abstract class LogFunction extends Scalar<Number,Number> {
             }
         }
 
-        public Log10Function(FunctionInfo info) {
+        Log10Function(FunctionInfo info) {
             super(info);
         }
 
         @Override
         public Number evaluate(Input<Number>... args) {
-            assert args.length == 1;
-            if (args[0].value() == null) {
+            assert args.length == 1  : "number of args must be 1";
+            Number value = args[0].value();
+            if (value == null) {
                 return null;
             }
-            double value = args[0].value().doubleValue();
-            return evaluate(value);
+            return evaluate(value.doubleValue());
         }
 
         protected Double evaluate(double value) {
@@ -147,7 +147,7 @@ public abstract class LogFunction extends Scalar<Number,Number> {
 
     public static class LnFunction extends Log10Function {
 
-        protected static void registerLnFunctions(ScalarFunctionModule module) {
+        static void registerLnFunctions(ScalarFunctionModule module) {
             // ln(dataType) : double
             for (DataType dt : ALLOWED_TYPES) {
                 FunctionInfo info = new FunctionInfo(new FunctionIdent(LnFunction.NAME, Arrays.asList(dt)), DataTypes.DOUBLE);
@@ -157,7 +157,7 @@ public abstract class LogFunction extends Scalar<Number,Number> {
 
         public static final String NAME = "ln";
 
-        public LnFunction(FunctionInfo info) {
+        LnFunction(FunctionInfo info) {
             super(info);
         }
 

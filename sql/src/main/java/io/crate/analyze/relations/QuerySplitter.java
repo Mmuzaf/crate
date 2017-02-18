@@ -41,18 +41,44 @@ public class QuerySplitter {
 
     /**
      * <p>
-     * splits a (function) symbol into multiple symbols where each symbol has 2 or more relations.
+     * Splits a (function) symbol on <code>AND</code> based on relation occurrences of {@link io.crate.analyze.symbol.RelationColumn}
+     * into multiple symbols.
      * </p>
+     * <p>
+     * <b>This does not work with  {@link io.crate.analyze.symbol.Field}</b>
+     * <p>
+     * <h3>Examples:</h3>
+     * <p>
+     * Splittable down to single relation:
+     * <pre>
+     *     t1.x = 30 and ty2.y = 20
      *
-     * E.g.
+     *     Output:
+     *
+     *     set(t1) -> t1.x = 30
+     *     set(t2) -> t2.y = 20
+     * </pre>
+     * <p>
+     * <p>
+     * Pairs of two relations:
      * <pre>
      *     t1.x = t2.x and t2.x = t3.x
-     * </pre>
-     * Will be split into:
      *
+     *     Output:
+     *
+     *     set(t1, t2) -> t1.x = t2.x
+     *     set(t2, t3) -> t2.x = t3.x
+     * </pre>
+     * <p>
+     * <p>
+     * Mixed:
      * <pre>
-     *     t1.x = t2.x  ->  t1, t2
-     *     t2.x = t3.x  ->  t2, t3
+     *     t1.x = 30 and t2.x = t3.x
+     *
+     *     Output:
+     *
+     *     set(t1)      -> t1.x = 30
+     *     set(t2, t3)  -> t2.x = t3.x
      * </pre>
      */
     public static Map<Set<QualifiedName>, Symbol> split(Symbol symbol) {
@@ -68,7 +94,10 @@ public class QuerySplitter {
             if (!function.info().equals(AndOperator.INFO)) {
                 HashSet<QualifiedName> qualifiedNames = new HashSet<>();
                 ManyTableConsumer.QualifiedNameCounter.INSTANCE.process(function, qualifiedNames);
-                splits.put(qualifiedNames, function);
+                Symbol prevQuery = splits.put(qualifiedNames, function);
+                if (prevQuery != null) {
+                    splits.put(qualifiedNames, AndOperator.of(prevQuery, function));
+                }
                 return null;
             }
 

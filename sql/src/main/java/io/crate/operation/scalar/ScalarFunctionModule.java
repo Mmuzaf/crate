@@ -21,21 +21,19 @@
 
 package io.crate.operation.scalar;
 
-import io.crate.metadata.DynamicFunctionResolver;
+import io.crate.metadata.FunctionResolver;
 import io.crate.metadata.FunctionIdent;
 import io.crate.metadata.FunctionImplementation;
 import io.crate.operation.scalar.arithmetic.*;
-import io.crate.operation.scalar.cast.ToArrayFunction;
-import io.crate.operation.scalar.cast.ToGeoFunction;
-import io.crate.operation.scalar.cast.ToPrimitiveFunction;
+import io.crate.operation.scalar.cast.CastFunction;
 import io.crate.operation.scalar.cast.TryCastScalarFunction;
-import io.crate.operation.scalar.geo.DistanceFunction;
-import io.crate.operation.scalar.geo.IntersectsFunction;
-import io.crate.operation.scalar.geo.WithinFunction;
+import io.crate.operation.scalar.conditional.*;
+import io.crate.operation.scalar.geo.*;
 import io.crate.operation.scalar.regex.MatchesFunction;
 import io.crate.operation.scalar.regex.ReplaceFunction;
-import io.crate.operation.scalar.string.LowerFunction;
-import io.crate.operation.scalar.string.UpperFunction;
+import io.crate.operation.scalar.string.LengthFunction;
+import io.crate.operation.scalar.string.StringCaseFunction;
+import io.crate.operation.scalar.systeminformation.CurrentSchemaFunction;
 import io.crate.operation.scalar.timestamp.CurrentTimestampFunction;
 import org.elasticsearch.common.inject.AbstractModule;
 import org.elasticsearch.common.inject.multibindings.MapBinder;
@@ -46,20 +44,21 @@ import java.util.Map;
 public class ScalarFunctionModule extends AbstractModule {
 
     private Map<FunctionIdent, FunctionImplementation> functions = new HashMap<>();
-    private Map<String, DynamicFunctionResolver> resolver = new HashMap<>();
+    private Map<String, FunctionResolver> resolver = new HashMap<>();
     private MapBinder<FunctionIdent, FunctionImplementation> functionBinder;
-    private MapBinder<String, DynamicFunctionResolver> resolverBinder;
+    private MapBinder<String, FunctionResolver> resolverBinder;
 
     public void register(FunctionImplementation impl) {
         functions.put(impl.info().ident(), impl);
     }
 
-    public void register(String name, DynamicFunctionResolver dynamicFunctionResolver) {
-        resolver.put(name, dynamicFunctionResolver);
+    public void register(String name, FunctionResolver functionResolver) {
+        resolver.put(name, functionResolver);
     }
 
     @Override
     protected void configure() {
+        NegateFunction.register(this);
         CollectionCountFunction.register(this);
         CollectionAverageFunction.register(this);
         FormatFunction.register(this);
@@ -72,12 +71,16 @@ public class ScalarFunctionModule extends AbstractModule {
         MultiplyFunction.register(this);
         DivideFunction.register(this);
         ModulusFunction.register(this);
+        PowerFunction.register(this);
 
         DistanceFunction.register(this);
         WithinFunction.register(this);
         IntersectsFunction.register(this);
+        CoordinateFunction.register(this);
+        GeoHashFunction.register(this);
 
         SubscriptFunction.register(this);
+        SubscriptObjectFunction.register(this);
 
         RoundFunction.register(this);
         CeilFunction.register(this);
@@ -86,37 +89,45 @@ public class ScalarFunctionModule extends AbstractModule {
         FloorFunction.register(this);
         SquareRootFunction.register(this);
         LogFunction.register(this);
+        TrigonometricFunctions.register(this);
 
         DateTruncFunction.register(this);
         ExtractFunctions.register(this);
         CurrentTimestampFunction.register(this);
         DateFormatFunction.register(this);
-        ToPrimitiveFunction.register(this);
-        ToArrayFunction.register(this);
-        ToGeoFunction.register(this);
+        CastFunction.register(this);
         TryCastScalarFunction.register(this);
 
-        LowerFunction.register(this);
-        UpperFunction.register(this);
+        StringCaseFunction.register(this);
 
         ConcatFunction.register(this);
 
         LengthFunction.register(this);
 
+        MapFunction.register(this);
+        ArrayFunction.register(this);
         ArrayCatFunction.register(this);
         ArrayDifferenceFunction.register(this);
         ArrayUniqueFunction.register(this);
+
+        CoalesceFunction.register(this);
+        GreatestFunction.register(this);
+        LeastFunction.register(this);
+        NullIfFunction.register(this);
+        IfFunction.register(this);
+
+        CurrentSchemaFunction.register(this);
 
         // bind all registered functions and resolver
         // by doing it here instead of the register functions, plugins can also use the
         // register functions in their onModule(...) hooks
         functionBinder = MapBinder.newMapBinder(binder(), FunctionIdent.class, FunctionImplementation.class);
-        resolverBinder = MapBinder.newMapBinder(binder(), String.class, DynamicFunctionResolver.class);
+        resolverBinder = MapBinder.newMapBinder(binder(), String.class, FunctionResolver.class);
         for (Map.Entry<FunctionIdent, FunctionImplementation> entry : functions.entrySet()) {
             functionBinder.addBinding(entry.getKey()).toInstance(entry.getValue());
 
         }
-        for (Map.Entry<String, DynamicFunctionResolver> entry : resolver.entrySet()) {
+        for (Map.Entry<String, FunctionResolver> entry : resolver.entrySet()) {
             resolverBinder.addBinding(entry.getKey()).toInstance(entry.getValue());
         }
 

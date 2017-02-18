@@ -32,10 +32,11 @@ import java.util.Set;
 
 public class CollectorFieldsVisitor extends FieldsVisitor {
 
-    final Set<String> requiredFields;
+    private final Set<String> requiredFields;
     private boolean required = false;
 
     public CollectorFieldsVisitor(int size) {
+        super(false);
         requiredFields = new HashSet<>(size);
     }
 

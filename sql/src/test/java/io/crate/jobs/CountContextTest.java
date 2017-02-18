@@ -26,15 +26,14 @@ import com.google.common.util.concurrent.SettableFuture;
 import io.crate.analyze.WhereClause;
 import io.crate.exceptions.UnknownUpstreamFailure;
 import io.crate.operation.count.CountOperation;
+import io.crate.test.CauseMatcher;
 import io.crate.test.integration.CrateUnitTest;
 import io.crate.testing.CollectingRowReceiver;
-import io.crate.testing.TestingHelpers;
 import org.junit.Test;
 
 import java.io.IOException;
 import java.util.Collection;
 import java.util.Map;
-import java.util.concurrent.TimeUnit;
 
 import static org.mockito.Matchers.any;
 import static org.mockito.Matchers.anyMap;
@@ -54,9 +53,9 @@ public class CountContextTest extends CrateUnitTest {
         countContext.prepare();
         countContext.start();
         future.set(1L);
-        assertTrue(countContext.future().closed());
+        assertTrue(countContext.future.closed());
         // assure that there was no exception
-        countContext.future().get(500, TimeUnit.MILLISECONDS);
+        countContext.completionFuture().get();
 
         // on error
         future = SettableFuture.create();
@@ -66,9 +65,9 @@ public class CountContextTest extends CrateUnitTest {
         countContext.prepare();
         countContext.start();
         future.setException(new UnknownUpstreamFailure());
-        assertTrue(countContext.future().closed());
-        expectedException.expectCause(TestingHelpers.cause(UnknownUpstreamFailure.class));
-        countContext.future().get(500, TimeUnit.MILLISECONDS);
+        assertTrue(countContext.future.closed());
+        expectedException.expectCause(CauseMatcher.cause(UnknownUpstreamFailure.class));
+        countContext.completionFuture().get();
     }
 
     @Test
@@ -83,7 +82,7 @@ public class CountContextTest extends CrateUnitTest {
         countContext.kill(null);
 
         verify(future, times(1)).cancel(true);
-        assertTrue(countContext.future().closed());
+        assertTrue(countContext.future.closed());
     }
 
     private static class FakeCountOperation implements CountOperation {

@@ -9,7 +9,7 @@ EOF
     exit 1
 fi
 
-CRATE_CLASSPATH=$CRATE_HOME/lib/crate-app-@version@.jar:$CRATE_HOME/lib/*:$CRATE_HOME/lib/sigar/*
+CRATE_CLASSPATH=$CRATE_HOME/lib/crate-app-@version@.jar:$CRATE_HOME/lib/*
 
 if [ "x$CRATE_MIN_MEM" = "x" ]; then
     CRATE_MIN_MEM=256m
@@ -38,9 +38,6 @@ if [ "x$CRATE_DIRECT_SIZE" != "x" ]; then
     JAVA_OPTS="$JAVA_OPTS -XX:MaxDirectMemorySize=${CRATE_DIRECT_SIZE}"
 fi
 
-# reduce the per-thread stack size
-JAVA_OPTS="$JAVA_OPTS -Xss256k"
-
 # set to headless, just in case
 JAVA_OPTS="$JAVA_OPTS -Djava.awt.headless=true"
 
@@ -55,24 +52,32 @@ JAVA_OPTS="$JAVA_OPTS -XX:+UseConcMarkSweepGC"
 JAVA_OPTS="$JAVA_OPTS -XX:CMSInitiatingOccupancyFraction=75"
 JAVA_OPTS="$JAVA_OPTS -XX:+UseCMSInitiatingOccupancyOnly"
 
-# When running under Java 7
-# JAVA_OPTS="$JAVA_OPTS -XX:+UseCondCardMark"
-
 # GC logging options
 if [ "x$CRATE_USE_GC_LOGGING" != "x" ]; then
   JAVA_OPTS="$JAVA_OPTS -XX:+PrintGCDetails"
   JAVA_OPTS="$JAVA_OPTS -XX:+PrintGCTimeStamps"
+  JAVA_OPTS="$JAVA_OPTS -XX:+PrintGCDateStamps"
   JAVA_OPTS="$JAVA_OPTS -XX:+PrintClassHistogram"
   JAVA_OPTS="$JAVA_OPTS -XX:+PrintTenuringDistribution"
   JAVA_OPTS="$JAVA_OPTS -XX:+PrintGCApplicationStoppedTime"
-  JAVA_OPTS="$JAVA_OPTS -Xloggc:/var/log/crate/gc.log"
+
+  GC_LOG_DIR="$CRATE_HOME/logs";
+  JAVA_OPTS="$JAVA_OPTS -Xloggc:$GC_LOG_DIR/gc.log"
+
+  # Ensure that the directory for the log file exists: the JVM will not create it.
+  if [[ ! -d "$GC_LOG_DIR" ||  ! -x "$GC_LOG_DIR" ]]; then
+    cat >&2 << EOF
+Error: GC log directory '$GC_LOG_DIR' does not exist or is not accessible.
+EOF
+    exit 1
+  fi
 fi
 
-# Causes the JVM to dump its heap on OutOfMemory.
-JAVA_OPTS="$JAVA_OPTS -XX:+HeapDumpOnOutOfMemoryError"
-# The path to the heap dump location, note directory must exists and have enough
-# space for a full heap dump.
-#JAVA_OPTS="$JAVA_OPTS -XX:HeapDumpPath=$CRATE_HOME/logs/heapdump.hprof"
+# Disables explicit GC
+JAVA_OPTS="$JAVA_OPTS -XX:+DisableExplicitGC"
 
 # Ensure UTF-8 encoding by default (e.g. filenames)
 JAVA_OPTS="$JAVA_OPTS -Dfile.encoding=UTF-8"
+
+# Use our provided JNA always versus the system one
+JAVA_OPTS="$JAVA_OPTS -Djna.nosys=true"

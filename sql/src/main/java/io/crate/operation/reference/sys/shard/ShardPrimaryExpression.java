@@ -21,16 +21,13 @@
 
 package io.crate.operation.reference.sys.shard;
 
-import io.crate.metadata.SimpleObjectExpression;
-import io.crate.metadata.shard.ShardReferenceImplementation;
-import org.elasticsearch.common.inject.Inject;
+import io.crate.metadata.ReferenceImplementation;
 import org.elasticsearch.index.shard.IndexShard;
 
-public class ShardPrimaryExpression extends SimpleObjectExpression<Boolean> implements ShardReferenceImplementation<Boolean> {
+public class ShardPrimaryExpression implements ReferenceImplementation<Boolean> {
 
     private final IndexShard indexShard;
 
-    @Inject
     public ShardPrimaryExpression(IndexShard indexShard) {
         this.indexShard = indexShard;
     }

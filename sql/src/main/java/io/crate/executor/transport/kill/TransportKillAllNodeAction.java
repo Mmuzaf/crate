@@ -21,65 +21,32 @@
 
 package io.crate.executor.transport.kill;
 
-import io.crate.executor.transport.DefaultTransportResponseHandler;
-import io.crate.executor.transport.NodeAction;
-import io.crate.executor.transport.NodeActionRequestHandler;
-import io.crate.executor.transport.Transports;
+import com.google.common.util.concurrent.ListenableFuture;
 import io.crate.jobs.JobContextService;
-import org.elasticsearch.action.ActionListener;
+import org.elasticsearch.cluster.ClusterService;
 import org.elasticsearch.common.inject.Inject;
 import org.elasticsearch.common.inject.Singleton;
-import org.elasticsearch.threadpool.ThreadPool;
+import org.elasticsearch.common.settings.Settings;
 import org.elasticsearch.transport.TransportService;
 
 @Singleton
-public class TransportKillAllNodeAction implements NodeAction<KillAllRequest, KillResponse> {
-
-    private static final String TRANSPORT_ACTION = "crate/sql/kill_all";
-
-    private JobContextService jobContextService;
-    private Transports transports;
+public class TransportKillAllNodeAction extends TransportKillNodeAction<KillAllRequest> {
 
     @Inject
-    public TransportKillAllNodeAction(JobContextService jobContextService,
-                                      Transports transports,
-                                      TransportService transportService) {
-        this.jobContextService = jobContextService;
-        this.transports = transports;
-        transportService.registerHandler(TRANSPORT_ACTION, new NodeActionRequestHandler<KillAllRequest, KillResponse>(this) {
-            @Override
-            public KillAllRequest newInstance() {
-                return new KillAllRequest();
-            }
-        });
-    }
-
-    public void execute(String targetNode, KillAllRequest request, ActionListener<KillResponse> listener) {
-        transports.executeLocalOrWithTransport(this, targetNode, request, listener,
-                new DefaultTransportResponseHandler<KillResponse>(listener) {
-            @Override
-            public KillResponse newInstance() {
-                return new KillResponse(0);
-            }
-        });
+    public TransportKillAllNodeAction(Settings settings,
+                               JobContextService jobContextService,
+                               ClusterService clusterService,
+                               TransportService transportService) {
+        super("crate/sql/kill_all", settings, jobContextService, clusterService, transportService);
     }
 
     @Override
-    public String actionName() {
-        return TRANSPORT_ACTION;
+    protected ListenableFuture<Integer> doKill(KillAllRequest request) {
+        return jobContextService.killAll();
     }
 
     @Override
-    public String executorName() {
-        return ThreadPool.Names.MANAGEMENT;
-    }
-
-    @Override
-    public void nodeOperation(KillAllRequest request, ActionListener<KillResponse> listener) {
-        try {
-            listener.onResponse(new KillResponse(jobContextService.killAll()));
-        } catch (Throwable t) {
-            listener.onFailure(t);
-        }
+    public KillAllRequest call() throws Exception {
+        return new KillAllRequest();
     }
 }

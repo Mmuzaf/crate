@@ -21,21 +21,17 @@
 
 package io.crate.operation.reference.sys.check;
 
-import com.google.common.base.Supplier;
-import io.crate.operation.reference.sys.check.checks.SysCheck;
-import org.elasticsearch.common.inject.Inject;
 import org.elasticsearch.common.inject.Singleton;
 
 import java.util.HashSet;
 import java.util.Set;
 
 @Singleton
-public class SysChecker implements Supplier<Iterable<?>> {
+public class SysChecker<T extends SysCheck> {
 
-    private final Set<SysCheck> sysChecks;
+    private final Set<T> sysChecks;
 
-    @Inject
-    public SysChecker(Set<SysCheck> sysChecks) {
+    public SysChecker(Set<T> sysChecks) {
         assert idsAreUnique(sysChecks) : "IDs of SysChecks are not unique";
         this.sysChecks = sysChecks;
     }
@@ -46,13 +42,12 @@ public class SysChecker implements Supplier<Iterable<?>> {
         }
     }
 
-    @Override
-    public Iterable<?> get() {
+    public Iterable<T> checksGetter() {
         check();
         return sysChecks;
     }
 
-    private boolean idsAreUnique(Set<SysCheck> sysChecks) {
+    private boolean idsAreUnique(Set<T> sysChecks) {
         Set<Integer> ids = new HashSet<>();
         for (SysCheck sysCheck : sysChecks) {
             if (!ids.add(sysCheck.id())) {

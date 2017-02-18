@@ -26,23 +26,28 @@ import org.apache.log4j.Level;
 import org.apache.log4j.Logger;
 import org.apache.log4j.varia.NullAppender;
 import org.elasticsearch.client.Client;
-import org.elasticsearch.common.collect.Tuple;
-import org.elasticsearch.common.settings.ImmutableSettings;
+import org.elasticsearch.common.cli.Terminal;
+import org.elasticsearch.common.inject.CreationException;
+import org.elasticsearch.common.lease.Releasables;
 import org.elasticsearch.common.settings.Settings;
 import org.elasticsearch.env.Environment;
-import org.elasticsearch.node.Node;
-import org.elasticsearch.node.NodeBuilder;
-import org.elasticsearch.node.internal.InternalSettingsPreparer;
+import org.elasticsearch.node.internal.CrateSettingsPreparer;
 import org.junit.After;
 import org.junit.Rule;
 import org.junit.Test;
 import org.junit.rules.TemporaryFolder;
+import org.yaml.snakeyaml.Yaml;
 
 import java.io.File;
 import java.io.FileWriter;
 import java.io.IOException;
+import java.io.Writer;
+import java.net.URISyntaxException;
+import java.nio.file.Paths;
 
-import static org.junit.Assert.assertEquals;
+import static org.hamcrest.Matchers.instanceOf;
+import static org.hamcrest.core.Is.is;
+import static org.junit.Assert.*;
 
 
 public class NodeSettingsTest {
@@ -50,9 +55,30 @@ public class NodeSettingsTest {
     @Rule
     public TemporaryFolder tmp = new TemporaryFolder();
 
-    protected Node node;
+    protected CrateNode node;
     protected Client client;
     private boolean loggingConfigured = false;
+
+    private String createConfigPath() throws IOException {
+        File home = tmp.newFolder("crate");
+        File config = tmp.newFolder("crate", "config");
+
+        Settings pathSettings = Settings.builder()
+            .put("path.work", tmp.newFolder("crate", "work").getPath())
+            .put("path.data", tmp.newFolder("crate", "data").getPath())
+            .put("path.logs", tmp.newFolder("crate", "logs").getPath())
+            .build();
+
+        try (Writer writer = new FileWriter(Paths.get(config.getPath(), "crate.yml").toFile())) {
+            Yaml yaml = new Yaml();
+            yaml.dump(pathSettings.getAsMap(), writer);
+        }
+
+        return home.getPath();
+    }
+
+    public NodeSettingsTest() throws URISyntaxException {
+    }
 
     private void doSetup() throws IOException {
         // mute log4j warning by configuring a dummy logger
@@ -64,24 +90,21 @@ public class NodeSettingsTest {
             loggingConfigured = true;
         }
         tmp.create();
-        ImmutableSettings.Builder builder = ImmutableSettings.settingsBuilder()
+        Settings.Builder builder = Settings.settingsBuilder()
             .put("node.name", "node-test")
             .put("node.data", true)
-            .put("index.store.type", "memory")
+            .put("index.store.type", "default")
             .put("index.store.fs.memory.enabled", "true")
-            .put("gateway.type", "none")
-            .put("path.data", new File(tmp.getRoot(), "data"))
-            .put("path.work", new File(tmp.getRoot(), "work"))
-            .put("path.logs", new File(tmp.getRoot(), "logs"))
+            .put("gateway.type", "default")
+            .put("path.home", createConfigPath())
             .put("index.number_of_shards", "1")
             .put("index.number_of_replicas", "0")
             .put("cluster.routing.schedule", "50ms")
             .put("node.local", true);
-        Tuple<Settings,Environment> settingsEnvironmentTuple = InternalSettingsPreparer.prepareSettings(builder.build(), true);
-        node = NodeBuilder.nodeBuilder()
-            .settings(settingsEnvironmentTuple.v1())
-            .loadConfigSettings(false)
-            .build();
+
+        Terminal terminal = Terminal.DEFAULT;
+        Environment environment = CrateSettingsPreparer.prepareEnvironment(builder.build(), terminal);
+        node = new CrateNode(environment);
         node.start();
         client = node.client();
         client.admin().indices().prepareCreate("test").execute().actionGet();
@@ -94,11 +117,9 @@ public class NodeSettingsTest {
             client = null;
         }
         if (node != null) {
-            node.stop();
+            Releasables.close(node);
             node = null;
         }
-
-
     }
 
     /**
@@ -126,34 +147,23 @@ public class NodeSettingsTest {
 
     }
 
-    /**
-     * The location of the used config file might be defined with the system
-     * property crate.config. The configuration located at crate's default
-     * location will get ignored.
-     *
-     * @throws IOException
-     */
     @Test
-    public void testCustomYMLSettings() throws IOException {
-
-        File custom = new File("custom");
-        custom.mkdir();
-        File file = new File(custom, "custom.yml");
-        try (FileWriter customWriter = new FileWriter(file, false)) {
-            customWriter.write("cluster.name: custom");
-        }
-
-        System.setProperty("es.config", "custom/custom.yml");
-
+    public void testDefaultPaths() throws Exception {
         doSetup();
+        assertTrue(node.settings().get("path.data").endsWith("data"));
+        assertTrue(node.settings().get("path.logs").endsWith("logs"));
+    }
 
-        file.delete();
-        custom.delete();
-        System.clearProperty("es.config");
-
-        assertEquals("custom",
-            client.admin().cluster().prepareHealth().
-                setWaitForGreenStatus().execute().actionGet().getClusterName());
+    @Test
+    public void testCustomPaths() throws Exception {
+        File data1 = new File(tmp.getRoot(), "data1");
+        File data2 = new File(tmp.getRoot(), "data2");
+        System.setProperty("es.path.data", data1.getAbsolutePath() + "," + data2.getAbsolutePath());
+        doSetup();
+        String[] paths = node.settings().getAsArray("path.data");
+        assertTrue(paths[0].endsWith("data1"));
+        assertTrue(paths[1].endsWith("data2"));
+        System.clearProperty("es.path.data");
     }
 
     @Test
@@ -161,12 +171,32 @@ public class NodeSettingsTest {
         doSetup();
 
         assertEquals(
-                Constants.HTTP_PORT_RANGE,
-                node.settings().get("http.port")
+            Constants.HTTP_PORT_RANGE,
+            node.settings().get("http.port")
         );
         assertEquals(
-                Constants.TRANSPORT_PORT_RANGE,
-                node.settings().get("transport.tcp.port")
+            Constants.TRANSPORT_PORT_RANGE,
+            node.settings().get("transport.tcp.port")
         );
+    }
+
+    @Test
+    public void testInvalidUnicastHost() throws Exception {
+        Settings.Builder builder = Settings.settingsBuilder()
+            .put("discovery.zen.ping.multicast.enabled", false)
+            .put("discovery.zen.ping.unicast.hosts", "nonexistinghost:4300")
+            .put("path.home", createConfigPath());
+        Terminal terminal = Terminal.DEFAULT;
+        Environment environment = CrateSettingsPreparer.prepareEnvironment(builder.build(), terminal);
+
+        try {
+            node = new CrateNode(environment);
+            fail("Exception expected (failed to resolve address)");
+        } catch (Throwable t) {
+            assertThat(t, instanceOf(CreationException.class));
+            Throwable rootCause = ((CreationException) t).getErrorMessages().iterator().next().getCause();
+            assertThat(rootCause, instanceOf(IllegalArgumentException.class));
+            assertThat(rootCause.getMessage(), is("Failed to resolve address for [nonexistinghost:4300]"));
+        }
     }
 }

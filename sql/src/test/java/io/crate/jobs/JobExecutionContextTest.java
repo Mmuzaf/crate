@@ -21,72 +21,51 @@
 
 package io.crate.jobs;
 
-import com.google.common.base.Throwables;
 import io.crate.Streamer;
 import io.crate.action.job.SharedShardContexts;
 import io.crate.breaker.RamAccountingContext;
 import io.crate.metadata.Routing;
 import io.crate.metadata.RowGranularity;
-import io.crate.operation.PageDownstream;
 import io.crate.operation.collect.JobCollectContext;
 import io.crate.operation.collect.MapSideDataCollectOperation;
-import io.crate.operation.collect.StatsTables;
-import io.crate.operation.projectors.RowReceiver;
-import io.crate.planner.node.dql.CollectPhase;
+import io.crate.operation.collect.stats.JobsLogs;
+import io.crate.operation.merge.PassThroughPagingIterator;
+import io.crate.planner.node.dql.RoutedCollectPhase;
 import io.crate.test.integration.CrateUnitTest;
+import io.crate.testing.CollectingRowReceiver;
 import io.crate.types.IntegerType;
-import org.elasticsearch.threadpool.ThreadPool;
-import org.junit.After;
-import org.junit.Before;
-import org.junit.Rule;
+import org.elasticsearch.common.logging.Loggers;
 import org.junit.Test;
-import org.junit.rules.ExpectedException;
 import org.mockito.Mockito;
 
-import javax.annotation.Nonnull;
 import java.lang.reflect.Field;
+import java.util.Collections;
+import java.util.Optional;
 import java.util.UUID;
 import java.util.concurrent.ConcurrentMap;
-import java.util.concurrent.TimeUnit;
-import java.util.concurrent.atomic.AtomicBoolean;
-import java.util.concurrent.atomic.AtomicReference;
 
-import static org.elasticsearch.test.ElasticsearchTestCase.assertBusy;
 import static org.hamcrest.core.Is.is;
 import static org.mockito.Mockito.*;
 
 public class JobExecutionContextTest extends CrateUnitTest {
 
-    @Rule
-    public ExpectedException expectedException = ExpectedException.none();
-    private ThreadPool threadPool;
-
-
-    @Before
-    public void before() throws Exception {
-        threadPool = new org.elasticsearch.threadpool.ThreadPool("dummy");
-    }
-
-    @After
-    public void after() throws Exception {
-        threadPool.shutdown();
-        threadPool.awaitTermination(500, TimeUnit.MILLISECONDS);
-    }
+    private String coordinatorNode = "dummyNode";
 
     @Test
     public void testAddTheSameContextTwiceThrowsAnError() throws Exception {
         JobExecutionContext.Builder builder =
-                new JobExecutionContext.Builder(UUID.randomUUID(), threadPool, mock(StatsTables.class));
+            new JobExecutionContext.Builder(UUID.randomUUID(), coordinatorNode, Collections.emptyList(), mock(JobsLogs.class));
         builder.addSubContext(new AbstractExecutionSubContextTest.TestingExecutionSubContext());
         expectedException.expect(IllegalArgumentException.class);
         expectedException.expectMessage("ExecutionSubContext for 0 already added");
         builder.addSubContext(new AbstractExecutionSubContextTest.TestingExecutionSubContext());
+        builder.build();
     }
 
     @Test
     public void testKillPropagatesToSubContexts() throws Exception {
         JobExecutionContext.Builder builder =
-                new JobExecutionContext.Builder(UUID.randomUUID(), threadPool, mock(StatsTables.class));
+            new JobExecutionContext.Builder(UUID.randomUUID(), coordinatorNode, Collections.emptyList(), mock(JobsLogs.class));
 
 
         AbstractExecutionSubContextTest.TestingExecutionSubContext ctx1 = new AbstractExecutionSubContextTest.TestingExecutionSubContext(1);
@@ -105,54 +84,60 @@ public class JobExecutionContextTest extends CrateUnitTest {
 
     @Test
     public void testErrorMessageIsIncludedInStatsTableOnFailure() throws Exception {
-        StatsTables statsTables = mock(StatsTables.class);
+        JobsLogs jobsLogs = mock(JobsLogs.class);
         JobExecutionContext.Builder builder =
-                new JobExecutionContext.Builder(UUID.randomUUID(), threadPool, statsTables);
+            new JobExecutionContext.Builder(UUID.randomUUID(), coordinatorNode, Collections.emptyList(), jobsLogs);
 
-        SubExecutionContextFuture future = new SubExecutionContextFuture();
-        ExecutionSubContext executionSubContext = mock(ExecutionSubContext.class);
-        when(executionSubContext.future()).thenReturn(future);
+        ExecutionSubContext executionSubContext = new AbstractExecutionSubContext(0, logger) {
+            @Override
+            public String name() {
+                return "dummy";
+            }
+        };
         builder.addSubContext(executionSubContext);
         builder.build();
 
-        future.close(new IllegalStateException("dummy"));
-
-        verify(statsTables).operationFinished(anyInt(), eq("dummy"), anyLong());
+        executionSubContext.kill(new IllegalStateException("dummy"));
+        verify(jobsLogs).operationFinished(anyInt(), any(UUID.class), eq("dummy"), anyLong());
     }
 
     @Test
     public void testFailureClosesAllSubContexts() throws Exception {
         String localNodeId = "localNodeId";
-        CollectPhase collectPhase = Mockito.mock(CollectPhase.class);
+        RoutedCollectPhase collectPhase = Mockito.mock(RoutedCollectPhase.class);
         Routing routing = Mockito.mock(Routing.class);
         when(routing.containsShards(localNodeId)).thenReturn(false);
         when(collectPhase.routing()).thenReturn(routing);
         when(collectPhase.maxRowGranularity()).thenReturn(RowGranularity.DOC);
 
         JobExecutionContext.Builder builder =
-                new JobExecutionContext.Builder(UUID.randomUUID(), threadPool, mock(StatsTables.class));
+            new JobExecutionContext.Builder(UUID.randomUUID(), coordinatorNode, Collections.emptyList(), mock(JobsLogs.class));
 
+        CollectingRowReceiver rowReceiver = new CollectingRowReceiver();
         JobCollectContext jobCollectContext = new JobCollectContext(
-                collectPhase,
-                mock(MapSideDataCollectOperation.class),
-                localNodeId,
-                mock(RamAccountingContext.class),
-                mock(RowReceiver.class),
-                mock(SharedShardContexts.class));
+            collectPhase,
+            mock(MapSideDataCollectOperation.class),
+            localNodeId,
+            mock(RamAccountingContext.class),
+            rowReceiver,
+            mock(SharedShardContexts.class));
         PageDownstreamContext pageDownstreamContext = spy(new PageDownstreamContext(
-                2, "dummy",
-                mock(PageDownstream.class),
-                new Streamer[]{IntegerType.INSTANCE.streamer()},
-                mock(RamAccountingContext.class),
-                1,
-                null));
+            Loggers.getLogger(PageDownstreamContext.class),
+            "n1",
+            2, "dummy",
+            Optional.empty(),
+            new CollectingRowReceiver(),
+            PassThroughPagingIterator.oneShot(),
+            new Streamer[]{IntegerType.INSTANCE.streamer()},
+            mock(RamAccountingContext.class),
+            1));
 
         builder.addSubContext(jobCollectContext);
         builder.addSubContext(pageDownstreamContext);
         JobExecutionContext jobExecutionContext = builder.build();
 
         Exception failure = new Exception("failure!");
-        jobCollectContext.closeDueToFailure(failure);
+        jobCollectContext.close(failure);
         // other contexts must be killed with same failure
         verify(pageDownstreamContext, times(1)).innerKill(failure);
 
@@ -161,109 +146,5 @@ public class JobExecutionContextTest extends CrateUnitTest {
         int size = ((ConcurrentMap<Integer, ExecutionSubContext>) subContexts.get(jobExecutionContext)).size();
 
         assertThat(size, is(0));
-    }
-
-    @Test
-    public void testParallelKillReturnsJoined() throws Exception {
-        final Field subContexts = JobExecutionContext.class.getDeclaredField("subContexts");
-        subContexts.setAccessible(true);
-
-        JobExecutionContext.Builder builder =
-                new JobExecutionContext.Builder(UUID.randomUUID(), threadPool, mock(StatsTables.class));
-        SlowKillExecutionSubContext slowKillExecutionSubContext = new SlowKillExecutionSubContext();
-        builder.addSubContext(slowKillExecutionSubContext);
-        final JobExecutionContext jobExecutionContext = builder.build();
-        try {
-            jobExecutionContext.start();
-        } catch (Throwable throwable) {
-            fail();
-        }
-        Thread killThread = new Thread(new Runnable() {
-            @Override
-            public void run() {
-                jobExecutionContext.kill();
-            }
-        });
-        killThread.start();
-
-        // wait until kill is started
-        final Field closed = JobExecutionContext.class.getDeclaredField("closed");
-        closed.setAccessible(true);
-        assertBusy(new Runnable() {
-            @Override
-            public void run() {
-                try {
-                    assertThat(((AtomicBoolean) closed.get(jobExecutionContext)).get(), is(true));
-                } catch (Throwable t) {
-                    throw Throwables.propagate(t);
-                }
-            }
-        }, 100, TimeUnit.MILLISECONDS);
-
-
-        // call kill again, because the first kill is still in progress nothing is done here, but this kill should
-        // not return before every subContext is killed
-        jobExecutionContext.kill();
-        int size = ((ConcurrentMap<Integer, ExecutionSubContext>) subContexts.get(jobExecutionContext)).size();
-        assertThat(size, is(0));
-
-        killThread.join(500);
-    }
-
-    private static class SlowKillExecutionSubContext extends AbstractExecutionSubContext {
-
-
-        public SlowKillExecutionSubContext() {
-            super(1);
-        }
-
-        @Override
-        public void innerKill(@Nonnull Throwable throwable) {
-            try {
-                Thread.sleep(200);
-            } catch (InterruptedException e) {
-                throw Throwables.propagate(e);
-            }
-        }
-
-        @Override
-        public String name() {
-            return "SlowKilLExecutionSubContext";
-        }
-    }
-
-    private static class KeepAliveSubContext extends AbstractExecutionSubContext {
-
-        final AtomicReference<SubContextMode> subContextMode = new AtomicReference<>(SubContextMode.PASSIVE);
-
-        protected KeepAliveSubContext() {
-            super(0);
-        }
-
-        @Override
-        public String name() {
-            return "keep-alive";
-        }
-
-        @Override
-        public SubContextMode subContextMode() {
-            return subContextMode.get();
-        }
-    }
-
-    @Test
-    public void testExternalKeepAlive() throws Exception {
-        JobExecutionContext.Builder builder =
-                new JobExecutionContext.Builder(UUID.randomUUID(), threadPool, mock(StatsTables.class));
-        KeepAliveSubContext subContext = new KeepAliveSubContext();
-        builder.addSubContext(subContext);
-        JobExecutionContext executionContext = spy(builder.build());
-        executionContext.externalKeepAlive();
-        verify(executionContext, times(1)).keepAlive();
-
-        subContext.subContextMode.set(ExecutionSubContext.SubContextMode.ACTIVE);
-        executionContext.externalKeepAlive();
-        // no further call done
-        verify(executionContext, times(1)).keepAlive();
     }
 }

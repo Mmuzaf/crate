@@ -21,51 +21,39 @@
 
 package io.crate.jobs;
 
-import com.google.common.util.concurrent.SettableFuture;
-import io.crate.executor.TaskResult;
-import io.crate.operation.projectors.FlatProjectorChain;
 import org.elasticsearch.action.ActionListener;
 import org.elasticsearch.action.ActionRequest;
 import org.elasticsearch.action.support.TransportAction;
+import org.elasticsearch.common.logging.ESLogger;
+import org.elasticsearch.common.logging.Loggers;
 
 import javax.annotation.Nonnull;
 import javax.annotation.Nullable;
 import java.util.List;
-import java.util.concurrent.Future;
+import java.util.concurrent.CompletableFuture;
 
 public class ESJobContext extends AbstractExecutionSubContext {
+
+    private static final ESLogger LOGGER = Loggers.getLogger(ESJobContext.class);
 
     private final List<? extends ActionListener> listeners;
     private String operationName;
     private final List<? extends ActionRequest> requests;
-    private final List<SettableFuture<TaskResult>> resultFutures;
+    private final List<CompletableFuture<Long>> resultFutures;
     private final TransportAction transportAction;
-
-
-    @Nullable
-    private final FlatProjectorChain projectorChain;
 
     public ESJobContext(int id,
                         String operationName,
                         List<? extends ActionRequest> requests,
                         List<? extends ActionListener> listeners,
-                        List<SettableFuture<TaskResult>> resultFutures,
-                        TransportAction transportAction,
-                        @Nullable FlatProjectorChain projectorChain) {
-        super(id);
+                        List<CompletableFuture<Long>> resultFutures,
+                        TransportAction transportAction) {
+        super(id, LOGGER);
         this.operationName = operationName;
         this.requests = requests;
         this.listeners = listeners;
         this.resultFutures = resultFutures;
         this.transportAction = transportAction;
-        this.projectorChain = projectorChain;
-    }
-
-    @Override
-    protected void innerPrepare() {
-        if (projectorChain != null) {
-            projectorChain.prepare(this);
-        }
     }
 
     @Override
@@ -77,7 +65,7 @@ public class ESJobContext extends AbstractExecutionSubContext {
 
     @Override
     protected void innerKill(@Nonnull Throwable t) {
-        for (Future<?> resultFuture : resultFutures) {
+        for (CompletableFuture<Long> resultFuture : resultFutures) {
             resultFuture.cancel(true);
         }
     }
@@ -85,9 +73,9 @@ public class ESJobContext extends AbstractExecutionSubContext {
     @Override
     protected void innerClose(@Nullable Throwable t) {
         if (t != null) {
-            for (SettableFuture<TaskResult> resultFuture : resultFutures) {
+            for (CompletableFuture<Long> resultFuture : resultFutures) {
                 if (!resultFuture.isDone()) {
-                    resultFuture.setException(t);
+                    resultFuture.completeExceptionally(t);
                 }
             }
         }
@@ -102,13 +90,14 @@ public class ESJobContext extends AbstractExecutionSubContext {
         private final ActionListener listener;
         private final ESJobContext context;
 
-        public InternalActionListener(ActionListener listener, ESJobContext context) {
+        InternalActionListener(ActionListener listener, ESJobContext context) {
             this.listener = listener;
             this.context = context;
         }
 
         @Override
         public void onResponse(Object o) {
+            //noinspection unchecked
             listener.onResponse(o);
             context.close(null);
         }

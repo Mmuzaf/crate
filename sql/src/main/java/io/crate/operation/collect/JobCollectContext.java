@@ -21,32 +21,32 @@
 
 package io.crate.operation.collect;
 
-import com.carrotsearch.hppc.IntObjectOpenHashMap;
+import com.carrotsearch.hppc.IntObjectHashMap;
 import com.carrotsearch.hppc.cursors.ObjectCursor;
 import com.google.common.annotations.VisibleForTesting;
-import com.google.common.util.concurrent.FutureCallback;
-import com.google.common.util.concurrent.Futures;
-import com.google.common.util.concurrent.MoreExecutors;
 import io.crate.action.job.SharedShardContexts;
-import io.crate.action.sql.query.CrateSearchContext;
 import io.crate.breaker.RamAccountingContext;
 import io.crate.jobs.AbstractExecutionSubContext;
-import io.crate.jobs.ExecutionState;
-import io.crate.jobs.KeepAliveListener;
 import io.crate.metadata.RowGranularity;
-import io.crate.operation.projectors.ListenableRowReceiver;
+import io.crate.operation.projectors.RepeatHandle;
 import io.crate.operation.projectors.RowReceiver;
-import io.crate.operation.projectors.RowReceivers;
 import io.crate.planner.node.dql.CollectPhase;
+import io.crate.planner.node.dql.RoutedCollectPhase;
 import org.elasticsearch.common.StopWatch;
+import org.elasticsearch.common.logging.ESLogger;
+import org.elasticsearch.common.logging.Loggers;
+import org.elasticsearch.index.engine.Engine;
 import org.elasticsearch.threadpool.ThreadPool;
 
 import javax.annotation.Nonnull;
 import javax.annotation.Nullable;
+import java.util.Arrays;
 import java.util.Collection;
 import java.util.Locale;
 
-public class JobCollectContext extends AbstractExecutionSubContext implements ExecutionState {
+public class JobCollectContext extends AbstractExecutionSubContext {
+
+    private static final ESLogger LOGGER = Loggers.getLogger(JobCollectContext.class);
 
     private final CollectPhase collectPhase;
     private final MapSideDataCollectOperation collectOperation;
@@ -54,9 +54,8 @@ public class JobCollectContext extends AbstractExecutionSubContext implements Ex
     private final RowReceiver rowReceiver;
     private final SharedShardContexts sharedShardContexts;
 
-    private final IntObjectOpenHashMap<CrateSearchContext> searchContexts = new IntObjectOpenHashMap<>();
+    private final IntObjectHashMap<Engine.Searcher> searchers = new IntObjectHashMap<>();
     private final Object subContextLock = new Object();
-    private final ListenableRowReceiver listenableRowReceiver;
     private final String threadPoolName;
 
     private Collection<CrateCollector> collectors;
@@ -67,52 +66,36 @@ public class JobCollectContext extends AbstractExecutionSubContext implements Ex
                              RamAccountingContext queryPhaseRamAccountingContext,
                              final RowReceiver rowReceiver,
                              SharedShardContexts sharedShardContexts) {
-        super(collectPhase.executionPhaseId());
+        super(collectPhase.phaseId(), LOGGER);
         this.collectPhase = collectPhase;
         this.collectOperation = collectOperation;
         this.queryPhaseRamAccountingContext = queryPhaseRamAccountingContext;
         this.sharedShardContexts = sharedShardContexts;
-
-        listenableRowReceiver = RowReceivers.listenableRowReceiver(rowReceiver);
-        Futures.addCallback(listenableRowReceiver.finishFuture(), new FutureCallback<Void>() {
-            @Override
-            public void onSuccess(@Nullable Void result) {
-                close();
-            }
-
-            @Override
-            public void onFailure(@Nonnull Throwable t) {
-                closeDueToFailure(t);
-            }
-        });
-        this.rowReceiver = listenableRowReceiver;
+        this.rowReceiver = rowReceiver;
+        rowReceiver.completionFuture().whenComplete((result, ex) -> close(ex));
         this.threadPoolName = threadPoolName(collectPhase, localNodeId);
     }
 
-    public void addSearchContext(int jobSearchContextId, CrateSearchContext searchContext) {
+    public void addSearcher(int searcherId, Engine.Searcher searcher) {
         if (future.closed()) {
             // if this is closed and addContext is called this means the context got killed.
-            searchContext.close();
+            searcher.close();
             return;
         }
 
         synchronized (subContextLock) {
-            CrateSearchContext replacedContext = searchContexts.put(jobSearchContextId, searchContext);
-            if (replacedContext != null) {
-                replacedContext.close();
-                searchContext.close();
+            Engine.Searcher replacedSearcher = searchers.put(searcherId, searcher);
+            if (replacedSearcher != null) {
+                replacedSearcher.close();
+                searcher.close();
                 throw new IllegalArgumentException(String.format(Locale.ENGLISH,
-                        "ShardCollectContext for %d already added", jobSearchContextId));
+                    "ShardCollectContext for %d already added", searcherId));
             }
         }
     }
 
-    public void closeDueToFailure(Throwable throwable) {
-        close(throwable);
-    }
-
     @Override
-    protected void cleanup() {
+    public void cleanup() {
         closeSearchContexts();
         queryPhaseRamAccountingContext.close();
     }
@@ -124,10 +107,10 @@ public class JobCollectContext extends AbstractExecutionSubContext implements Ex
 
     private void closeSearchContexts() {
         synchronized (subContextLock) {
-            for (ObjectCursor<CrateSearchContext> cursor : searchContexts.values()) {
+            for (ObjectCursor<Engine.Searcher> cursor : searchers.values()) {
                 cursor.value.close();
             }
-            searchContexts.clear();
+            searchers.clear();
         }
     }
 
@@ -150,23 +133,25 @@ public class JobCollectContext extends AbstractExecutionSubContext implements Ex
     @Override
     public String toString() {
         return "JobCollectContext{" +
-                "searchContexts=" + searchContexts +
-                ", closed=" + future.closed() +
-                '}';
+               "id=" + id +
+               ", sharedContexts=" + sharedShardContexts +
+               ", rowReceiver=" + rowReceiver +
+               ", searchContexts=" + Arrays.toString(searchers.keys) +
+               ", closed=" + future.closed() +
+               '}';
     }
 
     @Override
-    protected void innerPrepare() {
+    public void innerPrepare() throws Exception {
         collectors = collectOperation.createCollectors(collectPhase, rowReceiver, this);
-
     }
 
     @Override
     protected void innerStart() {
         if (collectors.isEmpty()) {
-            rowReceiver.finish();
+            rowReceiver.finish(RepeatHandle.UNSUPPORTED);
         } else {
-            if (LOGGER.isTraceEnabled()) {
+            if (logger.isTraceEnabled()) {
                 measureCollectTime();
             }
             collectOperation.launchCollectors(collectors, threadPoolName);
@@ -174,52 +159,45 @@ public class JobCollectContext extends AbstractExecutionSubContext implements Ex
     }
 
     private void measureCollectTime() {
-        final StopWatch stopWatch = new StopWatch(collectPhase.executionPhaseId() + ": " + collectPhase.name());
+        final StopWatch stopWatch = new StopWatch(collectPhase.phaseId() + ": " + collectPhase.name());
         stopWatch.start("starting collectors");
-        listenableRowReceiver.finishFuture().addListener(new Runnable() {
-            @Override
-            public void run() {
-                stopWatch.stop();
-                LOGGER.trace("Collectors finished: {}", stopWatch.shortSummary());
-            }
-        }, MoreExecutors.directExecutor());
+        rowReceiver.completionFuture().whenComplete((result, ex) -> {
+            stopWatch.stop();
+            logger.trace("Collectors finished: {}", stopWatch.shortSummary());
+        });
     }
 
     public RamAccountingContext queryPhaseRamAccountingContext() {
         return queryPhaseRamAccountingContext;
     }
 
-    public KeepAliveListener keepAliveListener() {
-        return keepAliveListener;
-    }
-
     public SharedShardContexts sharedShardContexts() {
         return sharedShardContexts;
     }
 
-
-    /**
-     * active by default, because as long its operation is running
-     * it is keeping the local execution context alive itself
-     * and does not need external keep alives.
-     */
-    @Override
-    public SubContextMode subContextMode() {
-        return SubContextMode.ACTIVE;
-    }
-
     @VisibleForTesting
-    static String threadPoolName(CollectPhase collectPhase, String localNodeId) {
-        if (collectPhase.maxRowGranularity() == RowGranularity.DOC
-            && collectPhase.routing().containsShards(localNodeId)) {
-            // DOC table collectors
-            return ThreadPool.Names.SEARCH;
-        } else if (collectPhase.maxRowGranularity() == RowGranularity.NODE
-                || collectPhase.maxRowGranularity() == RowGranularity.SHARD) {
-            // Node or Shard system table collector
-            return ThreadPool.Names.MANAGEMENT;
+    static String threadPoolName(CollectPhase phase, String localNodeId) {
+        if (phase instanceof RoutedCollectPhase) {
+            RoutedCollectPhase collectPhase = (RoutedCollectPhase) phase;
+            if (collectPhase.maxRowGranularity() == RowGranularity.DOC
+                && collectPhase.routing().containsShards(localNodeId)) {
+                // DOC table collectors
+                return ThreadPool.Names.SEARCH;
+            } else if (collectPhase.maxRowGranularity() == RowGranularity.NODE
+                       || collectPhase.maxRowGranularity() == RowGranularity.SHARD) {
+                // Node or Shard system table collector
+                return ThreadPool.Names.MANAGEMENT;
+            }
         }
+
         // Anything else like INFORMATION_SCHEMA tables or sys.cluster table collector
         return ThreadPool.Names.PERCOLATE;
     }
+
+    @VisibleForTesting
+    public Collection<CrateCollector> collectors() {
+        return collectors;
+    }
+
+
 }

@@ -23,9 +23,6 @@
 package io.crate.executor.transport;
 
 import com.google.common.annotations.VisibleForTesting;
-import com.google.common.util.concurrent.ListenableFuture;
-import com.google.common.util.concurrent.MoreExecutors;
-import com.google.common.util.concurrent.SettableFuture;
 import io.crate.analyze.CreateRepositoryAnalyzedStatement;
 import io.crate.analyze.DropRepositoryAnalyzedStatement;
 import io.crate.exceptions.Exceptions;
@@ -33,8 +30,10 @@ import io.crate.exceptions.RepositoryUnknownException;
 import org.elasticsearch.action.ActionListener;
 import org.elasticsearch.action.admin.cluster.repositories.delete.DeleteRepositoryRequest;
 import org.elasticsearch.action.admin.cluster.repositories.delete.DeleteRepositoryResponse;
+import org.elasticsearch.action.admin.cluster.repositories.delete.TransportDeleteRepositoryAction;
 import org.elasticsearch.action.admin.cluster.repositories.put.PutRepositoryRequest;
 import org.elasticsearch.action.admin.cluster.repositories.put.PutRepositoryResponse;
+import org.elasticsearch.action.admin.cluster.repositories.put.TransportPutRepositoryAction;
 import org.elasticsearch.cluster.ClusterService;
 import org.elasticsearch.cluster.metadata.RepositoriesMetaData;
 import org.elasticsearch.cluster.metadata.RepositoryMetaData;
@@ -46,6 +45,7 @@ import org.elasticsearch.common.logging.Loggers;
 import org.elasticsearch.repositories.RepositoryException;
 
 import javax.annotation.Nullable;
+import java.util.concurrent.CompletableFuture;
 
 @Singleton
 public class RepositoryService {
@@ -53,13 +53,16 @@ public class RepositoryService {
     private static final ESLogger LOGGER = Loggers.getLogger(RepositoryService.class);
 
     private final ClusterService clusterService;
-    private final TransportActionProvider transportActionProvider;
+    private final TransportDeleteRepositoryAction deleteRepositoryAction;
+    private final TransportPutRepositoryAction putRepositoryAction;
 
     @Inject
     public RepositoryService(ClusterService clusterService,
-                             TransportActionProvider transportActionProvider) {
+                             TransportDeleteRepositoryAction deleteRepositoryAction,
+                             TransportPutRepositoryAction putRepositoryAction) {
         this.clusterService = clusterService;
-        this.transportActionProvider = transportActionProvider;
+        this.deleteRepositoryAction = deleteRepositoryAction;
+        this.putRepositoryAction = putRepositoryAction;
     }
 
     @Nullable
@@ -77,40 +80,40 @@ public class RepositoryService {
         }
     }
 
-    public ListenableFuture<Long> execute(DropRepositoryAnalyzedStatement analyzedStatement) {
-        final SettableFuture<Long> future = SettableFuture.create();
+    public CompletableFuture<Long> execute(DropRepositoryAnalyzedStatement analyzedStatement) {
+        final CompletableFuture<Long> future = new CompletableFuture<>();
         final String repoName = analyzedStatement.repositoryName();
-        transportActionProvider.transportDeleteRepositoryAction().execute(
-                new DeleteRepositoryRequest(repoName),
-                new ActionListener<DeleteRepositoryResponse>() {
-                    @Override
-                    public void onResponse(DeleteRepositoryResponse deleteRepositoryResponse) {
-                        if (!deleteRepositoryResponse.isAcknowledged()) {
-                            LOGGER.info("delete repository '{}' not acknowledged", repoName);
-                        }
-                        future.set(1L);
+        deleteRepositoryAction.execute(
+            new DeleteRepositoryRequest(repoName),
+            new ActionListener<DeleteRepositoryResponse>() {
+                @Override
+                public void onResponse(DeleteRepositoryResponse deleteRepositoryResponse) {
+                    if (!deleteRepositoryResponse.isAcknowledged()) {
+                        LOGGER.info("delete repository '{}' not acknowledged", repoName);
                     }
-
-                    @Override
-                    public void onFailure(Throwable e) {
-                        future.setException(e);
-                    }
+                    future.complete(1L);
                 }
+
+                @Override
+                public void onFailure(Throwable e) {
+                    future.completeExceptionally(e);
+                }
+            }
         );
         return future;
     }
 
-    public ListenableFuture<Long> execute(CreateRepositoryAnalyzedStatement statement) {
-        final SettableFuture<Long> result = SettableFuture.create();
+    public CompletableFuture<Long> execute(CreateRepositoryAnalyzedStatement statement) {
+        final CompletableFuture<Long> result = new CompletableFuture<>();
         final String repoName = statement.repositoryName();
 
         PutRepositoryRequest request = new PutRepositoryRequest(repoName);
         request.type(statement.repositoryType());
         request.settings(statement.settings());
-        transportActionProvider.transportPutRepositoryAction().execute(request, new ActionListener<PutRepositoryResponse>() {
+        putRepositoryAction.execute(request, new ActionListener<PutRepositoryResponse>() {
             @Override
             public void onResponse(PutRepositoryResponse putRepositoryResponse) {
-                result.set(1L);
+                result.complete(1L);
             }
 
             @Override
@@ -123,7 +126,7 @@ public class RepositoryService {
                 dropIfExists(repoName, new Runnable() {
                     @Override
                     public void run() {
-                        result.setException(t);
+                        result.completeExceptionally(t);
                     }
                 });
             }
@@ -136,7 +139,14 @@ public class RepositoryService {
         if (repository == null) {
             callback.run();
         } else {
-            execute(new DropRepositoryAnalyzedStatement(repoName)).addListener(callback, MoreExecutors.directExecutor());
+            execute(new DropRepositoryAnalyzedStatement(repoName)).whenComplete(
+                (Long result, Throwable t) -> {
+                    if (t != null) {
+                        LOGGER.error("Error occurred whilst trying to delete repository", t);
+                    }
+                    callback.run();
+                }
+            );
         }
     }
 

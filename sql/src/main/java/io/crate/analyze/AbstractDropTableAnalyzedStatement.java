@@ -21,21 +21,19 @@
 
 package io.crate.analyze;
 
-import io.crate.metadata.Schemas;
 import io.crate.metadata.TableIdent;
 import io.crate.metadata.table.TableInfo;
 
-public abstract class AbstractDropTableAnalyzedStatement<T extends TableInfo> extends AbstractDDLAnalyzedStatement {
+public abstract class AbstractDropTableAnalyzedStatement<T extends TableInfo> implements DDLStatement {
 
-    protected final Schemas schemas;
-    protected final boolean dropIfExists;
+    private final boolean dropIfExists;
+    private final boolean isNoop;
+    private final T tableInfo;
 
-    protected T tableInfo;
-    protected boolean noop;
-
-    public AbstractDropTableAnalyzedStatement(Schemas schemas, boolean dropIfExists) {
-        this.schemas = schemas;
+    AbstractDropTableAnalyzedStatement(T tableInfo, boolean isNoop, boolean dropIfExists) {
+        this.tableInfo = tableInfo;
         this.dropIfExists = dropIfExists;
+        this.isNoop = isNoop;
     }
 
     public String index() {
@@ -46,13 +44,14 @@ public abstract class AbstractDropTableAnalyzedStatement<T extends TableInfo> ex
         return tableInfo;
     }
 
-    public TableIdent tableIdent(){
+    public TableIdent tableIdent() {
         return tableInfo.ident();
     }
 
-    public boolean noop(){
-        return noop;
+    public boolean noop() {
+        return isNoop;
     }
+
     public boolean dropIfExists() {
         return dropIfExists;
     }

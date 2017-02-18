@@ -27,23 +27,22 @@ import java.io.IOException;
 import java.util.ArrayList;
 import java.util.List;
 
-public class SQLArgsParseElement implements SQLParseElement {
+class SQLArgsParseElement implements SQLParseElement {
 
     @Override
     public void parse(XContentParser parser, SQLXContentSourceContext context) throws Exception {
         XContentParser.Token token = parser.currentToken();
 
         if (token != XContentParser.Token.START_ARRAY) {
-            throw new SQLParseSourceException(context, "Field [" + parser.currentName() + "] has an invalid value");
+            throw new SQLParseSourceException("Field [" + parser.currentName() + "] has an invalid value");
         }
 
         Object[] params = parseSubArray(context, parser);
         context.args(params);
     }
 
-    protected Object[] parseSubArray(SQLXContentSourceContext context, XContentParser parser)
-        throws IOException
-    {
+    Object[] parseSubArray(SQLXContentSourceContext context, XContentParser parser)
+        throws IOException {
         XContentParser.Token token;
         List<Object> subList = new ArrayList<Object>();
 
@@ -57,7 +56,7 @@ public class SQLArgsParseElement implements SQLParseElement {
             } else if (token == XContentParser.Token.VALUE_NULL) {
                 subList.add(null);
             } else {
-                throw new SQLParseSourceException(context, "Field [" + parser.currentName() + "] has an invalid value");
+                throw new SQLParseSourceException("Field [" + parser.currentName() + "] has an invalid value");
             }
         }
 

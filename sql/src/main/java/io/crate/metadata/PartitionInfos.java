@@ -27,8 +27,8 @@ import com.google.common.base.Predicate;
 import com.google.common.base.Predicates;
 import com.google.common.collect.FluentIterable;
 import io.crate.Constants;
+import io.crate.analyze.NumberOfReplicas;
 import io.crate.analyze.TableParameterInfo;
-import io.crate.core.NumberOfReplicas;
 import io.crate.metadata.doc.PartitionedByMappingExtractor;
 import io.crate.types.DataType;
 import io.crate.types.DataTypes;
@@ -52,8 +52,8 @@ public class PartitionInfos implements Iterable<PartitionInfo> {
         @Override
         public boolean apply(@Nullable ObjectObjectCursor<String, IndexMetaData> input) {
             return input != null
-                    && input.value.state() == IndexMetaData.State.OPEN
-                    && PartitionName.isPartition(input.key);
+                   && input.value.getState() == IndexMetaData.State.OPEN
+                   && PartitionName.isPartition(input.key);
         }
     };
 
@@ -61,13 +61,13 @@ public class PartitionInfos implements Iterable<PartitionInfo> {
         @Nullable
         @Override
         public PartitionInfo apply(@Nullable ObjectObjectCursor<String, IndexMetaData> input) {
-            assert input != null;
+            assert input != null : "input must not be null";
             PartitionName partitionName = PartitionName.fromIndexOrTemplate(input.key);
             try {
                 Map<String, Object> valuesMap = buildValuesMap(partitionName, input.value.mapping(Constants.DEFAULT_MAPPING_TYPE));
-                BytesRef numberOfReplicas = NumberOfReplicas.fromSettings(input.value.settings());
+                BytesRef numberOfReplicas = NumberOfReplicas.fromSettings(input.value.getSettings());
                 return new PartitionInfo(partitionName, input.value.getNumberOfShards(), numberOfReplicas, valuesMap,
-                        TableParameterInfo.tableParametersFromIndexMetaData(input.value));
+                    TableParameterInfo.tableParametersFromIndexMetaData(input.value));
             } catch (Exception e) {
                 Loggers.getLogger(PartitionInfos.class).trace("error extracting partition infos from index {}", e, input.key);
                 return null; // must filter on null
@@ -86,14 +86,14 @@ public class PartitionInfos implements Iterable<PartitionInfo> {
     public Iterator<PartitionInfo> iterator() {
         // get a fresh one for each iteration
         return FluentIterable.from(clusterService.state().metaData().indices())
-                .filter(PARTITION_INDICES_PREDICATE)
-                .transform(CREATE_PARTITION_INFO_FUNCTION)
-                .filter(Predicates.notNull())
-                .iterator();
+            .filter(PARTITION_INDICES_PREDICATE)
+            .transform(CREATE_PARTITION_INFO_FUNCTION)
+            .filter(Predicates.notNull())
+            .iterator();
     }
 
     @Nullable
-    private static Map<String, Object> buildValuesMap(PartitionName partitionName, MappingMetaData mappingMetaData) throws Exception{
+    private static Map<String, Object> buildValuesMap(PartitionName partitionName, MappingMetaData mappingMetaData) throws Exception {
         int i = 0;
         Map<String, Object> valuesMap = new HashMap<>();
         Iterable<Tuple<ColumnIdent, DataType>> partitionColumnInfoIterable = PartitionedByMappingExtractor.extractPartitionedByColumns(mappingMetaData.sourceAsMap());

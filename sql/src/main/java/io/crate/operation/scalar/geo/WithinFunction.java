@@ -22,6 +22,7 @@
 package io.crate.operation.scalar.geo;
 
 import com.google.common.collect.ImmutableList;
+import com.google.common.collect.ImmutableSet;
 import com.spatial4j.core.context.SpatialContext;
 import com.spatial4j.core.shape.Shape;
 import com.spatial4j.core.shape.SpatialRelation;
@@ -32,31 +33,48 @@ import io.crate.geo.GeoJSONUtils;
 import io.crate.metadata.FunctionIdent;
 import io.crate.metadata.FunctionInfo;
 import io.crate.metadata.Scalar;
+import io.crate.metadata.TransactionContext;
 import io.crate.operation.Input;
 import io.crate.operation.scalar.ScalarFunctionModule;
 import io.crate.types.DataType;
 import io.crate.types.DataTypes;
+import org.apache.lucene.util.BytesRef;
+import org.elasticsearch.common.lucene.BytesRefs;
 
 import java.util.Arrays;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 
 public class WithinFunction extends Scalar<Boolean, Object> {
 
     public static final String NAME = "within";
 
+    private static final Set<DataType> LEFT_TYPES = ImmutableSet.<DataType>of(
+        DataTypes.GEO_POINT,
+        DataTypes.GEO_SHAPE,
+        DataTypes.OBJECT,
+        DataTypes.STRING
+    );
+
+    private static final Set<DataType> RIGHT_TYPES = ImmutableSet.<DataType>of(
+        DataTypes.GEO_SHAPE,
+        DataTypes.OBJECT,
+        DataTypes.STRING
+    );
+
     public static void register(ScalarFunctionModule scalarFunctionModule) {
-        for (DataType pointType : Arrays.asList(DataTypes.GEO_POINT, DataTypes.STRING)) {
-            for (DataType shapeType : Arrays.asList(DataTypes.GEO_SHAPE, DataTypes.STRING, DataTypes.OBJECT)) {
-                scalarFunctionModule.register(new WithinFunction(info(pointType, shapeType)));
+        for (DataType left : LEFT_TYPES) {
+            for (DataType right : RIGHT_TYPES) {
+                scalarFunctionModule.register(new WithinFunction(info(left, right)));
             }
         }
     }
 
     private static FunctionInfo info(DataType pointType, DataType shapeType) {
         return new FunctionInfo(
-                new FunctionIdent(NAME, ImmutableList.<DataType>of(pointType, shapeType)),
-                DataTypes.BOOLEAN
+            new FunctionIdent(NAME, ImmutableList.of(pointType, shapeType)),
+            DataTypes.BOOLEAN
         );
     }
 
@@ -64,13 +82,13 @@ public class WithinFunction extends Scalar<Boolean, Object> {
 
     private final FunctionInfo info;
 
-    WithinFunction(FunctionInfo info) {
+    private WithinFunction(FunctionInfo info) {
         this.info = info;
     }
 
     @Override
     public Boolean evaluate(Input[] args) {
-        assert args.length == 2;
+        assert args.length == 2 : "number of args must be 2";
         return evaluate(args[0], args[1]);
     }
 
@@ -83,19 +101,32 @@ public class WithinFunction extends Scalar<Boolean, Object> {
         if (right == null) {
             return null;
         }
+        return parseLeftShape(left).relate(parseRightShape(right)) == SpatialRelation.WITHIN;
+    }
 
-        Shape leftShape;
+    @SuppressWarnings("unchecked")
+    private Shape parseLeftShape(Object left) {
+        Shape shape;
         if (left instanceof Double[]) {
             Double[] values = (Double[]) left;
-            leftShape = SpatialContext.GEO.makePoint(values[0], values[1]);
+            shape = SpatialContext.GEO.makePoint(values[0], values[1]);
         } else if (left instanceof List) { // ESSearchTask / ESGetTask returns it as list
             List values = (List) left;
-            assert values.size() == 2;
-            leftShape = SpatialContext.GEO.makePoint((Double) values.get(0), (Double) values.get(1));
+            assert values.size() == 2 : "number of values must be 2";
+            shape = SpatialContext.GEO.makePoint((Double) values.get(0), (Double) values.get(1));
+        } else if (left instanceof BytesRef) {
+            shape = GeoJSONUtils.wkt2Shape(BytesRefs.toString(left));
         } else {
-            leftShape = GeoJSONUtils.map2Shape((Map<String, Object>)left);
+            shape = GeoJSONUtils.map2Shape((Map<String, Object>) left);
         }
-        return leftShape.relate(GeoJSONUtils.map2Shape((Map<String, Object>)right)) == SpatialRelation.WITHIN;
+        return shape;
+    }
+
+    @SuppressWarnings("unchecked")
+    private Shape parseRightShape(Object right) {
+        return (right instanceof BytesRef) ?
+            GeoJSONUtils.wkt2Shape(BytesRefs.toString(right)) :
+            GeoJSONUtils.map2Shape((Map<String, Object>) right);
     }
 
     @Override
@@ -104,33 +135,29 @@ public class WithinFunction extends Scalar<Boolean, Object> {
     }
 
     @Override
-    public Symbol normalizeSymbol(Function symbol) {
+    public Symbol normalizeSymbol(Function symbol, TransactionContext transactionContext) {
         Symbol left = symbol.arguments().get(0);
         Symbol right = symbol.arguments().get(1);
 
         boolean literalConverted = false;
         short numLiterals = 0;
 
-        if (containsNullLiteral(symbol.arguments())) {
-            return Literal.NULL;
-        }
-
         if (left.symbolType().isValueSymbol()) {
             numLiterals++;
-            Symbol converted = convertTo(DataTypes.GEO_POINT, (Literal)left);
+            Symbol converted = convertTo(DataTypes.GEO_POINT, (Literal) left);
             literalConverted = converted != right;
             left = converted;
         }
 
         if (right.symbolType().isValueSymbol()) {
             numLiterals++;
-            Symbol converted = convertTo(DataTypes.GEO_SHAPE, (Literal)right);
+            Symbol converted = convertTo(DataTypes.GEO_SHAPE, (Literal) right);
             literalConverted = literalConverted || converted != right;
             right = converted;
         }
 
         if (numLiterals == 2) {
-            return Literal.newLiteral(evaluate((Input)left, (Input)right));
+            return Literal.of(evaluate((Input) left, (Input) right));
         }
 
         if (literalConverted) {

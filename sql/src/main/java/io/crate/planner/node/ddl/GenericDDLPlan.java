@@ -21,18 +21,18 @@
 
 package io.crate.planner.node.ddl;
 
-import io.crate.analyze.AbstractDDLAnalyzedStatement;
-import io.crate.planner.Plan;
+import io.crate.analyze.DDLStatement;
 import io.crate.planner.PlanVisitor;
+import io.crate.planner.UnnestablePlan;
 
 import java.util.UUID;
 
-public class GenericDDLPlan implements Plan {
+public class GenericDDLPlan extends UnnestablePlan {
 
     private final UUID id;
-    private final AbstractDDLAnalyzedStatement statement;
+    private final DDLStatement statement;
 
-    public GenericDDLPlan(UUID jobId, AbstractDDLAnalyzedStatement statement) {
+    public GenericDDLPlan(UUID jobId, DDLStatement statement) {
         id = jobId;
         this.statement = statement;
     }
@@ -47,7 +47,7 @@ public class GenericDDLPlan implements Plan {
         return id;
     }
 
-    public AbstractDDLAnalyzedStatement statement() {
+    public DDLStatement statement() {
         return statement;
     }
 }

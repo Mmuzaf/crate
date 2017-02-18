@@ -28,12 +28,13 @@ import com.carrotsearch.junitbenchmarks.annotation.AxisRange;
 import com.carrotsearch.junitbenchmarks.annotation.BenchmarkHistoryChart;
 import com.carrotsearch.junitbenchmarks.annotation.BenchmarkMethodChart;
 import com.carrotsearch.junitbenchmarks.annotation.LabelType;
-import com.google.common.collect.AbstractIterator;
-import io.crate.core.collections.Bucket;
-import io.crate.core.collections.Row;
-import io.crate.operation.join.NestedLoopOperation;
-import io.crate.operation.projectors.ListenableRowReceiver;
+import com.google.common.base.Predicates;
+import io.crate.data.Bucket;
+import io.crate.data.Row;
+import io.crate.operation.projectors.RowReceiver;
+import io.crate.planner.node.dql.join.JoinType;
 import io.crate.testing.RowCountRowReceiver;
+import io.crate.testing.RowGenerator;
 import io.crate.testing.RowSender;
 import org.elasticsearch.common.unit.TimeValue;
 import org.elasticsearch.common.util.concurrent.EsExecutors;
@@ -42,14 +43,13 @@ import org.junit.Before;
 import org.junit.Rule;
 import org.junit.Test;
 
-import java.util.Iterator;
 import java.util.concurrent.ThreadPoolExecutor;
 
 import static org.hamcrest.MatcherAssert.assertThat;
 import static org.hamcrest.Matchers.is;
 
 @AxisRange(min = 0)
-@BenchmarkHistoryChart(filePrefix="benchmark-nl-history", labelWith = LabelType.CUSTOM_KEY)
+@BenchmarkHistoryChart(filePrefix = "benchmark-nl-history", labelWith = LabelType.CUSTOM_KEY)
 @BenchmarkMethodChart(filePrefix = "benchmark-nl")
 public class NestedLoopOperationBenchmark {
 
@@ -62,7 +62,7 @@ public class NestedLoopOperationBenchmark {
 
     @Before
     public void prepare() {
-        executor = EsExecutors.newFixed(5, 10, EsExecutors.daemonThreadFactory(getClass().getSimpleName()));
+        executor = EsExecutors.newFixed("nl-benchmark", 5, 10, EsExecutors.daemonThreadFactory(getClass().getSimpleName()));
     }
 
     @After
@@ -120,60 +120,15 @@ public class NestedLoopOperationBenchmark {
         executeNestedLoop(100_000, 100);
     }
 
-    private static class RowIter implements Iterable<Row> {
-
-        private final int numRows;
-
-        public RowIter(int numRows) {
-            this.numRows = numRows;
-        }
-
-        @Override
-        public Iterator<Row> iterator() {
-            return new AbstractIterator<Row>() {
-                private final IncRow row = new IncRow();
-
-                @Override
-                protected Row computeNext() {
-                    if (row.counter >= numRows) {
-                        return endOfData();
-                    } else {
-                        row.counter++;
-                        return row;
-                    }
-                }
-            };
-        }
-    }
-
-    private static class IncRow implements Row {
-
-        public volatile int counter = 0;
-
-        @Override
-        public int size() {
-            return 1;
-        }
-
-        @Override
-        public Object get(int index) {
-            return counter;
-        }
-
-        @Override
-        public Object[] materialize() {
-            return new Object[] { counter };
-        }
-    }
-
     private Bucket executeNestedLoop(int leftSize, int rightSize) throws Exception {
-        Iterable<Row> left = new RowIter(leftSize);
-        Iterable<Row> right = new RowIter(rightSize);
+        Iterable<Row> left = RowGenerator.range(0, leftSize);
+        Iterable<Row> right = RowGenerator.range(0, rightSize);
 
         RowCountRowReceiver receiver = new RowCountRowReceiver();
-        NestedLoopOperation operation = new NestedLoopOperation(0, receiver);
-        ListenableRowReceiver leftSide = operation.leftRowReceiver();
-        ListenableRowReceiver rightSide = operation.rightRowReceiver();
+        NestedLoopOperation operation = new NestedLoopOperation(
+            0, receiver, Predicates.<Row>alwaysTrue(), JoinType.CROSS, 0, 0);
+        RowReceiver leftSide = operation.leftRowReceiver();
+        RowReceiver rightSide = operation.rightRowReceiver();
 
         RowSender leftRowSender = new RowSender(left, leftSide, executor);
         RowSender rightRowSender = new RowSender(right, rightSide, executor);
@@ -181,7 +136,7 @@ public class NestedLoopOperationBenchmark {
         executor.execute(leftRowSender);
         executor.execute(rightRowSender);
         Bucket result = receiver.result(TimeValue.timeValueMinutes(10));
-        assertThat((Integer)result.iterator().next().get(0), is(leftSize * rightSize));
+        assertThat((Integer) result.iterator().next().get(0), is(leftSize * rightSize));
         return result;
     }
 

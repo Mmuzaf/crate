@@ -21,32 +21,33 @@
 
 package io.crate.executor.transport;
 
-import com.carrotsearch.ant.tasks.junit4.dependencies.com.google.common.collect.ImmutableMap;
-import io.crate.analyze.symbol.Reference;
 import io.crate.jobs.JobContextService;
 import io.crate.metadata.*;
 import io.crate.metadata.doc.DocSysColumns;
 import io.crate.metadata.doc.DocTableInfo;
 import io.crate.metadata.table.TestingTableInfo;
-import io.crate.operation.scalar.ScalarFunctionModule;
 import io.crate.test.integration.CrateUnitTest;
+import io.crate.types.ArrayType;
 import io.crate.types.DataTypes;
 import org.apache.lucene.util.BytesRef;
 import org.elasticsearch.ElasticsearchException;
-import org.elasticsearch.action.index.IndexResponse;
-import org.elasticsearch.action.index.TransportIndexAction;
 import org.elasticsearch.action.support.ActionFilters;
 import org.elasticsearch.cluster.ClusterService;
+import org.elasticsearch.cluster.action.index.MappingUpdatedAction;
 import org.elasticsearch.cluster.action.shard.ShardStateAction;
+import org.elasticsearch.cluster.metadata.IndexNameExpressionResolver;
 import org.elasticsearch.common.collect.MapBuilder;
-import org.elasticsearch.common.inject.Injector;
-import org.elasticsearch.common.inject.ModulesBuilder;
-import org.elasticsearch.common.settings.ImmutableSettings;
 import org.elasticsearch.common.settings.Settings;
 import org.elasticsearch.common.xcontent.XContentFactory;
-import org.elasticsearch.index.Index;
+import org.elasticsearch.index.IndexService;
+import org.elasticsearch.index.engine.DocumentAlreadyExistsException;
+import org.elasticsearch.index.engine.Engine;
+import org.elasticsearch.index.mapper.ContentPath;
+import org.elasticsearch.index.mapper.Mapper;
+import org.elasticsearch.index.mapper.object.ObjectMapper;
+import org.elasticsearch.index.shard.IndexShard;
 import org.elasticsearch.index.shard.ShardId;
-import org.elasticsearch.indices.IndexMissingException;
+import org.elasticsearch.index.translog.Translog;
 import org.elasticsearch.indices.IndicesService;
 import org.elasticsearch.threadpool.ThreadPool;
 import org.elasticsearch.transport.TransportService;
@@ -56,13 +57,20 @@ import org.junit.Test;
 import java.util.*;
 import java.util.concurrent.atomic.AtomicBoolean;
 
+import static io.crate.testing.TestingHelpers.getFunctions;
 import static org.hamcrest.Matchers.instanceOf;
 import static org.hamcrest.Matchers.is;
-import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.*;
 
 public class TransportShardUpsertActionTest extends CrateUnitTest {
 
     private DocTableInfo generatedColumnTableInfo;
+
+    private final static TableIdent TABLE_IDENT = new TableIdent(null, "characters");
+    private final static String PARTITION_INDEX = new PartitionName(TABLE_IDENT, Arrays.asList(new BytesRef("1395874800000"))).asIndexName();
+    private final static Reference ID_REF = new Reference(
+        new ReferenceIdent(TABLE_IDENT, "id"), RowGranularity.DOC, DataTypes.SHORT);
+
 
     static class TestingTransportShardUpsertAction extends TransportShardUpsertAction {
 
@@ -71,90 +79,126 @@ public class TransportShardUpsertActionTest extends CrateUnitTest {
                                                  ClusterService clusterService,
                                                  TransportService transportService,
                                                  ActionFilters actionFilters,
-                                                 TransportIndexAction indexAction,
                                                  IndicesService indicesService,
                                                  JobContextService jobContextService,
                                                  ShardStateAction shardStateAction,
                                                  Functions functions,
-                                                 Schemas schemas) {
+                                                 Schemas schemas,
+                                                 MappingUpdatedAction mappingUpdatedAction,
+                                                 IndexNameExpressionResolver indexNameExpressionResolver) {
             super(settings, threadPool, clusterService, transportService, actionFilters,
-                    jobContextService, indexAction, indicesService, shardStateAction, functions, schemas);
+                jobContextService, indicesService, shardStateAction, functions, schemas,
+                mappingUpdatedAction, indexNameExpressionResolver);
         }
 
         @Override
-        protected IndexResponse indexItem(DocTableInfo tableInfo,
-                                          ShardUpsertRequest request,
-                                          ShardUpsertRequest.Item item,
-                                          ShardId shardId,
-                                          boolean tryInsertFirst,
-                                          int retryCount) throws ElasticsearchException {
-            throw new IndexMissingException(new Index(request.index()));
+        protected Translog.Location indexItem(DocTableInfo tableInfo,
+                                              ShardUpsertRequest request,
+                                              ShardUpsertRequest.Item item,
+                                              IndexShard indexShard,
+                                              boolean tryInsertFirst,
+                                              Collection<ColumnIdent> notUsedNonGeneratedColumns,
+                                              int retryCount) throws ElasticsearchException {
+            throw new DocumentAlreadyExistsException(new ShardId(request.index(), request.shardId().id()), request.type(), item.id());
         }
     }
 
     private TransportShardUpsertAction transportShardUpsertAction;
+    private IndexShard indexShard;
 
     @Before
     public void prepare() throws Exception {
-        ModulesBuilder builder = new ModulesBuilder();
-        builder.add(new ScalarFunctionModule());
-        Injector injector = builder.createInjector();
-        Functions functions = injector.getInstance(Functions.class);
+        Functions functions = getFunctions();
         bindGeneratedColumnTable(functions);
 
+        IndicesService indicesService = mock(IndicesService.class);
+        IndexService indexService = mock(IndexService.class);
+        when(indicesService.indexServiceSafe(TABLE_IDENT.indexName())).thenReturn(indexService);
+        when(indicesService.indexServiceSafe(PARTITION_INDEX)).thenReturn(indexService);
+        indexShard = mock(IndexShard.class);
+        when(indexService.shardSafe(0)).thenReturn(indexShard);
+
+        // Avoid null pointer exceptions
+        DocTableInfo tableInfo = mock(DocTableInfo.class);
+        Schemas schemas = mock(Schemas.class);
+        when(tableInfo.columns()).thenReturn(Collections.<Reference>emptyList());
+        when(schemas.getWritableTable(any(TableIdent.class))).thenReturn(tableInfo);
+
         transportShardUpsertAction = new TestingTransportShardUpsertAction(
-                ImmutableSettings.EMPTY,
-                mock(ThreadPool.class),
-                mock(ClusterService.class),
-                mock(TransportService.class),
-                mock(ActionFilters.class),
-                mock(TransportIndexAction.class),
-                mock(IndicesService.class),
-                mock(JobContextService.class),
-                mock(ShardStateAction.class),
-                functions,
-                mock(Schemas.class)
-                );
+            Settings.EMPTY,
+            mock(ThreadPool.class),
+            mock(ClusterService.class),
+            mock(TransportService.class),
+            mock(ActionFilters.class),
+            indicesService,
+            mock(JobContextService.class),
+            mock(ShardStateAction.class),
+            functions,
+            schemas,
+            mock(MappingUpdatedAction.class),
+            mock(IndexNameExpressionResolver.class)
+        );
     }
 
     private void bindGeneratedColumnTable(Functions functions) {
         TableIdent generatedColumnTableIdent = new TableIdent(null, "generated_column");
         generatedColumnTableInfo = new TestingTableInfo.Builder(
-                generatedColumnTableIdent, new Routing(Collections.EMPTY_MAP))
-                .add("ts", DataTypes.TIMESTAMP, null)
-                .add("user", DataTypes.OBJECT, null)
-                .add("user", DataTypes.STRING, Arrays.asList("name"))
-                .addGeneratedColumn("day", DataTypes.TIMESTAMP, "date_trunc('day', ts)", false)
-                .addGeneratedColumn("name", DataTypes.STRING, "concat(user['name'], 'bar')", false)
-                .build(functions);
+            generatedColumnTableIdent, new Routing(Collections.EMPTY_MAP))
+            .add("ts", DataTypes.TIMESTAMP, null)
+            .add("user", DataTypes.OBJECT, null)
+            .add("user", DataTypes.STRING, Arrays.asList("name"))
+            .addGeneratedColumn("day", DataTypes.TIMESTAMP, "date_trunc('day', ts)", false)
+            .addGeneratedColumn("name", DataTypes.STRING, "concat(user['name'], 'bar')", false)
+            .build(functions);
 
     }
 
     @Test
-    public void testIndexMissingExceptionWhileProcessingItemsResultsInFailure() throws Exception {
-        TableIdent charactersIdent = new TableIdent(null, "characters");
-        final Reference idRef = new Reference(new ReferenceInfo(
-                new ReferenceIdent(charactersIdent, "id"), RowGranularity.DOC, DataTypes.SHORT));
+    public void testExceptionWhileProcessingItemsNotContinueOnError() throws Exception {
+        ShardId shardId = new ShardId(TABLE_IDENT.indexName(), 0);
+        ShardUpsertRequest request = new ShardUpsertRequest.Builder(
+            false,
+            false,
+            null,
+            new Reference[]{ID_REF},
+            UUID.randomUUID(),
+            false
+        ).newRequest(shardId, null);
+        request.add(1, new ShardUpsertRequest.Item("1", null, new Object[]{1}, null));
 
-        ShardId shardId = new ShardId("characters", 0);
-        final ShardUpsertRequest request = new ShardUpsertRequest(
-                shardId, null, new Reference[]{idRef}, null, UUID.randomUUID());
+        ShardResponse shardResponse = transportShardUpsertAction.processRequestItems(
+            shardId, request, new AtomicBoolean(false));
+
+        assertThat(shardResponse.failure(), instanceOf(DocumentAlreadyExistsException.class));
+    }
+
+    @Test
+    public void testExceptionWhileProcessingItemsContinueOnError() throws Exception {
+        ShardId shardId = new ShardId(TABLE_IDENT.indexName(), 0);
+        ShardUpsertRequest request = new ShardUpsertRequest.Builder(
+            false,
+            true,
+            null,
+            new Reference[]{ID_REF},
+            UUID.randomUUID(),
+            false
+        ).newRequest(shardId, null);
         request.add(1, new ShardUpsertRequest.Item("1", null, new Object[]{1}, null));
 
         ShardResponse response = transportShardUpsertAction.processRequestItems(
-                shardId, request, new AtomicBoolean(false));
+            shardId, request, new AtomicBoolean(false));
 
         assertThat(response.failures().size(), is(1));
-        assertThat(response.failures().get(0).message(), is("IndexMissingException[[characters] missing]"));
+        assertThat(response.failures().get(0).message(), is("DocumentAlreadyExistsException[[default][1]: document already exists]"));
     }
 
     @Test
     public void testProcessGeneratedColumns() throws Exception {
         Map<String, Object> updatedColumns = MapBuilder.<String, Object>newMapBuilder()
-                .put("ts", 1448274317000L)
-                .map();
+            .put("ts", 1448274317000L)
+            .map();
 
-        transportShardUpsertAction.processGeneratedColumns(generatedColumnTableInfo, updatedColumns, ImmutableMap.of(), true);
+        transportShardUpsertAction.processGeneratedColumns(generatedColumnTableInfo, updatedColumns, Collections.<String, Object>emptyMap(), true);
 
         assertThat(updatedColumns.size(), is(2));
         assertThat((Long) updatedColumns.get("day"), is(1448236800000L));
@@ -164,11 +208,11 @@ public class TransportShardUpsertActionTest extends CrateUnitTest {
     public void testProcessGeneratedColumnsWithValue() throws Exception {
         // just test that passing the correct value will not result in an exception
         Map<String, Object> updatedColumns = MapBuilder.<String, Object>newMapBuilder()
-                .put("ts", 1448274317000L)
-                .put("day", 1448236800000L)
-                .map();
+            .put("ts", 1448274317000L)
+            .put("day", 1448236800000L)
+            .map();
 
-        transportShardUpsertAction.processGeneratedColumns(generatedColumnTableInfo, updatedColumns, ImmutableMap.of(), true);
+        transportShardUpsertAction.processGeneratedColumns(generatedColumnTableInfo, updatedColumns, Collections.<String, Object>emptyMap(), true);
 
         assertThat(updatedColumns.size(), is(2));
         assertThat((Long) updatedColumns.get("day"), is(1448236800000L));
@@ -178,15 +222,15 @@ public class TransportShardUpsertActionTest extends CrateUnitTest {
     public void testProcessGeneratedColumnsWithInvalidValue() throws Exception {
         expectedException.expect(IllegalArgumentException.class);
         expectedException.expectMessage(
-                "Given value 1448274317000 for generated column does not match defined generated expression value 1448236800000");
+            "Given value 1448274317000 for generated column does not match defined generated expression value 1448236800000");
 
         Map<String, Object> updatedColumns = MapBuilder.<String, Object>newMapBuilder()
-                .put("ts", 1448274317000L)
-                .map();
+            .put("ts", 1448274317000L)
+            .map();
 
         Map<String, Object> updatedGeneratedColumns = MapBuilder.<String, Object>newMapBuilder()
-                .put("day", 1448274317000L)
-                .map();
+            .put("day", 1448274317000L)
+            .map();
 
         transportShardUpsertAction.processGeneratedColumns(generatedColumnTableInfo, updatedColumns, updatedGeneratedColumns, true);
     }
@@ -195,23 +239,45 @@ public class TransportShardUpsertActionTest extends CrateUnitTest {
     public void testProcessGeneratedColumnsWithInvalidValueNoValidation() throws Exception {
         // just test that no exception is thrown even that the value does not match expression value
         Map<String, Object> updatedColumns = MapBuilder.<String, Object>newMapBuilder()
-                .put("ts", 1448274317000L)
-                .map();
+            .put("ts", 1448274317000L)
+            .map();
 
         Map<String, Object> updatedGeneratedColumns = MapBuilder.<String, Object>newMapBuilder()
-                .put("day", 1448274317000L)
-                .map();
+            .put("day", 1448274317000L)
+            .map();
 
         transportShardUpsertAction.processGeneratedColumns(generatedColumnTableInfo, updatedColumns, updatedGeneratedColumns, false);
     }
 
     @Test
+    public void testGeneratedColumnsValidationWorksForArrayColumns() throws Exception {
+        // test no exception are thrown when validating array generated columns
+        Map<String, Object> updatedColumns = MapBuilder.<String, Object>newMapBuilder()
+            .put("obj", MapBuilder.<String, Object>newMapBuilder().put("arr", new Object[]{1}).map())
+            .map();
+
+        Map<String, Object> updatedGeneratedColumns = MapBuilder.<String, Object>newMapBuilder()
+            .put("arr", new Object[]{1})
+            .map();
+
+        DocTableInfo docTableInfo = new TestingTableInfo.Builder(
+            new TableIdent(null, "generated_column"),
+            new Routing(Collections.<String, Map<String, List<Integer>>>emptyMap()))
+            .add("obj", DataTypes.OBJECT, null)
+            .add("obj", new ArrayType(DataTypes.INTEGER), Arrays.asList("arr"))
+            .addGeneratedColumn("arr", new ArrayType(DataTypes.INTEGER), "obj['arr']", false)
+            .build(getFunctions());
+
+        transportShardUpsertAction.processGeneratedColumns(docTableInfo, updatedColumns, updatedGeneratedColumns, false);
+    }
+
+    @Test
     public void testProcessGeneratedColumnsWithSubscript() throws Exception {
         Map<String, Object> updatedColumns = MapBuilder.<String, Object>newMapBuilder()
-                .put("user.name", new BytesRef("zoo"))
-                .map();
+            .put("user.name", new BytesRef("zoo"))
+            .map();
 
-        transportShardUpsertAction.processGeneratedColumns(generatedColumnTableInfo, updatedColumns, ImmutableMap.of(), true);
+        transportShardUpsertAction.processGeneratedColumns(generatedColumnTableInfo, updatedColumns, Collections.<String, Object>emptyMap(), true);
 
         assertThat(updatedColumns.size(), is(2));
         assertThat((BytesRef) updatedColumns.get("name"), is(new BytesRef("zoobar")));
@@ -220,10 +286,10 @@ public class TransportShardUpsertActionTest extends CrateUnitTest {
     @Test
     public void testProcessGeneratedColumnsWithSubscriptParentUpdated() throws Exception {
         Map<String, Object> updatedColumns = MapBuilder.<String, Object>newMapBuilder()
-                .put("user", MapBuilder.<String, Object>newMapBuilder().put("name", new BytesRef("zoo")).map())
-                .map();
+            .put("user", MapBuilder.<String, Object>newMapBuilder().put("name", new BytesRef("zoo")).map())
+            .map();
 
-        transportShardUpsertAction.processGeneratedColumns(generatedColumnTableInfo, updatedColumns, ImmutableMap.of(), true);
+        transportShardUpsertAction.processGeneratedColumns(generatedColumnTableInfo, updatedColumns, Collections.<String, Object>emptyMap(), true);
 
         assertThat(updatedColumns.size(), is(2));
         assertThat((BytesRef) updatedColumns.get("name"), is(new BytesRef("zoobar")));
@@ -232,10 +298,10 @@ public class TransportShardUpsertActionTest extends CrateUnitTest {
     @Test
     public void testProcessGeneratedColumnsWithSubscriptParentUpdatedValueMissing() throws Exception {
         Map<String, Object> updatedColumns = MapBuilder.<String, Object>newMapBuilder()
-                .put("user", MapBuilder.<String, Object>newMapBuilder().put("age", 35).map())
-                .map();
+            .put("user", MapBuilder.<String, Object>newMapBuilder().put("age", 35).map())
+            .map();
 
-        transportShardUpsertAction.processGeneratedColumns(generatedColumnTableInfo, updatedColumns, ImmutableMap.of(), true);
+        transportShardUpsertAction.processGeneratedColumns(generatedColumnTableInfo, updatedColumns, Collections.<String, Object>emptyMap(), true);
 
         assertThat(updatedColumns.size(), is(2));
         assertThat((BytesRef) updatedColumns.get("name"), is(new BytesRef("bar")));
@@ -243,11 +309,10 @@ public class TransportShardUpsertActionTest extends CrateUnitTest {
 
     @Test
     public void testBuildMapFromSource() throws Exception {
-        TableIdent charactersIdent = new TableIdent(null, "characters");
-        Reference tsRef = new Reference(new ReferenceInfo(
-                new ReferenceIdent(charactersIdent, "ts"), RowGranularity.DOC, DataTypes.TIMESTAMP));
-        Reference nameRef = new Reference(new ReferenceInfo(
-                new ReferenceIdent(charactersIdent, "user", Arrays.asList("name")), RowGranularity.DOC, DataTypes.TIMESTAMP));
+        Reference tsRef = new Reference(
+            new ReferenceIdent(TABLE_IDENT, "ts"), RowGranularity.DOC, DataTypes.TIMESTAMP);
+        Reference nameRef = new Reference(
+            new ReferenceIdent(TABLE_IDENT, "user", Arrays.asList("name")), RowGranularity.DOC, DataTypes.TIMESTAMP);
 
 
         Reference[] insertColumns = new Reference[]{tsRef, nameRef};
@@ -260,15 +325,14 @@ public class TransportShardUpsertActionTest extends CrateUnitTest {
 
     @Test
     public void testBuildMapFromRawSource() throws Exception {
-        TableIdent charactersIdent = new TableIdent(null, "characters");
-        Reference rawRef = new Reference(new ReferenceInfo(
-                new ReferenceIdent(charactersIdent, DocSysColumns.RAW), RowGranularity.DOC, DataTypes.STRING));
+        Reference rawRef = new Reference(
+            new ReferenceIdent(TABLE_IDENT, DocSysColumns.RAW), RowGranularity.DOC, DataTypes.STRING);
 
         BytesRef bytesRef = XContentFactory.jsonBuilder().startObject()
-                .field("ts", 1448274317000L)
-                .field("user.name", "Ford")
-                .endObject()
-                .bytes().toBytesRef();
+            .field("ts", 1448274317000L)
+            .field("user.name", "Ford")
+            .endObject()
+            .bytes().toBytesRef();
 
         Reference[] insertColumns = new Reference[]{rawRef};
         Object[] insertValues = new Object[]{bytesRef};
@@ -289,5 +353,88 @@ public class TransportShardUpsertActionTest extends CrateUnitTest {
             idx++;
         }
 
+    }
+
+    @Test
+    public void testValidateMapping() throws Exception {
+        /**
+         * create a mapping which contains an invalid column name
+         * {
+         *      "valid": {},
+         *      "_invalid": {}
+         * }
+         */
+        expectedException.expect(IllegalArgumentException.class);
+        expectedException.expectMessage("Column name must not start with '_'");
+        Mapper.BuilderContext builderContext = new Mapper.BuilderContext(null, new ContentPath());
+        Mapper.Builder validInnerMapper = new ObjectMapper.Builder("valid");
+        Mapper.Builder invalidInnerMapper = new ObjectMapper.Builder("_invalid");
+        Mapper outerMapper = new ObjectMapper.Builder("outer").add(validInnerMapper).add(invalidInnerMapper).build(builderContext);
+        TransportShardUpsertAction.validateMapping(Arrays.asList(outerMapper).iterator());
+    }
+
+    @Test
+    public void testUpdateSourceByPathsUpdateNullObject() throws Exception {
+        Map<String, Object> source = new HashMap<>();
+        source.put("o", null);
+
+        Map<String, Object> changes = new HashMap<>();
+        changes.put("o.o", 5);
+
+        expectedException.expect(NullPointerException.class);
+        expectedException.expectMessage("Object o is null, cannot write {o=5} onto it");
+        TransportShardUpsertAction.updateSourceByPaths(source, changes);
+    }
+
+    @Test
+    public void testUpdateSourceByPathsUpdateNullObjectNested() throws Exception {
+        Map<String, Object> source = new HashMap<>();
+        source.put("o", null);
+
+        Map<String, Object> changes = new HashMap<>();
+        changes.put("o.x.y", 5);
+
+        expectedException.expect(NullPointerException.class);
+        expectedException.expectMessage("Object o is null, cannot write {x.y=5} onto it");
+        TransportShardUpsertAction.updateSourceByPaths(source, changes);
+    }
+
+    @Test
+    public void testKilledSetWhileProcessingItemsDoesNotThrowException() throws Exception {
+        ShardId shardId = new ShardId(TABLE_IDENT.indexName(), 0);
+        ShardUpsertRequest request = new ShardUpsertRequest.Builder(
+            false,
+            false,
+            null,
+            new Reference[]{ID_REF},
+            UUID.randomUUID(),
+            false
+        ).newRequest(shardId, null);
+        request.add(1, new ShardUpsertRequest.Item("1", null, new Object[]{1}, null));
+
+        ShardResponse shardResponse = transportShardUpsertAction.processRequestItems(
+            shardId, request, new AtomicBoolean(true));
+
+        assertThat(shardResponse.failure(), instanceOf(InterruptedException.class));
+    }
+
+    @Test
+    public void testItemsWithoutSourceAreSkippedOnReplicaOperation() throws Exception {
+        ShardId shardId = new ShardId(TABLE_IDENT.indexName(), 0);
+        ShardUpsertRequest request = new ShardUpsertRequest.Builder(
+            false,
+            false,
+            null,
+            new Reference[]{ID_REF},
+            UUID.randomUUID(),
+            false
+        ).newRequest(shardId, null);
+        request.add(1, new ShardUpsertRequest.Item("1", null, new Object[]{1}, null));
+
+        reset(indexShard);
+
+        // would fail with NPE if not skipped
+        transportShardUpsertAction.processRequestItemsOnReplica(shardId, request);
+        verify(indexShard, times(0)).index(any(Engine.Index.class));
     }
 }

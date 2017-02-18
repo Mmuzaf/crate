@@ -23,9 +23,10 @@ package io.crate.operation.projectors.sorting;
 
 import com.google.common.collect.Ordering;
 import io.crate.analyze.OrderBy;
-import io.crate.core.collections.Row;
+import io.crate.data.Row;
+import io.crate.planner.PositionalOrderBy;
 import io.crate.planner.consumer.OrderByPositionVisitor;
-import io.crate.planner.node.dql.CollectPhase;
+import io.crate.planner.node.dql.RoutedCollectPhase;
 
 import javax.annotation.Nullable;
 import java.util.ArrayList;
@@ -34,21 +35,25 @@ import java.util.List;
 
 public abstract class OrderingByPosition<T> extends Ordering<T> {
 
-    public static Ordering<Object[]> arrayOrdering(CollectPhase collectPhase) {
+    public static Ordering<Object[]> arrayOrdering(RoutedCollectPhase collectPhase) {
         OrderBy orderBy = collectPhase.orderBy();
         assert orderBy != null : "collectPhase must have an orderBy clause to generate an ordering";
         return arrayOrdering(
-                OrderByPositionVisitor.orderByPositions(orderBy.orderBySymbols(), collectPhase.toCollect()),
-                orderBy.reverseFlags(),
-                orderBy.nullsFirst()
+            OrderByPositionVisitor.orderByPositions(orderBy.orderBySymbols(), collectPhase.toCollect()),
+            orderBy.reverseFlags(),
+            orderBy.nullsFirst()
         );
+    }
+
+    public static Ordering<Row> rowOrdering(PositionalOrderBy orderBy) {
+        return rowOrdering(orderBy.indices(), orderBy.reverseFlags(), orderBy.nullsFirst());
     }
 
     public static Ordering<Row> rowOrdering(int[] positions, boolean[] reverseFlags, Boolean[] nullsFirst) {
         List<Comparator<Row>> comparators = new ArrayList<>(positions.length);
         for (int i = 0; i < positions.length; i++) {
             OrderingByPosition<Row> rowOrdering = OrderingByPosition.rowOrdering(
-                    positions[i], reverseFlags[i], nullsFirst[i]);
+                positions[i], reverseFlags[i], nullsFirst[i]);
             comparators.add(rowOrdering.reverse());
         }
         return Ordering.compound(comparators);
@@ -107,7 +112,7 @@ public abstract class OrderingByPosition<T> extends Ordering<T> {
     protected final int position;
     protected final Ordering<Comparable> ordering;
 
-    private OrderingByPosition (int position, boolean reverse, @Nullable Boolean nullFirst) {
+    private OrderingByPosition(int position, boolean reverse, @Nullable Boolean nullFirst) {
         this.position = position;
 
         // note, that we are reverse for the queue so this conditional is by intent

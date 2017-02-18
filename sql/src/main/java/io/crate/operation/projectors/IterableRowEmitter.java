@@ -24,70 +24,72 @@ package io.crate.operation.projectors;
 
 import com.google.common.base.Optional;
 import com.google.common.util.concurrent.MoreExecutors;
-import io.crate.core.collections.Row;
-import io.crate.jobs.ExecutionState;
-import io.crate.operation.collect.collectors.TopRowUpstream;
+import io.crate.data.Row;
 
 import java.util.Iterator;
-import java.util.concurrent.CancellationException;
 import java.util.concurrent.Executor;
+import java.util.concurrent.atomic.AtomicBoolean;
 
-public class IterableRowEmitter implements Runnable {
+public class IterableRowEmitter implements Runnable, RepeatHandle {
 
     private final RowReceiver rowReceiver;
-    private final ExecutionState executionState;
-    private final TopRowUpstream topRowUpstream;
+    private final Iterable<? extends Row> rows;
+    private final ExecutorResumeHandle resumeable;
     private Iterator<? extends Row> rowsIt;
 
+    private final AtomicBoolean finished = new AtomicBoolean(false);
+
     public IterableRowEmitter(RowReceiver rowReceiver,
-                              ExecutionState executionState,
                               final Iterable<? extends Row> rows,
                               Optional<Executor> executor) {
         this.rowReceiver = rowReceiver;
-        this.executionState = executionState;
-        topRowUpstream = new TopRowUpstream(
-                executor.or(MoreExecutors.directExecutor()),
-                this,
-                new Runnable() {
-                    @Override
-                    public void run() {
-                        rowsIt = rows.iterator();
-                        IterableRowEmitter.this.run();
-                    }
-                }
-        );
-        rowReceiver.setUpstream(topRowUpstream);
+        this.rows = rows;
         this.rowsIt = rows.iterator();
+        this.resumeable = new ExecutorResumeHandle(executor.or(MoreExecutors.directExecutor()), this);
     }
 
-    public IterableRowEmitter(RowReceiver rowReceiver, ExecutionState executionState, Iterable<? extends Row> rows) {
-        this(rowReceiver, executionState, rows, Optional.<Executor>absent());
+    public IterableRowEmitter(RowReceiver rowReceiver, Iterable<? extends Row> rows) {
+        this(rowReceiver, rows, Optional.<Executor>absent());
+    }
+
+    public void kill(Throwable t) {
+        rowReceiver.kill(t);
     }
 
     @Override
     public void run() {
         try {
+            loop:
             while (rowsIt.hasNext()) {
-                if (executionState != null && executionState.isKilled()) {
-                    rowReceiver.fail(new CancellationException());
-                    return;
+                RowReceiver.Result result = rowReceiver.setNextRow(rowsIt.next());
+                switch (result) {
+                    case CONTINUE:
+                        continue;
+                    case PAUSE:
+                        rowReceiver.pauseProcessed(resumeable);
+                        return;
+                    case STOP:
+                        break loop;
                 }
-                boolean wantsMore = rowReceiver.setNextRow(rowsIt.next());
-                if (!wantsMore) {
-                    break;
-                }
-                if (topRowUpstream.shouldPause()) {
-                    topRowUpstream.pauseProcessed();
-                    return;
-                }
+                throw new AssertionError("Unrecognized setNextRow result: " + result);
             }
-            rowReceiver.finish();
+            if (finished.compareAndSet(false, true)) {
+                rowReceiver.finish(this);
+            } else {
+                throw new IllegalStateException("Illegal finished state. Should have been false but was true");
+            }
         } catch (Throwable t) {
             rowReceiver.fail(t);
         }
     }
 
-    public TopRowUpstream topRowUpstream() {
-        return topRowUpstream;
+    @Override
+    public void repeat() {
+        if (finished.compareAndSet(true, false)) {
+            rowsIt = rows.iterator();
+            IterableRowEmitter.this.run();
+        } else {
+            throw new IllegalStateException("Downstream called repeat, but IterableRowEmitter wasn't finished");
+        }
     }
 }

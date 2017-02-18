@@ -21,37 +21,34 @@
 
 package io.crate.planner.projection;
 
+import com.google.common.base.Function;
 import com.google.common.collect.ImmutableList;
-import io.crate.analyze.symbol.Function;
 import io.crate.analyze.symbol.Symbol;
+import io.crate.analyze.symbol.Symbols;
+import io.crate.collections.Lists2;
 import io.crate.metadata.RowGranularity;
 import org.elasticsearch.common.io.stream.StreamInput;
 import org.elasticsearch.common.io.stream.StreamOutput;
 
 import java.io.IOException;
-import java.util.ArrayList;
 import java.util.List;
 import java.util.Objects;
 
 public class FilterProjection extends Projection {
 
-    public static final ProjectionFactory<FilterProjection> FACTORY = new ProjectionFactory<FilterProjection>() {
-        @Override
-        public FilterProjection newInstance() {
-            return new FilterProjection();
-        }
-    };
-
     private Symbol query;
     private List<Symbol> outputs = ImmutableList.of();
     private RowGranularity requiredGranularity = RowGranularity.CLUSTER;
 
-    public FilterProjection() {
-    }
-
     @Override
     public RowGranularity requiredGranularity() {
         return requiredGranularity;
+    }
+
+    @Override
+    public void replaceSymbols(Function<Symbol, Symbol> replaceFunction) {
+        query = replaceFunction.apply(query);
+        Lists2.replaceItems(outputs, replaceFunction);
     }
 
     public void requiredGranularity(RowGranularity requiredRowGranularity) {
@@ -63,13 +60,14 @@ public class FilterProjection extends Projection {
     }
 
     public FilterProjection(Symbol query, List<Symbol> outputs) {
-        outputs(outputs);
-        this.query = query;
+        this(query);
+        this.outputs = outputs;
     }
 
-
-    public void query(Symbol query) {
-        this.query = query;
+    public FilterProjection(StreamInput in) throws IOException {
+        query = Symbols.fromStream(in);
+        outputs = Symbols.listFromStream(in);
+        requiredGranularity = RowGranularity.fromStream(in);
     }
 
     public Symbol query() {
@@ -91,10 +89,6 @@ public class FilterProjection extends Projection {
         return outputs;
     }
 
-    public void outputs(List<Symbol> outputs) {
-        this.outputs = outputs;
-    }
-
     @Override
     public boolean equals(Object o) {
         if (this == o) return true;
@@ -106,23 +100,9 @@ public class FilterProjection extends Projection {
     }
 
     @Override
-    public void readFrom(StreamInput in) throws IOException {
-        query = (Function)Function.fromStream(in);
-        int numOutputs = in.readVInt();
-        outputs = new ArrayList<>(numOutputs);
-        for (int i = 0; i < numOutputs; i++) {
-            outputs.add(Symbol.fromStream(in));
-        }
-        requiredGranularity = RowGranularity.fromStream(in);
-    }
-
-    @Override
     public void writeTo(StreamOutput out) throws IOException {
-        Function.toStream(query, out);
-        out.writeVInt(outputs.size());
-        for (Symbol symbol : outputs) {
-            Symbol.toStream(symbol, out);
-        }
+        Symbols.toStream(query, out);
+        Symbols.toStream(outputs, out);
         RowGranularity.toStream(requiredGranularity, out);
     }
 

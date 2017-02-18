@@ -21,38 +21,28 @@
 
 package io.crate.operation.projectors;
 
-import io.crate.core.collections.Row;
-import io.crate.operation.Input;
-import io.crate.operation.collect.CollectExpression;
+import com.google.common.base.Predicate;
+import io.crate.data.Row;
 
-import java.util.Collection;
+class FilterProjector extends AbstractProjector {
 
-public class FilterProjector extends AbstractProjector {
+    private final Predicate<Row> rowFilterPredicate;
 
-    private final Collection<CollectExpression<Row, ?>> collectExpressions;
-    private final Input<Boolean> condition;
-
-    public FilterProjector(Collection<CollectExpression<Row, ?>> collectExpressions, Input<Boolean> condition) {
-        this.collectExpressions = collectExpressions;
-        this.condition = condition;
+    FilterProjector(Predicate<Row> rowFilterPredicate) {
+        this.rowFilterPredicate = rowFilterPredicate;
     }
 
     @Override
-    public boolean setNextRow(Row row) {
-        for (CollectExpression<Row, ?> collectExpression : collectExpressions) {
-            collectExpression.setNextRow(row);
-        }
-
-        //noinspection SimplifiableIfStatement
-        if (InputCondition.matches(condition)) {
+    public Result setNextRow(Row row) {
+        if (rowFilterPredicate.apply(row)) {
             return downstream.setNextRow(row);
         }
-        return true;
+        return Result.CONTINUE;
     }
 
     @Override
-    public void finish() {
-        downstream.finish();
+    public void finish(RepeatHandle repeatHandle) {
+        downstream.finish(repeatHandle);
     }
 
     @Override

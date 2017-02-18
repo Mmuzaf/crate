@@ -23,9 +23,6 @@
 package io.crate.operation.scalar;
 
 import com.google.common.base.Preconditions;
-import io.crate.analyze.symbol.Function;
-import io.crate.analyze.symbol.Literal;
-import io.crate.analyze.symbol.Symbol;
 import io.crate.metadata.*;
 import io.crate.operation.Input;
 import io.crate.types.ArrayType;
@@ -37,14 +34,15 @@ import java.util.List;
 import java.util.Locale;
 import java.util.Set;
 
-public class ArrayUniqueFunction extends Scalar<Object[], Object> {
+class ArrayUniqueFunction extends Scalar<Object[], Object> {
 
     public static final String NAME = "array_unique";
-    private FunctionInfo functionInfo;
+    private final FunctionInfo functionInfo;
+    private final DataType<?> elementType;
 
     private static FunctionInfo createInfo(List<DataType> types) {
         ArrayType arrayType = (ArrayType) types.get(0);
-        if(arrayType.innerType().equals(DataTypes.UNDEFINED) && types.size() == 2){
+        if (arrayType.innerType().equals(DataTypes.UNDEFINED) && types.size() == 2) {
             arrayType = (ArrayType) types.get(1);
         }
         return new FunctionInfo(new FunctionIdent(NAME, types), arrayType);
@@ -54,8 +52,9 @@ public class ArrayUniqueFunction extends Scalar<Object[], Object> {
         module.register(NAME, new Resolver());
     }
 
-    protected ArrayUniqueFunction(FunctionInfo functionInfo) {
+    private ArrayUniqueFunction(FunctionInfo functionInfo) {
         this.functionInfo = functionInfo;
+        this.elementType = ((ArrayType) functionInfo.returnType()).innerType();
     }
 
     @Override
@@ -65,53 +64,56 @@ public class ArrayUniqueFunction extends Scalar<Object[], Object> {
 
     @Override
     public Object[] evaluate(Input[] args) {
-
-        DataType innerType   = ((ArrayType)this.info().returnType()).innerType();
         Set<Object> uniqueSet = new LinkedHashSet<>();
-        for(Input array : args){
-            if(array == null || array.value() == null){
+        for (Input array : args) {
+            assert array != null : "inputs must never be null";
+            Object[] arrayValue = (Object[]) array.value();
+            if (arrayValue == null) {
                 continue;
             }
-            Object[] arg = (Object[]) array.value();
-            for(Object element: arg){
-                uniqueSet.add(innerType.value(element));
+            for (Object element : arrayValue) {
+                uniqueSet.add(elementType.value(element));
             }
         }
-
         return uniqueSet.toArray();
     }
 
 
-    private static class Resolver implements DynamicFunctionResolver {
+    private static class Resolver extends BaseFunctionResolver {
+
+        protected Resolver() {
+            super(Signature.numArgs(1, 2).and(Signature.withLenientVarArgs(Signature.ArgMatcher.ANY_ARRAY)));
+        }
 
         @Override
-        public FunctionImplementation<Function> getForTypes(List<DataType> dataTypes) throws IllegalArgumentException {
-            Preconditions.checkArgument(dataTypes.size() >= 1 && dataTypes.size() <= 2, "array_unique function requires one or two arguments");
+        public FunctionImplementation getForTypes(List<DataType> dataTypes) throws IllegalArgumentException {
+            Preconditions.checkArgument(
+                dataTypes.size() >= 1 && dataTypes.size() <= 2, "array_unique function requires one or two arguments");
 
             for (int i = 0; i < dataTypes.size(); i++) {
                 Preconditions.checkArgument(dataTypes.get(i) instanceof ArrayType, String.format(Locale.ENGLISH,
-                        "Argument %d of the array_unique function cannot be converted to array", i + 1));
+                    "Argument %d of the array_unique function cannot be converted to array", i + 1));
             }
 
-            if(dataTypes.size() == 2){
+            if (dataTypes.size() == 2) {
                 DataType innerType0 = ((ArrayType) dataTypes.get(0)).innerType();
                 DataType innerType1 = ((ArrayType) dataTypes.get(1)).innerType();
 
-                Preconditions.checkArgument(!innerType0.equals(DataTypes.UNDEFINED) || !innerType1.equals(DataTypes.UNDEFINED),
-                        "One of the arguments of the array_unique function can be of undefined inner type, but not both");
+                Preconditions.checkArgument(
+                    !innerType0.equals(DataTypes.UNDEFINED) || !innerType1.equals(DataTypes.UNDEFINED),
+                    "One of the arguments of the array_unique function can be of undefined inner type, but not both");
 
-                if(!innerType0.equals(DataTypes.UNDEFINED)){
+                if (!innerType0.equals(DataTypes.UNDEFINED)) {
                     Preconditions.checkArgument(innerType1.isConvertableTo(innerType0),
-                            String.format(Locale.ENGLISH,
-                                    "Second argument's inner type (%s) of the array_unique function cannot be converted to the first argument's inner type (%s)",
-                                    innerType1,innerType0));
+                        String.format(Locale.ENGLISH,
+                            "Second argument's inner type (%s) of the array_unique function cannot be converted to the first argument's inner type (%s)",
+                            innerType1, innerType0));
                 }
-            }else if(dataTypes.size() == 1){
+            } else if (dataTypes.size() == 1) {
                 DataType innerType = ((ArrayType) dataTypes.get(0)).innerType();
                 Preconditions.checkArgument(!innerType.equals(DataTypes.UNDEFINED),
-                        "When used with only one argument, the inner type of the array argument cannot be undefined");
+                    "When used with only one argument, the inner type of the array argument cannot be undefined");
             }
-
             return new ArrayUniqueFunction(createInfo(dataTypes));
         }
     }

@@ -25,14 +25,53 @@ import io.crate.types.DataType;
 import io.crate.types.DataTypes;
 import org.elasticsearch.common.settings.Settings;
 
-public abstract class IntSetting extends Setting<Integer, Integer> {
+import javax.annotation.Nonnull;
+
+public class IntSetting extends Setting<Integer, Integer> {
+
+    private final String name;
+    private final Integer defaultValue;
+    private final boolean isRuntimeSetting;
+    private Integer minValue = Integer.MIN_VALUE;
+    private Integer maxValue = Integer.MAX_VALUE;
+
+    public IntSetting(String name, Integer defaultValue, boolean isRuntimeSetting) {
+        this.name = name;
+        this.defaultValue = defaultValue;
+        this.isRuntimeSetting = isRuntimeSetting;
+    }
+
+    public IntSetting(String name, Integer defaultValue, boolean isRuntimeSetting, Integer minValue, Integer maxValue) {
+        this(name, defaultValue, isRuntimeSetting);
+        if (minValue != null) {
+            this.minValue = minValue;
+        }
+        if (maxValue != null) {
+            this.maxValue = maxValue;
+        }
+    }
+
+    @Override
+    public String name() {
+        return name;
+    }
+
+    @Override
+    public Integer defaultValue() {
+        return defaultValue;
+    }
+
+    @Override
+    public boolean isRuntime() {
+        return isRuntimeSetting;
+    }
 
     public Integer maxValue() {
-        return Integer.MAX_VALUE;
+        return this.maxValue;
     }
 
     public Integer minValue() {
-        return Integer.MIN_VALUE;
+        return this.minValue;
     }
 
     @Override
@@ -43,5 +82,9 @@ public abstract class IntSetting extends Setting<Integer, Integer> {
     @Override
     public Integer extract(Settings settings) {
         return settings.getAsInt(settingName(), defaultValue());
+    }
+
+    public Integer extract(Settings settings, @Nonnull Integer defaultValue) {
+        return settings.getAsInt(settingName(), defaultValue);
     }
 }

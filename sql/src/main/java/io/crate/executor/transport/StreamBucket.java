@@ -26,9 +26,9 @@ import com.google.common.base.Throwables;
 import com.google.common.collect.FluentIterable;
 import com.google.common.collect.Iterables;
 import io.crate.Streamer;
-import io.crate.core.collections.Bucket;
-import io.crate.core.collections.Row;
-import io.crate.core.collections.RowN;
+import io.crate.data.Bucket;
+import io.crate.data.Row;
+import io.crate.data.RowN;
 import org.elasticsearch.common.bytes.BytesReference;
 import org.elasticsearch.common.io.stream.BytesStreamOutput;
 import org.elasticsearch.common.io.stream.StreamInput;
@@ -61,10 +61,10 @@ public class StreamBucket implements Bucket, Streamable {
         }
 
         public void add(Row row) throws IOException {
-            assert streamers.length == row.size() : "number of streamer must match row size";
+            assert streamers.length == row.numColumns() : "number of streamer must match row size";
 
             size++;
-            for (int i = 0; i < row.size(); i++) {
+            for (int i = 0; i < row.numColumns(); i++) {
                 streamers[i].writeValueTo(out, row.get(i));
             }
         }
@@ -162,7 +162,7 @@ public class StreamBucket implements Bucket, Streamable {
         if (size < 1) {
             return Collections.emptyIterator();
         }
-        assert streamers != null;
+        assert streamers != null : "streamers must not be null";
         return new RowIterator();
     }
 
@@ -176,7 +176,7 @@ public class StreamBucket implements Bucket, Streamable {
 
     @Override
     public void writeTo(StreamOutput out) throws IOException {
-        assert size > -1;
+        assert size > -1 : "size must be > -1";
         out.writeVInt(size);
         if (size > 0) {
             out.writeBytesReference(bytes);

@@ -24,36 +24,25 @@ package io.crate.analyze.symbol;
 import io.crate.types.DataType;
 import org.elasticsearch.common.io.stream.StreamInput;
 import org.elasticsearch.common.io.stream.StreamOutput;
-import org.elasticsearch.common.io.stream.Streamable;
 
 import java.io.IOException;
 
-public abstract class Symbol implements Streamable {
+public abstract class Symbol {
 
     public static boolean isLiteral(Symbol symbol, DataType expectedType) {
         return symbol.symbolType() == SymbolType.LITERAL
-                && symbol.valueType().equals(expectedType);
+               && symbol.valueType().equals(expectedType);
     }
 
     public interface SymbolFactory<T extends Symbol> {
-        T newInstance();
+        T newInstance(StreamInput in) throws IOException;
     }
 
     public abstract SymbolType symbolType();
 
     public abstract <C, R> R accept(SymbolVisitor<C, R> visitor, C context);
 
-    public static void toStream(Symbol symbol, StreamOutput out) throws IOException {
-        out.writeVInt(symbol.symbolType().ordinal());
-        symbol.writeTo(out);
-    }
-
-    public static Symbol fromStream(StreamInput in) throws IOException {
-        Symbol symbol = SymbolType.values()[in.readVInt()].newInstance();
-        symbol.readFrom(in);
-
-        return symbol;
-    }
-
     public abstract DataType valueType();
+
+    public abstract void writeTo(StreamOutput out) throws IOException;
 }

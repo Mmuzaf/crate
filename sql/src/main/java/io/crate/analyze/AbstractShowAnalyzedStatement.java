@@ -25,7 +25,7 @@ import io.crate.analyze.relations.AnalyzedRelation;
 import io.crate.analyze.symbol.Field;
 import io.crate.exceptions.ColumnUnknownException;
 import io.crate.metadata.Path;
-import org.elasticsearch.common.Nullable;
+import io.crate.metadata.table.Operation;
 
 import java.util.Collections;
 import java.util.List;
@@ -37,14 +37,8 @@ public abstract class AbstractShowAnalyzedStatement implements AnalyzedStatement
         return analyzedStatementVisitor.visitShowAnalyzedStatement(this, context);
     }
 
-    @Nullable
     @Override
-    public Field getField(Path path) {
-        throw new UnsupportedOperationException("getField() is not supported on ShowCreateTableAnalyzedStatement");
-    }
-
-    @Override
-    public Field getWritableField(Path path) throws UnsupportedOperationException, ColumnUnknownException {
+    public Field getField(Path path, Operation operation) throws UnsupportedOperationException, ColumnUnknownException {
         throw new UnsupportedOperationException("getWritableField() is not supported on ShowCreateTableAnalyzedStatement");
     }
 

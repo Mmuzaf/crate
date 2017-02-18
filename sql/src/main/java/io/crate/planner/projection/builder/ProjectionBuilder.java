@@ -23,15 +23,17 @@ package io.crate.planner.projection.builder;
 
 import com.google.common.collect.ImmutableList;
 import io.crate.analyze.OrderBy;
+import io.crate.analyze.QueryClause;
 import io.crate.analyze.QuerySpec;
-import io.crate.analyze.symbol.Aggregation;
-import io.crate.analyze.symbol.Function;
-import io.crate.analyze.symbol.Symbol;
+import io.crate.analyze.symbol.*;
 import io.crate.metadata.ColumnIdent;
 import io.crate.metadata.FunctionInfo;
 import io.crate.metadata.Functions;
+import io.crate.metadata.RowGranularity;
 import io.crate.operation.aggregation.AggregationFunction;
+import io.crate.operation.projectors.TopN;
 import io.crate.planner.projection.*;
+import io.crate.types.DataType;
 
 import javax.annotation.Nullable;
 import java.util.ArrayList;
@@ -60,27 +62,27 @@ public class ProjectionBuilder {
     }
 
 
-    public AggregationProjection aggregationProjection(
-            Collection<? extends Symbol> inputs,
-            Collection<Function> aggregates,
-            Aggregation.Step fromStep,
-            Aggregation.Step toStep){
+    public AggregationProjection aggregationProjection(Collection<? extends Symbol> inputs,
+                                                       Collection<Function> aggregates,
+                                                       Aggregation.Step fromStep,
+                                                       Aggregation.Step toStep,
+                                                       RowGranularity granularity) {
         InputCreatingVisitor.Context context = new InputCreatingVisitor.Context(inputs);
-        ArrayList<Aggregation> aggregations = getAggregations(aggregates, fromStep,
-                toStep, context);
-        return new AggregationProjection(aggregations);
+        ArrayList<Aggregation> aggregations = getAggregations(aggregates, fromStep, toStep, context);
+        return new AggregationProjection(aggregations, granularity);
     }
 
     public GroupProjection groupProjection(
-            Collection<Symbol> inputs,
-            Collection<Symbol> keys,
-            Collection<Function> values,
-            Aggregation.Step fromStep,
-            Aggregation.Step toStep){
+        Collection<Symbol> inputs,
+        Collection<Symbol> keys,
+        Collection<Function> values,
+        Aggregation.Step fromStep,
+        Aggregation.Step toStep,
+        RowGranularity requiredGranularity) {
 
         InputCreatingVisitor.Context context = new InputCreatingVisitor.Context(inputs);
         ArrayList<Aggregation> aggregations = getAggregations(values, fromStep, toStep, context);
-        return new GroupProjection(inputVisitor.process(keys, context), aggregations);
+        return new GroupProjection(inputVisitor.process(keys, context), aggregations, requiredGranularity);
     }
 
     private ArrayList<Aggregation> getAggregations(Collection<Function> functions,
@@ -89,7 +91,8 @@ public class ProjectionBuilder {
                                                    InputCreatingVisitor.Context context) {
         ArrayList<Aggregation> aggregations = new ArrayList<>(functions.size());
         for (Function function : functions) {
-            assert function.info().type() == FunctionInfo.Type.AGGREGATE;
+            assert function.info().type() == FunctionInfo.Type.AGGREGATE :
+                "function type must be " + FunctionInfo.Type.AGGREGATE;
             Aggregation aggregation;
             List<Symbol> aggregationInputs;
             if (fromStep == Aggregation.Step.PARTIAL) {
@@ -102,9 +105,9 @@ public class ProjectionBuilder {
 
             if (toStep == Aggregation.Step.PARTIAL) {
                 aggregation = Aggregation.partialAggregation(
-                        function.info(),
-                        ((AggregationFunction) this.functions.get(function.info().ident())).partialType(),
-                        aggregationInputs
+                    function.info(),
+                    ((AggregationFunction) this.functions.get(function.info().ident())).partialType(),
+                    aggregationInputs
                 );
             } else {
                 aggregation = Aggregation.finalAggregation(function.info(), aggregationInputs, fromStep);
@@ -114,45 +117,88 @@ public class ProjectionBuilder {
         return aggregations;
     }
 
-    public static FilterProjection filterProjection(Collection<? extends Symbol> inputs, Symbol query) {
+    public static FilterProjection filterProjection(Collection<? extends Symbol> inputs, QueryClause queryClause) {
         InputCreatingVisitor.Context context = new InputCreatingVisitor.Context(inputs);
-        query = inputVisitor.process(query, context);
+        Symbol query;
+        if (queryClause.hasQuery()) {
+            query = inputVisitor.process(queryClause.query(), context);
+        } else if (queryClause.noMatch()) {
+            query = Literal.BOOLEAN_FALSE;
+        } else {
+            query = Literal.BOOLEAN_TRUE;
+        }
         List<Symbol> outputs = inputVisitor.process(inputs, context);
         return new FilterProjection(query, outputs);
     }
 
-    public static TopNProjection topNProjection(
-            Collection<? extends Symbol> inputs,
-            @Nullable OrderBy orderBy,
-            int offset,
-            int limit,
-            @Nullable Collection<Symbol> outputs) {
+    /**
+     * Create a {@link OrderedTopNProjection}, {@link TopNProjection} or {@link EvalProjection}.
+     *
+     * @param inputs Symbols which describe the inputs the projection will receive
+     * @param outputs Symbols which describe the outputs.
+     *                If these symbols differ from the inputs the projection will evaluate the rows to produce
+     *                the desired outputs. (That is, evaluate functions or re-order the columns)
+     */
+    public static Projection topNOrEval(
+        Collection<? extends Symbol> inputs,
+        @Nullable OrderBy orderBy,
+        int offset,
+        int limit,
+        @Nullable Collection<Symbol> outputs) {
 
         InputCreatingVisitor.Context context = new InputCreatingVisitor.Context(inputs);
         List<Symbol> inputsProcessed = inputVisitor.process(inputs, context);
         List<Symbol> outputsProcessed;
-        if (outputs == null){
+        if (outputs == null) {
             outputsProcessed = inputsProcessed;
         } else {
             outputsProcessed = inputVisitor.process(outputs, context);
         }
 
-        TopNProjection result;
         if (orderBy == null) {
-            result = new TopNProjection(limit, offset);
-        } else {
-            result = new TopNProjection(limit, offset,
-                    inputVisitor.process(orderBy.orderBySymbols(), context),
-                    orderBy.reverseFlags(),
-                    orderBy.nullsFirst());
+            if ( limit == TopN.NO_LIMIT && offset == 0) {
+                return new EvalProjection(outputsProcessed);
+            }
+            return new TopNProjection(limit, offset, outputsProcessed);
         }
-        result.outputs(outputsProcessed);
-        return result;
+        return new OrderedTopNProjection(limit, offset, outputsProcessed,
+            inputVisitor.process(orderBy.orderBySymbols(), context),
+            orderBy.reverseFlags(),
+            orderBy.nullsFirst());
+    }
+
+    /**
+     * Create a {@link TopNProjection} or {@link EvalProjection} if required, otherwise null is returned.
+     * <p>
+     * The output symbols will consist of InputColumns.
+     * </p>
+     * @param numOutputs number of outputs this projection should have.
+     *                   If inputTypes is longer this projection will cut off superfluous columns
+     */
+    @Nullable
+    public static Projection topNOrEvalIfNeeded(Integer limit,
+                                                int offset,
+                                                int numOutputs,
+                                                List<DataType> inputTypes) {
+        if (limit == null) {
+            limit = TopN.NO_LIMIT;
+        }
+        int numInputTypes = inputTypes.size();
+        List<DataType> strippedInputs = inputTypes;
+        if (numOutputs < numInputTypes) {
+            strippedInputs = inputTypes.subList(0, numOutputs);
+        }
+        if (limit == TopN.NO_LIMIT && offset == 0) {
+            if (numOutputs >= numInputTypes) {
+                return null;
+            }
+            return new EvalProjection(InputColumn.fromTypes(strippedInputs));
+        }
+        return new TopNProjection(limit, offset, InputColumn.fromTypes(strippedInputs));
     }
 
     public static WriterProjection writerProjection(Collection<? extends Symbol> inputs,
                                                     Symbol uri,
-                                                    boolean isDirectoryUri,
                                                     @Nullable WriterProjection.CompressionType compressionType,
                                                     Map<ColumnIdent, Symbol> overwrites,
                                                     @Nullable List<String> outputNames,
@@ -160,6 +206,6 @@ public class ProjectionBuilder {
         InputCreatingVisitor.Context context = new InputCreatingVisitor.Context(inputs);
 
         return new WriterProjection(
-                inputVisitor.process(inputs, context), uri, isDirectoryUri, compressionType, overwrites, outputNames, outputFormat);
+            inputVisitor.process(inputs, context), uri, compressionType, overwrites, outputNames, outputFormat);
     }
 }

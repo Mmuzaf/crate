@@ -23,11 +23,11 @@
 package io.crate.analyze.expressions;
 
 import io.crate.analyze.relations.FieldProvider;
-import io.crate.analyze.symbol.Reference;
 import io.crate.exceptions.ColumnUnknownException;
 import io.crate.metadata.ColumnIdent;
-import io.crate.metadata.GeneratedReferenceInfo;
-import io.crate.metadata.ReferenceInfo;
+import io.crate.metadata.GeneratedReference;
+import io.crate.metadata.Reference;
+import io.crate.metadata.table.Operation;
 import io.crate.sql.tree.QualifiedName;
 
 import javax.annotation.Nullable;
@@ -38,34 +38,33 @@ import java.util.Locale;
 
 public class TableReferenceResolver implements FieldProvider<Reference> {
 
-    private final Collection<ReferenceInfo> tableReferenceInfos;
+    private final Collection<Reference> tableReferences;
     private final List<Reference> references = new ArrayList<>();
 
-    public TableReferenceResolver(Collection<ReferenceInfo> tableReferenceInfos) {
-        this.tableReferenceInfos = tableReferenceInfos;
+    public TableReferenceResolver(Collection<Reference> tableReferences) {
+        this.tableReferences = tableReferences;
     }
 
     @Override
-    public Reference resolveField(QualifiedName qualifiedName, boolean forWrite) {
-        return resolveField(qualifiedName, null, forWrite);
+    public Reference resolveField(QualifiedName qualifiedName, Operation operation) {
+        return resolveField(qualifiedName, null, operation);
     }
 
     @Override
-    public Reference resolveField(QualifiedName qualifiedName, @Nullable List<String> path, boolean forWrite) {
+    public Reference resolveField(QualifiedName qualifiedName, @Nullable List<String> path, Operation operation) {
         List<String> parts = qualifiedName.getParts();
         ColumnIdent columnIdent = new ColumnIdent(parts.get(parts.size() - 1), path);
         if (parts.size() != 1) {
             throw new IllegalArgumentException(String.format(Locale.ENGLISH,
-                    "Column reference \"%s\" has too many parts. " +
-                    "A column must not have a schema or a table here.", qualifiedName));
+                "Column reference \"%s\" has too many parts. " +
+                "A column must not have a schema or a table here.", qualifiedName));
         }
 
-        for (ReferenceInfo referenceInfo : tableReferenceInfos) {
-            if (referenceInfo.ident().columnIdent().equals(columnIdent)) {
-                if (referenceInfo instanceof GeneratedReferenceInfo) {
+        for (Reference reference : tableReferences) {
+            if (reference.ident().columnIdent().equals(columnIdent)) {
+                if (reference instanceof GeneratedReference) {
                     throw new IllegalArgumentException("A generated column cannot be based on a generated column");
                 }
-                Reference reference = new Reference(referenceInfo);
                 references.add(reference);
                 return reference;
             }

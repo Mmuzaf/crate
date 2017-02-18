@@ -23,9 +23,7 @@ package io.crate.operation.scalar.arithmetic;
 
 import io.crate.analyze.symbol.Function;
 import io.crate.analyze.symbol.format.OperatorFormatSpec;
-import io.crate.metadata.DynamicFunctionResolver;
-import io.crate.metadata.FunctionImplementation;
-import io.crate.metadata.FunctionInfo;
+import io.crate.metadata.*;
 import io.crate.operation.Input;
 import io.crate.operation.scalar.ScalarFunctionModule;
 import io.crate.types.DataType;
@@ -35,13 +33,13 @@ import java.util.List;
 public abstract class DivideFunction extends ArithmeticFunction implements OperatorFormatSpec {
 
     public static final String NAME = "divide";
-    public static final String SQL_SYMBOL = "/";
+    private static final String SQL_SYMBOL = "/";
 
     public static void register(ScalarFunctionModule module) {
         module.register(NAME, new Resolver());
     }
 
-    public DivideFunction(FunctionInfo info) {
+    DivideFunction(FunctionInfo info) {
         super(info);
     }
 
@@ -52,48 +50,53 @@ public abstract class DivideFunction extends ArithmeticFunction implements Opera
 
     private static class DoubleDivideFunction extends DivideFunction {
 
-        public DoubleDivideFunction(FunctionInfo info) {
+        DoubleDivideFunction(FunctionInfo info) {
             super(info);
         }
 
         @Override
         public Number evaluate(Input[] args) {
-            assert args.length == 2;
-            if (args[0].value() == null) {
+            assert args.length == 2 : "number of args must be 2";
+            Object arg0Value = args[0].value();
+            Object arg1Value = args[1].value();
+
+            if (arg0Value == null) {
                 return null;
             }
-            if (args[1].value() == null) {
+            if (arg1Value == null) {
                 return null;
             }
-            return ((Number) args[0].value()).doubleValue() / ((Number) args[1].value()).doubleValue();
+            return ((Number) arg0Value).doubleValue() / ((Number) arg1Value).doubleValue();
         }
     }
 
     private static class LongDivideFunction extends DivideFunction {
 
-        public LongDivideFunction(FunctionInfo info) {
+        LongDivideFunction(FunctionInfo info) {
             super(info);
         }
 
         @Override
         public Number evaluate(Input[] args) {
-            assert args.length == 2;
-            if (args[0].value() == null) {
+            assert args.length == 2 : "number of args must be 2";
+            Object arg0Value = args[0].value();
+            Object arg1Value = args[1].value();
+
+            if (arg0Value == null) {
                 return null;
             }
-            if (args[1].value() == null) {
+            if (arg1Value == null) {
                 return null;
             }
-            return ((Number) args[0].value()).longValue() / ((Number) args[1].value()).longValue();
+            return ((Number) arg0Value).longValue() / ((Number) arg1Value).longValue();
         }
     }
 
 
-    private static class Resolver implements DynamicFunctionResolver {
+    private static class Resolver extends ArithmeticFunctionResolver {
 
         @Override
-        public FunctionImplementation<Function> getForTypes(List<DataType> dataTypes) throws IllegalArgumentException {
-            validateTypes(dataTypes);
+        public FunctionImplementation getForTypes(List<DataType> dataTypes) throws IllegalArgumentException {
             if (containsTypesWithDecimal(dataTypes)) {
                 return new DoubleDivideFunction(genDoubleInfo(NAME, dataTypes));
             }

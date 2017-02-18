@@ -5,22 +5,1252 @@ Changes for Crate
 Unreleased
 ==========
 
+ - Fixed validation of known configuration file settings. The settings are also
+   validated upon start-up.
+
+ - Fix: Index columns based on string arrays are correctly populated with values.
+
+ - Updated crate-admin to ``1.1.1`` which includes the following changes:
+
+    - Fixed a console results issue that caused the results table not to be
+      displayed after horizontal scrolling.
+
+    - Fixed an issue that caused the admin-ui to load only one plugin.
+
+    - Display warning in the console view when the query result contains
+      an unsafe integer.
+
+    - Relocated the help resources section to be underneath the tweet
+      import tutorial.
+
+    - Show loading indicator when `Execute Query ` is in progress.
+
+    - Improved console results table, including data type based colorization,
+       alternating row colorization, structured object/array formatting,
+       human-readable timestamps, Google Maps link on geo-point
+       results & lazy loading on result sets larger than 100 rows.
+
+ - Fixed evaluation on ``UPDATE`` of generated columns without referenced
+   columns, e.g. generated columns with a ``CURRENT_TIMESTAMP`` expression.
+
+ - Fixed global aggregations on JOINs with 3 or more tables.
+
+ - BREAKING: The TableFunctionImplementation interface was streamlined
+   with other function implementation semantics. This requires
+   function implementation plugins to be adapted to the new interface.
+
+ - It is now supported to order and group by predicate functions in general
+   with the exception of the `match` predicate.
+
+ - Removed limitation which didn't allow ordering on partitioned columns in
+   GROUP BY query
+
+ - Selecting ``os['timestamp'] from ``sys.nodes`` returns the actual timestamp
+   of each node clock at the time of collecting the metric instead of the
+   timestamp on the handler node.
+
+ - BREAKING: Removed deprecated setting ``indices.fielddata.breaker`` that have
+   been used as an alias for ``indices.breaker.fielddata``.
+
+ - Added scalar function ``geohash`` that returns a GeoHash representation of
+   a ``geo_point``
+
+ - Added support for casting JSON strings to object columns.
+
+ - The array comparison no longer requires extra parentheses for subselects.
+   Now it's possible to use `` = ANY (SELECT ...)`` instead of
+   `` = ANY ((SELECT ...))``
+
+ - DEPRECATED: multicast discovery has been deprecated in this release, and will be
+   removed in the 1.1 release.
+   Multicast discovery is disabled by default.
+
+ - BREAKING: Serve admin ui from ``/``
+   Admin UI is not accessible via ``_plugin/crate-admin`` anymore. Only via
+   ``/admin`` or ``/``.
+
+ - Allow semi-colon (;) in the end of simple SQL statements.
+
+ - Enhanced performance optimisation of full joins by rewriting them to left,
+   right or inner joins when conditions in ``WHERE`` exclude null values.
+
+ - Added support for filtering and ordering on ``ignored`` object columns.
+
+ - Added support for the double colon (::) cast operator.
+
+ - Upgraded the parser from ANTLR3 to ANTLR4.
+
+2017/02/10 1.0.3
+================
+
+ - Fix: Allow scalar functions on the `HAVING` clause if the scalar
+   function is used as a `GROUP BY` symbol.
+
+ - Return correct affected row count instead of throwing an exception
+   when trying to bulk insert values that don't match the column type(s).
+
+ - Fixed an issue in the postgres protocol that could cause a StackOverflow
+   exception due to connection errors or malfunctioning clients.
+
+ - Removed ``OVER`` support from SQL parser because the clause was completely
+   ignored when executing the query which led to misleading results.
+
+ - Fix: Closing a connection via the Postgres Wire Protocol correctly closes the
+   internal resources.
+
+ - Queries with ``_doc`` reference comparison (e.g. ``_doc['name'] = 'foo'``)
+   in the ``WHERE`` clause return the correct results instead of empty result.
+
+ - Fixed issue that led to casting exception when comparing an object column
+   with an object literal that contains a string value.
+
+ - Dynamically added string columns now have exactly the same characteristics
+   as string columns created via ``CREATE TABLE`` or ``ALTER TABLE ADD COLUMN``
+
+ - Fixed and issue that caused ``UPDATE`` statement on an empty partitioned
+   table to throw UnsupportedOperationException.
+
+ - Fixed an issue that caused fulltext search with fuzziness='AUTO'
+   to throw NumberFormatException.
+
+ - Fixed an issue in the ``LIKE`` predicate which prevented from using escaped
+   backslash before the wildcard.
+
+ - Updated crate-admin to ``1.0.4`` which includes the following change:
+
+     - Fixed getting started display issue on very wide screens.
+
+ - Fixed an issue that caused ``ORDER BY`` clause to be ignored if used
+   in combination with ``GROUP BY`` in subselects.
+   e.g.: `SELECT x from (SELECT * from t1) as tt
+          GROUP BY x ORDER BY x`
+
+2017/01/09 1.0.2
+================
+
+ - Updated crate-admin to ``1.0.3`` which includes the following change:
+
+    - Added compatibility with future crate versions which will serve
+      the admin-ui from `/admin/` instead of `/_plugins/crate-admin/`.
+
+ - Fixed a NPE when using a ``percentile`` aggregation in a multi-node
+   environment.
+
+ - Fixed ``INDEX`` constraint validation. Defining it on complex data
+   types like e.g. ``object`` was silently ignored instead of throwing
+   an error.
+
+ - Fixed an issue that causes `UnsupportedFeatureException` for operations
+   on a table where array access is used inside generated columns.
+   e.g.: `CREATE TABLE t1 (cola string, gencola AS (a[1]))`
+   error thrown when: `SELECT * from t1`, `DROP TABLE t1`, etc.
+
+ - Fixed an issue that causes hanging queries if a data node disconnects from
+   the cluster.
+
+ - Fix: throw correct error if one tries to create a table starting with ``_``
+
+ - Fixed an issue that causes UnhandledServerException on joins
+   when ``WHERE`` clause contains conditions on columns of array type
+   of both tables which are separated with the ``OR`` operator.
+    e.g.: `SELECT * FROM t1 join t2 ON t1.id = t2.id
+           WHERE 'foo' = ANY(a.strArray) OR 'bar' = ANY(b.strArray)`
+
+ - Fix: scalar functions `longitude/latitude` show misleading results.
+
+ - Fixed an issue that causes ClassCastException on outer joins when
+   ``WHERE`` clause contains a condition that prevents null values on
+   the relation that may produce nulls.
+   e.g.: `SELECT * FROM t1 LEFT JOIN t2 ON t1.id = t2.id WHERE t2.txt = 'foo'`
+
+ - Do not display current statement in ``sys.jobs`` that disabled stats.
+
+ - Fixed NPE that occurred when an ``UPDATE`` statement inserted ``NULL`` value
+   into a column that did not exist before.
+
+ - It is not possible any more to circumvent ``NOT NULL`` column constraint by
+   omitting the column in the ``INSERT`` statement.
+
+ - Fixed an issue that causes an error to be thrown if nested method
+   calls are used in ``HAVING`` clause.
+   e.g.: `having sum(power(power(id, id), id)) > 1`
+
+2016/12/12 1.0.1
+================
+
+ - Updated crate-admin to ``1.0.2`` which includes the following changes:
+
+    - Removed pepper widget, support links are now in a Help section along with
+      the Get Started tutorial.
+
+    - Changed read notification behaviour so that all items are marked as
+      read upon opening the settings.
+
+    - Lowered opacity of placeholder query in the console.
+
+    - Fix intercom support that disappeared during the implementation
+      of the new admin-ui layout.
+
+    - Fix Radio button position in load overview.
+
+    - Made schema tabs more distinguishable from tables in the table list.
+
+    - Updated link to support website in contact widget.
+
+ - Fixed scalar signature registration, NULL literals are now supported.
+
+ - Fixed usage of aggregations with NULL values, no exception will be
+   thrown anymore but instead NULL values are properly processed.
+
+ - Fix: ``chunk_size`` and ``buffer_size`` settings for creating repositories
+   of type ``S3`` are not parsed correctly.
+
+ - Fix: error thrown when ``ANY`` or ``ALL`` array comparison expressions
+   are used in ``SELECT`` list.
+   e.g.:`select 'foo' = any(some_array)`
+
+ - ``INSERT`` statements now support ``SELECT`` statements without parentheses.
+
+ - Fixed an issue that could lead to incorrect results if the WHERE clause
+   contains primary key comparisons together with other functions like match.
+
+ - Fixed an issue that caused select queries with bulk arguments to hang
+   instead of throwing the proper error.
+
+ - Fixed a rare race condition that could happen on select queries during a
+   shard relocation leading to a `ArrayIndexOutOfBoundsException` or a wrong
+   result.
+
+ - Fix: Creating new partitions could have failed in case the partitioned table
+   was created prior to CrateDB version ``0.55.0`` and the table contained a
+   ``object`` column.
+
+2016/12/05 1.0.0
+================
+
+ - BREAKING: Removed ``schema_name`` from ``information_schema.tables``,
+   ``information_schema.columns`` and ``information_schema.table_constraints``
+   in favour of ``table_schema``.
+
+ - Possibly BREAKING blob storage changes:
+
+   - Changed blob storage to utilize all paths listed under `path.data`.
+
+   - Changed the directory layout in case a custom `blobs.path` is configured.
+     This allows running two nodes on the same machine pointing to the same
+     `blobs.path` without conflicts.
+
+   These changes require a manual migration for users who have blob tables and
+   either had:
+
+     - Multiple paths configured under `path.data`
+
+     - A custom `blobs.path` set either globally or per table.
+
+   Please run the migration script provided **before** updating to examine
+   whether you're affected by these changes.
+   https://github.com/crate/crate-utils/tree/master/migrations/pre-1.0
+   It will also provide instructions on what has to be done.
+
+ - Removed the ``client`` package which contained the deprecated ``crate-client``.
+   You should start using the PostgreSQL JDBC driver instead.
+
+ - Removed java7 support
+
+ - Optimize execution of joins by ordering the join relations based on
+   join/where conditions.
+
+ - Fixed issue in joins with 3 or more tables where limit was applied
+   before `where` clause filtering which produced  wrong results.
+
+ - Fixed issue which causes ``BETWEEN`` to return a wrong result if
+   ``min`` or ``max`` is null.
+
+ - Improved error message if function is unsupported with `distinct`
+
+ - Nested numeric factors do not require brackets any more;
+   e.g. ``SELECT + - 10`` is now supported.
+
+ - Added subscript support for `cast` and `try_cast` expressions.
+   e.g.: `select cast(coordinates as array(double))[1] from sys.summits`
+   is now possible
+
+ - Upgraded Elasticsearch to 2.4.2
+
+ - Added scalar functions ``latitude`` and ``longitude`` to extract
+   latitude and longitude of a ``geo_point``.
+
+ - Improved performance of ``array_cat`` and ``array_difference``
+   scalar functions if the array contains function expressions.
+
+ - New setting ``stats.service.interval`` which allows to control
+   the refresh interval of the table statistics used to create optimal
+   query execution plans.
+
+ - Added support for global aggregations on subselects.
+
+ - Added the ``-C`` option for providing Crate settings and deprecated
+   usage of the ``.es`` prefix with ``-D`` option.
+
+ - Added support for global aggregations on joins
+
+ - Log unhandled HTTP related exceptions as `debug` instead of `error`.
+
+ - Implemented ``if`` conditional function.
+
+ - F261/F262: Implemented ``CASE`` expression support.
+
+ - Removed the duplicate `rowcount` field from the HTTP response.
+
+ - Added the ``search_path`` session setting parameter. The default table
+   schema can be set with ``SET SESSION search_path = schema_name``.
+
+ - Updated crate-admin to ``1.0.1`` which includes the following changes:
+
+    - Fixed an issue that caused incorrect URL paths if the project gets built.
+
+    - Implemented new layout for the admin-ui.
+
+    - Local development: do not store ``base_uri`` permanently in localStorage
+      but keep it in URL.
+
+    - Added Pepper contact widget which displays various Crate.IO
+      support Channels in a user friendly way.
+
+    - The first node in the node list is selected by default.
+
+    - The first table in the table list is selected by default.
+
+    - Developer news from crate.io website are now loaded correctly into
+      newsfeed.
+
+ - Updated Crash to `0.20.0` which includes the following change:
+
+    - Updated information_schema metadata queries to reflect the current state
+      of CrateDB.
+
+2016/11/30 0.57.4
+=================
+
+ - Fixed ClassCastException that occurs when executing queries with
+   `order by` that uses scalar functions which have integer return type
+   and null values are involved in the ordering.
+   e.g. ``SELECT * from t1 ORDER BY abs(col1)`` (col1 contains nulls)
+
+ - Fixed NPE that that can occur in join queries when left table
+   has no matching records.
+
+ - Fixed issue that caused join queries to get stuck when killed.
+
+ - Improved error message when column is missing from `group by`
+   by using the column alias instead of the column name.
+
+ - Improve error message for not supported set operations
+   `intersect` and `except`.
+
+ - Improved error handling:
+   Sometimes a user would get a "Job Killed" error instead of the actual error
+   that caused a query to get interrupted.
+
+ - Fixed a memory leak that was caused by blob uploads.
+
+2016/11/24 0.57.3
+=================
+
+ - Added ``path`` and ``blob_path`` columns to the ``sys.shards`` table.
+
+2016/11/22 0.57.2
+=================
+
+ - Fixed NPE that can occur on invalid HTTP requests.
+
+ - Updated crate-admin to ``0.21.3`` which includes the following change:
+
+    - fixed bug that caused the cluster REST URL link in nodes view page to be unsafe.
+
+ - Updated Crash to `0.19.1` which includes the following change:
+
+    - ``--sysinfo`` does not fail any more when the name of the connected
+      CrateDB node contains a unicode character.
+
+    - Crash was trying to connect to invalid hosts if no hosts were provided
+      via ``--hosts`` argument and configuration file was already present.
+
+ - Fixed an issue at the `date_trunc` scalar evaluation that caused an
+   error to be thrown if the given `interval` is a reference and
+   evaluates to `NULL`.
+
+ - Fixed an issue in the runtime error handling that could cause
+   right-outer-join queries to get stuck.
+
+ - Changed `<literal> = ANY([null])` to no longer result in a cast exception
+   but return null.
+
+ - Fixed the `IN` and `ANY` predicates to return null if any of the arguments
+   are null and there is no match.
+
+ - Fixed a race condition that could cause join statements or statements with a
+   very high limit to get stuck or result in a "Same bucket of a page set more
+   than once" error.
+
+ - ``COPY FROM`` now correctly resolves files within symlinked folders when a
+   wildcard is used in the path.
+
+ - Fixed an issue that caused join query to get stuck when an
+   expression evaluation related to both relations caused an error.
+
+ - Fixed ``ORDER BY`` clauses on scalar subqueries: In certain cases the ORDER
+   BY clause got removed resulting in an un-ordered result.
+
+ - Fixed inconsistency in the calculation of low/high disk watermark
+   thresholds for node checks and logs.
+
+ - Fixed an issue with certain subselects which led to incorrect results.
+   (E.g.: ``select sum(x) from (select x from t limit 1)``)
+
+ - Fixed an issue which prevented inserting data using the ``COPY FROM``
+   statement into tables created with the ``CLUSTERED BY`` clause.
+
+ - Fixed null value handling of comparison operator ``BETWEEN``.
+
+ - Fixes evaluation of `OR` expressions if one argument evaluates to
+   `true` and the other results in an error.
+
+ - Fix: Prevent adding columns with restricted names to dynamic objects
+
+ - Reduced the memory requirement for update and delete statements which only
+   affect a small subset of a table
+
+ - Fixed an issue that caused the ``WHERE`` clause of queries on ``unnest(..)``
+   to be ignored.
+
+2016/11/10 0.57.1
+=================
+
+ - Fixed NPE in the ``percentile`` aggregation fucntion. The NPE was occurring
+   in case when queried shards have no records.
+
+ - Fixed an issue with select queries returning duplicate outputs
+   when `where` uses `=` with `primary key` and an order by which is
+   also part of the selected fields is used.
+
+ - Fixed adding a column to an existing object array using `ALTER TABLE`
+
+ - Fix: selecting os_info['jvm']['vm_vendor'] and os_info['jvm']['name'] caused
+   ColumnUnknownExceptions
+
+ - Removed reduced thread stack size java option, stack size defaults
+   to JVM defaults now.
+
+ - Fixed an issue that causes outer joins to fail with an exception
+   if columns are referenced in a where clause but not as select items.
+
+ - Updated crate-admin to ``0.21.2`` which includes the following change:
+
+     - fixed incorrect sql query for creating the tweets table in the tutorial.
+
+ - Fixed an issue that caused right outer joins to get stuck instead of returning
+   a result if the left table is empty.
+
+ - Updated crate-admin to ``0.21.1`` which includes the following changes:
+
+     - Fix: Corrected the sql queries to display the table list in the
+       Tables view, and to create the tweets table only if it does not exist.
+
+ - Fixed an issue that caused left outer joins to return an empty result if the
+   joined table is empty.
+
+ - Fix: Certain subselects with nested ``order by`` and ``limit`` or ``offset``
+   produced incorrect results.
+   eg. select * from (select a, b from t1 order by a limit 3) as t order by b limit 2
+
+2016/10/27 0.57.0
+=================
+
+ - Updated Crash to `0.19.0` which includes the following change:
+
+    - Allow "short hosts" as Crate hosts argument,
+      such as ``:4200`` for ``localhost:4200``
+
+ - Updated crate-admin to `0.21.0` which includes following changes:
+
+    - Added a button to clear the search field in the table list view.
+
+    - Added Spanish translation.
+
+ - Allow ``admin-ui`` to be served from ``/`` if accessed via browser.
+   Otherwise the request is handled by the REST API.
+
+ - Upgraded Elasticsearch to 2.4.1
+
+ - Improved parameter de-serialization of the "Bind" message. If a client
+   doesn't provide parameter types in the parse message, bind will now default
+   to text/varchar instead of text/json.
+   This enables support for clients like pg-nodejs
+
+ - Added support for the "Flush" message in the Postgres wire protocol.
+
+ - Added support for scalar subquery expressions to SELECT statements.
+
+ - Added ``CURRENT_SCHEMA`` system information function
+
+ - Added column ``table_schema`` in ``information_schema.columns``,
+   ``information_schema.tables`` and ``information_schema.table_constraints``
+   in order to be conform with the SQL standard. The column ``schema_name``
+   is deprecated.
+
+ - Added support for BETWEEN
+
+ - Added support of expressions in the array constructors. Allowed to
+   to write an array constructor in the PostgreSQL form, like `ARRAY[]`.
+
+ - Expose bound psql port in ``sys.nodes``
+
+ - BREAKING: Removed deprecated Plugin interface methods.
+
+ - Deprecated the ``CrateClient`` class
+   You should start using the PostgreSQL JDBC driver instead.
+
+ - Extended the Postgres wire protocol to support describe for queries with
+   result sets. This removes the requirement to set "prepareThreshold=0" when
+   using the JDBC client.
+
+ - Added support for SET LOCAL|SESSION statements.
+
+ - Support ``SELECT`` queries without the ``FROM`` clause. Such queries are
+   executed against the ``sys.cluster`` table.
+
+ - The PostgreSQL wire protocol is enabled by default.
+
+2016/10/25 0.56.3
+=================
+
+ - Fix: ``ORDER BY`` was applied in wrong order in case of rewritable
+   subselects.
+
+ - Show meaningful error when a node is started with invalid settings,
+   e.g. invalid unicast host.
+
+ - Fix the NPE that occured if `distinct` was applied on expressions
+   which resulted in null values.
+
+ - Fix: Revert usage of new Lucene queries for geo point ``within`` queries
+   because of an unresolved bug in Lucene 5.x versions.
+
+ - Updated crate-admin to ``0.20.4`` which includes following changes:
+
+    - Fix: removed chinese language from i18n configuration.
+
+    - Fix: added english as a fallback language for translation files.
+
+    - Fixed broken execute button in the console view.
+
+    - Fix: Reduced the amount of log output to browseonsole when issuing
+      SQL statements.
+
+2016/10/13 0.56.2
+=================
+
+ - Updated crate-admin to ``0.20.2`` which includes following changes:
+
+   - Fixed the chart error that occured when navigating between the overview
+     and other pages.
+
+   - Fixed the logo URL which was not redirecting correctly.
+
+   - Fixed an issue that caused the query history in the console view to be
+     inconsistent.
+
+ - Changed the server_version formatting sent via the postgres wire protocol to
+   be compatible with clients which can't handle the numeric notation.
+
+ - Updated Crash to 0.18.1 which contains the following change:
+
+    - Fix: crashed in verbose mode if Crate didn't provide an error trace
+
+ - Postgres clients do not accept negative years in timestamp string but
+   require ``BC`` suffix for dates before Christ. Now the correct date format
+   string is sent to client.
+
+ - Removed arbitrary limit on timestamp values. Now also dates before
+   1653-02-10 and after 2286-11-20 are supported.
+   However, there is still a limitation that the year needs to be within in the
+   integer range (-292275054 <= year <= 292278993).
+
+2016/10/10 0.56.1
+=================
+
+ - Negations of non-numeric literals now cause a query to fail instead of
+   silently ignoring the negation.
+
+ - Fix: The ``minimum_should_match`` fulltext search option was ignored
+   which lead to incorrect results for queries with multiple terms when
+   ``minimum_should_match`` was explicitly set to a non-default value.
+
+ - Fixed an issue that causes the `try_cast` function to fail while casting
+   the WKT representation of a point with invalid coordinates to geo_point.
+
+ - All operations on closed partitions result in error now.
+
+ - Fixed an issue that could cause `COPY <table> TO DIRECTORY` statements to
+   fail
+
+ - Fixed an issue that might cause queries to fail with a `Same bucket of a
+   page set more than once` error.
+
+ - Fixed an issue that could cause arrays with null entries to cause a NPE
+   during the generation of another error message.
+
+ - Fix: An issue on self joins when columns from both relations are
+   used in where clause.
+   E.g. FROM table t1, table t2 WHERE t1.col = 'foo' and t2.col = 'bar';
+
+ - Fix: ``ANY`` operator fails in the ``WHERE`` clause if a subscript is
+   used as an expression.
+   E.g. 'value' = any(obj_array[1]['a']['b'])
+
+ - Fix: ``WHERE`` clauses with a ``NOT`` operator where the column
+   reference resolves to ``NULL`` now return the correct results:
+   ``NOT NULL`` -> ``NULL`` -> no match
+
+ - Fix: The ``count`` aggregation function counts null values.
+   E.g. count(cast(null as string))
+
+ - Fixed evaluation of ``NOT NULL`` (=> ``NULL``) in ``WHERE`` clause
+
+ - Fix: Prevented usage of ``MATCH`` predicates on columns of both relations
+   of a join if they cannot be applied to each of them separately.
+   eg: FROM t1, t2 WHERE match(t1.txt, 'foo') OR match(t2.txt, 'bar');
+
+ - Fixed an issue which could cause ``EXPLAIN`` statements to fail
+
+2016/09/23 0.56.0
+=================
+
+ - BREAKING: Column names returned on queries does not include the table and schema
+   names anymore, i.e., ``select doc.t1.a from t1`` will return column name ``a``
+   instead of ``doc.t1.a``.
+
+ - BREAKING: Moved some `sys.checks` into a new `sys.node_checks` table as
+   those checks were actually node specific.
+   Added the ability to acknowledge failing checks on this new
+   `sys.node_checks` table.
+
+ - Updated crate-admin to ``0.20.0`` which contains following changes:
+
+    - Added a new console option to allow users to display the error trace
+      when an error occurs.
+
+    - Added translation for tutorial plugin. This enables support for i18n for
+      any admin ui plugin.
+
+ - Fix: aggregations on no-match JOIN queries incorrectly returned empty result
+   Now these queries fail because aggregations are not supported on joins
+
+ - Updated crash to 0.18.0 which contains following changes:
+
+    - Don't show tables from ``pg_catalog`` if ``\dt`` command is used.
+
+    - Make the ``\check`` command to display both, node and cluster checks.
+      Allow ``node`` and ``cluster`` arguments for the command to display
+      node and cluster checks, respectively.
+
+ - Added support for outer joins: LEFT, RIGHT and FULL.
+
+ - Added `percentile` aggregate function.
+
+ - Fixed an issue that could cause joins on 3+ tables to produce the wrong
+   result.
+
+ - Fix: Inserting in tables which have a generated column with
+   `current_timestamp` failed.
+
+ - Added the sys.summits table. The table contains the information about
+   mountains in the Alps higher than 2000 meters, which are used as node names.
+
+ - Replaced the existing list of random node names with the list of mountains
+   in the Alps.
+
+ - Remove limitation that prevented usage of columns from multiple tables
+   in the same order by expression.
+   eg: FROM t1, t2, t3 ORDER BY t1.x - t2.y + t3.z
+
+ - F501: Added SQL conformance info to ``information_schema.sql_features``
+
+ - Updated crate-admin to ``0.19.0`` which contains following changes:
+
+   - Display failing node checks on overview page and allow to dismiss them.
+
+   - Added German translation.
+     This change also enables the possibility for further i18n.
+
+ - Added plugin for unicast host discovery on Azure (ARM mode)
+
+ - Optimized sys.nodes queries
+
+ - Queries on the `sys.nodes` table will now short circuit in case some nodes
+   in the cluster are unresponsive. All columns of the unresponsive nodes will
+   contain null values except `id` and `name`.
+
+ - Added support for subselect statements that can be rewritten as a single query.
+
+ - Fetch operations are now threaded per shard instead of per node.
+
+ - Added initial experimental support for the postgres wire protocol. This is
+   disabled by default.
+
+ - Improved the error message of `COPY FROM` statements which fail due to
+   invalid entries in the files being imported.
+
+ - Implemented basic conditional functions
+   (``coalesce()``, ``greatest()``, ``least()``, ``nullif()``).
+
+ - Implemented NOT NULL column constraint.
+
+ - Added high/low disk watermark node checks exposed via `sys.node_checks`.
+
+ - Leverage new Lucene queries for geo point queries (``distance``, ``within``,
+   ``match`` using ``within``). Newly created tables with geo_point columns
+   automatically use the new queries whereas previously created tables still
+   use the backwards compatible old queries.
+
+ - Implemented OPTIMIZE table statement which optimizes tables and partitions
+   by merging the segments of which each table and partition consists.
+
+ - Updated crash to 0.17.0 which contains following changes:
+
+      - Added support for OPTIMIZE table statement.
+
+      - All statements will respond with an affected rows count now.
+
+      - Added a configuration file that stores default values for Crash. The file is
+        placed inside the user's application config folder.
+        A path to a custom configuration file can be specified using the ``--config``
+        command line argument.
+
+      - Dropped Python 2.6 support
+
+      - Added support for client certificates
+
+      - It is now possible to disable autocompletion using ``--no-autocomplete``
+        command line argument and to toggle autocomplete using the ``\autocomplete``
+        crash command.
+
+      - Fixed "read file" command (``\r``) for legacy Python 2.7
+
+      - Fixed result info command output for whitespace other than space
+        characters in queries.
+
+      - Fixed call of `sysinfo` command when launching the shell.
+
+ - Deprecated usage of COPY TO without specifying a DIRECTORY. This will prevent a user from defining an output path
+   that conflicts with multiple shards.
+
+ - Optimize count aggregations by using custom data type to avoid boxing of primitives into Objects.
+
+2016/09/19 0.55.5
+=================
+
+ - Fix: Dropping a partition while inserting by primary key into same
+   partition should not raise an exception but returns a 0 row count instead.
+
+ - Fix: JAR conflict if HDFS plugin with Hadoop 2.x is used.
+
+ - Fix: Now it is also possible to restore a snapshot of a single partition
+   of a partitioned table in a non-existent table.
+   This requires that the snapshot has been created with version ``0.55.5``
+   or greater!
+
+ - Fix: Join conditions were not properly validated and an expression
+   with a not yet defined relation could be used.
+
+ - Fix: Setting of a default schema was not possible by using the HTTP REST
+   endpoint.
+
+ - Fix: Error was thrown in case of primary key bulk delete statement
+   with null bulk arguments.
+
+ - Fix: Return 0 rows instead of an error when executing select queries
+   that try to match null for primary key columns.
+   eg: select * from t where pk in (null);
+
+ - Fix: Allow select statements on columns of multiple nested object array
+
+ - Fix: do not allow to create tables in read-only system schemas
+
+ - Fix: `COPY FROM` statements fail if null values are inserted into partitioned
+   tables.
+
+ - Fix: type was not set correctly when creating a token filter
+   with default name and no type
+
+ - Fix: prevent creating `char filters` with missing properties
+
+2016/08/16 0.55.4
+=================
+
+ - Fixed a NPE in ordered select statements.
+
+ - Fix: Inserting a duplicate primary key lead to an update on
+   replicas even though it resulted in a DuplikateKeyException
+   (introduced with version 0.55.0).
+
+ - Fix: Querying a partitioned table by a single primary key raised an
+   exception instead of responding whith a zero row count.
+
+ - Improved the performance of sorted join queries
+
+2016/08/05 0.55.3
+=================
+
+ - Fixed a race condition which could cause select statements to get stuck
+
+ - Fixed an issue which prevents java client from running explain
+   statements.
+
+ - Fixed an issue which caused `current_timestamp` as part of a generated
+   expression to not work correctly.
+   This fix will only affect new tables. Tables which already contain a
+   generated column which uses `current_timestamp` will need to be recreated.
+
+ - Improved error handling when grouping by invalid data types.
+
+ - Fixed an issue when ordering by a function on a joined query.
+
+ - Fixed an issue which could lead to wrong Error messages due to a
+   race condition.
+
+ - Fix: Arrays of geo_point can be used in insert/update
+   statements as literals as well as bind arguments.
+
+ - Fixed a read isolation issue which could cause joins involving
+   system and blob tables to return inconsistent results.
+
+ - On Hunspell dictionary configuration, the parameter
+   indices.analysis.hunspell.dictionary.location has been removed and <path.conf>/hunspell
+   is always used.
+
+ - Fixed a bug that prevented join and sort on blob tables.
+
+ - Adapted behaviour of stats.enabled, stats.jobs_log_size and stats.operations_log_size settings
+   to match behaviour of other cluster wide settings like for example minimum_master_nodes.
+
+ - Fix: Do not fetch table stats when node is not fully available yet.
+   This could have led to NullPointerExceptions during long recovery
+   process on node start.
+
+ - Fixed an issue which prevented running join queries on empty partitioned
+   tables.
+
+ - Fix: the ``hostname`` column of the ``sys.nodes`` table returns a hostname
+   instead of an IP address.
+
+ - Fixed an issue that caused select statements to get stuck if used as part of
+   a bulk request. Now a proper error is raised.
+
+ - Updated Elasticsearch to 2.3.4
+
+ - Fix: the ``within`` scalar function now allows querying geo_shapes within
+   geo_shapes.
+
+
+2016/07/07 0.55.2
+=================
+
+ - Fix: selecting ``os['timestamp']`` multiple times in same ``sys.nodes``
+   statement could result in different values.
+
+ - Fix: selecting ``os``, ``network``, ``fs`` or ``process`` from ``sys.nodes``
+   in very quick succession or multiple times in same select statement
+   could lead to wrong results for percentual values from the underlying sigar
+   library.
+
+ - Fixed performance issues with arithmetic operators and functions.
+
+ - Fixed duplicate key error handling for multiple row inserts. Instead of
+   responding with an error the number of affected row is adjusted.
+
+ - Fixed a NPE that occurred when inserting null values to a generated column.
+
+2016/06/28 0.55.1
+=================
+
+ - Fix: Failures on large bulk operations could lead to an
+   stackoverflow error and unresponsive cluster.
+
+ - Updated crash to 0.16.2 which contains following changes:
+
+   - Fix: crash_standalone could crash because it contained non-ascii character
+     but no encoding was declared
+
+   - Fixed "read file" command (``\r``) for legacy Python 2.7
+
+   - Fixed result info command output for whitespace other than space
+     characters in queries.
+
+   - Fixed call of `sysinfo` command when launching the shell. stackoverflow error and unresponsive cluster.
+
+ - Fix: Ordered queries with limit 0 failed
+
+ - Fixed error handling while preparing execution plans.
+
+ - Fix: Number of bulk results were equal to the total number of items
+   on bulk inserts/updates, ignoring possible multi-value bulk inserts/updates.
+
+ - Fixed path to sigar lib in crate.bat for Windows
+
+ - Fixed proper validation of the ``blocks.*`` table settings at all
+   SQL operations.
+
+ - Fix: Allow select statements with more than one level nested arrays in table columns.
+   eg: SELECT categories['items']['id'] FROM assets
+
+ - Fixed an edge case that could cause sorted join queries to fail.
+
+ - Fix: Allow concurrent deletion of partition without raising an exception.
+
+ - Throw a more meaningful error if an attempt is made to order by an invalid field in a query with aggregations.
+
+ - Fixed cpu used bug. It was returning -1, even if cpu info loaded from sigar.
+
+ - Update crate-admin to 0.18.1 which contains following changes:
+
+    - Resolve path to ``/_sql`` endpoint correctly when Crate is served at a
+      different location than ``/``
+
+    - Note that 0.55.0 didn't include 0.18 but 0.17, although it was mentioned
+      in the changelog. For a list of changes from 0.17 to 0.18 see the 0.55.0
+      release section.
+
+ - Fix in Cloud AWS plugin: Use the current region of the instance if no EC2
+   region is specified in the configuration.
+
+ - Fixed a validation issue that allowed setting a primary key column value to
+   null
+
+2016/05/30 0.55.0
+=================
+
+ - BREAKING: Units are now required for time or byte based settings in the
+   `crate.yml` configuration file. Nodes won't start otherwise.
+
+ - BREAKING: The `gateway.local.sync` setting has been renamed to
+   `translog.sync_interval`.
+
+ - BREAKING: It is no longer possible to specify the location of the config
+   file with the `CONF_FILE` environment variable, or the `-Des.config`,
+   `-Des.default.config`, or `-Delasticsearch.config` parameters.
+   The config file must now be named `crate.yml` and must be located in the
+   default `config/` directory, in the directory specified in the `CONF_DIR`
+   environmental variable, or the one specified in the `-Des.path.home`
+   parameter.
+
+ - BREAKING: Crate will die now on all plugin loading errors.
+
+ - BREAKING: Column names may not contain the `.` character anymore.
+
+ - BREAKING: Tables are not refreshed automatically anymore before and after
+   a `DELETE-BY-QUERY` operation is applied.
+
+ - Upgraded Elasticsearch to 2.3.3
+
+ - Implemented trigonometric scalar functions
+   (sin(), cos(), tan(), asin(), acos() & atan()).
+
+ - Updated crate-admin to 0.18.0 which contains following changes:
+
+    - Cluster check include now clickable links
+
+    - Load additional links in menu dynamically from news feed
+
+    - Fixed an issue which caused rendering errors in the node list if the cluster
+      contains multiple nodes with the same name
+      note: changes the url to the detail view of single nodes
+
+    - Added UTM tokens to links that link to the Crate.IO blog
+
+    - Updated news feed URL
+
+    - Label the master node in the cluster node list
+
+ - Fixed a bug which prevented complete deletion of tables in custom
+   schemas.
+
+ - Improved the `KILL` behaviour for `COPY`, `UPDATE` and `DELETE` statements.
+
+ - Fixed a `ClassCastException` that occurred if the left side of a `IN`
+   predicate was a function.
+
+ - Added links to Cluster check documentation.
+
+ - Removed the `creationTime` property from `SQL(Bulk)Request` and changed the
+   `duration` property on `SQL(Bulk)Response` to return the server-side
+   duration instead of the full round-trip duration.
+
+ - The default number of shards is calculated dynamically upon the table
+   creation.
+
+ - Deprecated camelCase names on `CREATE ANALYZER`.
+
+ - `+HeapDumpOnOutOfMemoryError` is no longer set by default.
+   It can still be set using the JAVA_OPTS environment variable.
+
+ - Made sure orphaned contexts are cleaned up eventually after a coordinator
+   node dies.
+
+ - Load ``crate.yml`` explicitly and do not allow any other extension than
+   ``yml`` for the configuration file.
+
+ - Restrict creation of tables having the primary key constraint within
+   an array column type or its children.
+
+ - Renamed all scalar function names to lowercase (CamelCase names
+   were transformed to lowercase using `_` as word boundary)
+
+ - Fixed a NPE at the `substr` scalar function when using column
+   references as from/to arguments containing null values.
+
+ - NOTE: Upgrading to this Crate version is only supported from >= 0.52
+
+ - Removed the `bulk.partition_creation_timeout` setting.
+
+ - Removed internal migration code that ensured schema backward compatibility
+   to Crate versions <= 0.45
+
+ - Improved the speed of global aggregation queries which involve more than 1
+   shard per node.
+
+ - The log level of loggers can now be set at runtime via the ``SET`` statement.
+
+ - Improved validation of geo point data type; now it is not possible any more
+   to insert invalid latitude or longitude in array literals.
+
+ - Nodes can be configured now to allow only SQL statements resulting
+   in read operations using new setting ``node.sql.read_only``.
+
+ - Improved bulk insert/update and copy-from performance when replicas
+   are configured.
+
+ - Fixed planner issues that could cause INSERT INTO with a JOIN in the
+   sub-query to fail or get stuck.
+
+ - Removed the ``jobs.keep_alive_timeout`` setting and all related logic.
+   This means it is no longer possible to enable automatic job termination.
+
+ - Added a ``node_filters`` option to ``COPY FROM``.
+
+ - Add support for ``COPY FROM`` to ``EXPLAIN``.
+
+ - The ``COPY FROM`` statement now also accepts an array of strings as URI.
+
+ - Added support for schemes supported by the used JVM's `URL` implementation
+   for ``COPY FROM``. These usually include``http``, ``https``, ``ftp`` and
+   ``jar``.
+
+ - Added support for the ``unnest`` table function.
+
+ - Implemented cluster check for installed java version.
+
+ - removed wrong behaving CrateClient feature which allowed to load
+   client settings from a configuration file.
+
+ - Crate will now recognize settings defined by crate plugins.
+
  - Implemented the EXPLAIN command for SELECT statements.
-
- - Added `routing_state` column to `sys.shards` table in order to fix the
-   underreplicated shards calculation in admin ui
-
- - BREAKING CHANGE: Tables are not refreshed automatically anymore
-   before and after a `DELETE-BY-QUERY` operation is applied.
 
  - Removed the limitation that the WHERE clause couldn't contain
    certain expressions in `DELETE` statements
 
- - BREAKING CHANGE: column names may not contain the `.` character anymore
-
  - Exposed setting the default schema via HTTP header.
 
- - added `lower`` and `upper`` string functions
+ - Added `lower`` and `upper`` string functions.
+
+2016/05/12 0.54.9
+=================
+
+ - Improved retry logic of bulk inserts/updates in order to prevent stack
+   overflows caused by recursive retry calls that could lead to hanging updates
+   and imports using ``copy from``.
+
+ - Fixed a race condition that could lead to relative write operations (`x = x
+   + 1`) to be executed twice.
+
+ - In certain cases settings provided via ``-Des.`` system properties could
+   be overridden by the ``crate.yml`` provided in ``$CRATE_HOME/config``
+
+ - Fixed an issue that prevented generated columns to work correctly
+   with arrays.
+
+ - Restrict creation of tables having the primary key constraint within
+   an array column type or its children.
+   with arrays.
+
+ - Fixed an issue that could lead to the `internal_action_long_timeout` and
+   `recovery_activity_timeout` settings to be reset to a wrong default value on
+   a setting update
+
+ - Fixed an issue that could lead to stuck queries if a node dropped out of the
+   cluster.
+
+ - Fix: Changing the column policy on a partitioned table throws an
+   exception if more than 1 partition exists.
+
+ - Fix: Altering a setting on an empty partitioned table is changing
+   the setting on all exising tables.
+
+ - Fix: Throw proper error if a column is used twice in primary key constraint.
+
+ - Fix: Improved error handling to make sure JOIN queries don't get stuck on
+   shard failures.
+
+ - Fix bug which could cause the MATCH predicate in WHERE clause for
+   partitioned tables to fail. This happens in cases when a column ident of the
+   MATCH predicate is not a primary key column.
+
+ - Fix: While restoring a snapshot with multiple indices inside,
+   selecting concrete indices can result in a wrong index being restored.
+
+ - Fix: Insert by query into a table with nested primary keys or
+   nested partitioned by columns defined did not work.
+
+2016/04/08 0.54.8
+=================
+
+ - Updated crate/elasticsearch to fix an issue where the `minAvailability`
+   setting was not read from config file
+
+ - Fixed an issue that caused `CREATE TABLE` statements to ignore PRIMARY KEY
+   constraints on nested columns
+
+ - Fixed an issue that caused queries to get stuck if an invalid regex is used.
+
+ - Fixed an issue that caused INSERT-FROM-QUERY statements to fail if the
+   target table contained a generated column as primary key
+
+ - Fixed an issue that caused delete queries to fail if they contain
+   a expression on the left side of a comparison, e.g. 2 + 1 > x
+
+ - Fix: ``path.conf`` setting was ignored when set as command line argument
+
+ - Fixed error handling of concurrent update/insert and delete
+   statements on partitioned tables.
+
+ - Improved the error message of ON DUPLICATE KEY statements that attempt to
+   update null objects using a subscript notation.
+
+ - Fixed issue that caused certain operations not showing up at all
+   in operations_log while other marked as finished even before they actually
+   finished
+
+ - Fixed an issue that caused `timestamp_column = <exact_value>` not to match
+   in DELETE queries
+
+ - Added support for set to array and array to set conversions
+
+ - Improved the error message of insert into target/source column size
+   miss-match
+
+ - Create Table statements now validate that the PRIMARY KEY constraint doesn't
+   contain columns with unsupported data types
+
+ - Fixed an issue that could cause INSERT INTO with an INNER JOIN in the
+   sub-query to fail.
+
+ - Avoid running KeepAliveTimers every ms if ``jobs.keep_alive_timeout`` is set
+   to zero
+
+2016/03/11 0.54.7
+=================
+
+ - Clarified error messages on unsupported join operations
+
+ - Removed timestamp type guessing within objects and within the PARTITION
+   clause of the RESTORE SNAPSHOT statement.
+
+ - Made equality operator for ``object`` types work correctly for different
+   inner numeric values.
+
+ - Fix: Querying system tables could fail if connected to a client
+   node and cluster contains another client node.
+
+ - Upgraded the included groovy dependency from 2.4.0 to 2.4.4 for security
+   fixes
+
+ - Conversion from (double) arrays to geo_point is now more lenient and allows
+   integer values inside the array. This was done since some encoders tend to
+   convert float/double values to integers.
+
+2016/02/25 0.54.6
+=================
+
+ - Fixed a NPE that occurred if a table was created using the ES API with a
+   mapping that uses ``copy_to`` but does not define ``_meta.indices``.
+
+ - Fixed a NPE that could occur if a system table was joined with a regular
+   user table.
+
+ - Fixed an issue that could cause queries with ORDER BY on partitioned tables
+   to get stuck if multiple shards were on the same node and a single shard
+   couldn't produce the whole result.
+
+2016/02/15 0.54.5
+=================
+
+ - Updated crate-admin to 0.17.1 which contains following changes:
+
+   - Fix: updated BlenderPro webfont
+     This fixes CSS glitches in Firefox 44 which misinterpreted height of webfont.
+
+   - Fix: The recent update of the shard calculation for relocating shards caused
+     problems with partitioned tables showing incorrect table health.
+
+   - Fix: Reading an undefined property while cluster is offline caused
+     Javascript error.
+
+   - Fix: Rename cluster check indicator on statusbar to ``Checks``.
+
+   - Improved display of recovery percentage in table view
+
+   - Fix: relocating shards where previously displayed as "underreplicated" shards
+     causing a yellow cluster state while relocating was in progress
+
+   - Fix: change in calculation of recovery percentage broke calculations for
+     partitioned tables causing table partitions not showing up
+
+   - Fix: now also include unassigned shards (as 0% recovered) in calculation of
+     recovery percentage which is displayed per table.
+     Previously it could show '100% recovery done' even if there were still
+     unassigned shards.
+
+ - Updated crash to 0.16.0 which contains following changes:
+
+    - The order of the keys / columns of the ``json`` output format is now
+      deterministic and reflects the order of the columns in the executed query.
+
+    - `Ctrl-c` no longer results in a KeyboardInterrupt exception if invoked while
+      a query is being executed.
+
+    - Added initial auto-completion support for the internal ``\format`` and
+      ``\r`` commands.
+
+    - Added a new ``\r`` command which can be used to read and execute statements
+      from a file.
+
+    - Fixed an error that occurred under python 3 if one of the built-in commands
+      that require an argument were called without argument.
+
+ - Fixed a NullPointerException that occured if `= ANY ()` was used with a
+   literal array containing null values.
+
+ - Fixed an issue that caused array-literals with null items to result in an
+   error.
+
+ - Added `routing_state` column to `sys.shards` table in order to fix the
+   underreplicated shards calculation in admin ui
+
+ - Fix: exporting a table with a generated partitioned column using `copy to`
+   caused an Exception
+
 
 2016/01/22 0.54.4
 =================
@@ -611,7 +1841,7 @@ Unreleased
 
  - Fixed a race condition in `ALTER TABLE <partitioned_table>` that could occur
    if a `DELETE FROM <partitioned_table>` was invoked immediately before the
-    `ALTER TABLE` statement.
+   `ALTER TABLE` statement.
 
 2015/06/16 0.50.0
 =================
@@ -1501,12 +2731,13 @@ NOTE: Upgrading from 0.47 or earlier versions requires a full cluster restart
    runtime by using ``SET/RESET``
 
  - BREAKING:
-   Existing cluster settings have been renamed:
+    Existing cluster settings have been renamed:
      - collect_stats to stats.enabled
      - jobs_log_size to stats.jobs_log_size
      - operations_log_size to stats.operations_log_size
-   Please refer to the ``Configuration`` section in the documentation
-   for more details
+
+    Please refer to the ``Configuration`` section in the documentation
+    for more details
 
 2014/09/22 0.43.1
 =================

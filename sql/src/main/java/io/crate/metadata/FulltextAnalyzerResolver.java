@@ -21,6 +21,7 @@
 
 package io.crate.metadata;
 
+import com.google.common.base.Throwables;
 import com.google.common.collect.ImmutableSet;
 import io.crate.Constants;
 import io.crate.exceptions.AnalyzerInvalidException;
@@ -31,7 +32,6 @@ import org.elasticsearch.common.inject.Inject;
 import org.elasticsearch.common.io.stream.BytesStreamOutput;
 import org.elasticsearch.common.logging.ESLogger;
 import org.elasticsearch.common.logging.Loggers;
-import org.elasticsearch.common.settings.ImmutableSettings;
 import org.elasticsearch.common.settings.Settings;
 import org.elasticsearch.common.settings.loader.JsonSettingsLoader;
 import org.elasticsearch.common.xcontent.XContentBuilder;
@@ -56,13 +56,13 @@ public class FulltextAnalyzerResolver {
     // a concrete index (see AnalyzerModule.ExtendedProcessor)
     // stripped Prebuilt<Thingy> (e.g. PreBuiltTokenFilters)
     private static final ImmutableSet<String> EXTENDED_BUILTIN_TOKEN_FILTERS = ImmutableSet.of(
-            "limit", "delimited_payload_filter", "synonym",
-            "keep", "pattern_capture", "pattern_replace",
-            "dictionary_decompounder", "hyphenation_decompounder",
-            "keyword_marker", "stemmer_override",
-            "hunspell", "cjk_bigram", "cjk_width");
+        "limit", "delimited_payload_filter", "synonym",
+        "keep", "pattern_capture", "pattern_replace",
+        "dictionary_decompounder", "hyphenation_decompounder",
+        "keyword_marker", "stemmer_override",
+        "hunspell", "cjk_bigram", "cjk_width");
     private static final ImmutableSet<String> EXTENDED_BUILTIN_CHAR_FILTERS = ImmutableSet
-            .of("mapping", "pattern_replace");
+        .of("mapping", "pattern_replace");
 
     // used for saving the creation statement
     public static final String SQL_STATEMENT_KEY = "_sql_stmt";
@@ -104,11 +104,12 @@ public class FulltextAnalyzerResolver {
 
     /**
      * get all the builtin Analyzers defined in Crate
+     *
      * @return an Iterable of Strings
      */
     public Set<String> getBuiltInAnalyzers() {
         return new ImmutableSet.Builder<String>()
-                .addAll(indicesAnalysisService.analyzerProviderFactories().keySet()).build();
+            .addAll(indicesAnalysisService.analyzerProviderFactories().keySet()).build();
     }
 
     /**
@@ -126,7 +127,7 @@ public class FulltextAnalyzerResolver {
     public Map<String, Settings> getCustomAnalyzers() throws IOException {
         Map<String, Settings> result = new HashMap<>();
         for (Map.Entry<String, String> entry : getCustomThingies(CustomType.ANALYZER)
-                .getAsMap().entrySet()) {
+            .getAsMap().entrySet()) {
             if (!entry.getKey().endsWith("." + SQL_STATEMENT_KEY)) {
                 result.put(entry.getKey(), decodeSettings(entry.getValue()));
             }
@@ -145,14 +146,14 @@ public class FulltextAnalyzerResolver {
 
     public Set<String> getBuiltInTokenizers() {
         return new ImmutableSet.Builder<String>()
-                .addAll(indicesAnalysisService.tokenizerFactories().keySet())
-                .build();
+            .addAll(indicesAnalysisService.tokenizerFactories().keySet())
+            .build();
     }
 
     public Map<String, Settings> getCustomTokenizers() throws IOException {
         Map<String, Settings> result = new HashMap<>();
         for (Map.Entry<String, String> entry : getCustomThingies(CustomType.TOKENIZER).getAsMap
-                ().entrySet()) {
+            ().entrySet()) {
             result.put(entry.getKey(), decodeSettings(entry.getValue()));
         }
         return result;
@@ -164,14 +165,14 @@ public class FulltextAnalyzerResolver {
 
     public Set<String> getBuiltInCharFilters() {
         return new ImmutableSet.Builder<String>().addAll(EXTENDED_BUILTIN_CHAR_FILTERS)
-                .addAll(indicesAnalysisService.charFilterFactories().keySet())
-                .build();
+            .addAll(indicesAnalysisService.charFilterFactories().keySet())
+            .build();
     }
 
     public Map<String, Settings> getCustomCharFilters() throws IOException {
         Map<String, Settings> result = new HashMap<>();
         for (Map.Entry<String, String> entry : getCustomThingies(CustomType.CHAR_FILTER).getAsMap
-                ().entrySet()) {
+            ().entrySet()) {
             result.put(entry.getKey(), decodeSettings(entry.getValue()));
         }
         return result;
@@ -183,35 +184,40 @@ public class FulltextAnalyzerResolver {
 
     public Set<String> getBuiltInTokenFilters() {
         return new ImmutableSet.Builder<String>()
-                .addAll(EXTENDED_BUILTIN_TOKEN_FILTERS)
-                .addAll(indicesAnalysisService.tokenFilterFactories().keySet())
-                .build();
+            .addAll(EXTENDED_BUILTIN_TOKEN_FILTERS)
+            .addAll(indicesAnalysisService.tokenFilterFactories().keySet())
+            .build();
     }
 
     public Map<String, Settings> getCustomTokenFilters() throws IOException {
         Map<String, Settings> result = new HashMap<>();
         for (Map.Entry<String, String> entry : getCustomThingies(CustomType.TOKEN_FILTER).getAsMap
-                ().entrySet()) {
+            ().entrySet()) {
             result.put(entry.getKey(), decodeSettings(entry.getValue()));
         }
         return result;
     }
 
-    public static BytesReference encodeSettings(Settings settings) throws IOException {
-        BytesStreamOutput bso = new BytesStreamOutput();
-        XContentBuilder builder = XContentFactory.jsonBuilder(bso);
-        builder.startObject();
-        for (Map.Entry<String, String> entry : settings.getAsMap().entrySet()) {
-            builder.field(entry.getKey(), entry.getValue());
+    public static BytesReference encodeSettings(Settings settings) {
+        try {
+            BytesStreamOutput bso = new BytesStreamOutput();
+            XContentBuilder builder = XContentFactory.jsonBuilder(bso);
+            builder.startObject();
+            for (Map.Entry<String, String> entry : settings.getAsMap().entrySet()) {
+                builder.field(entry.getKey(), entry.getValue());
+            }
+            builder.endObject();
+            builder.flush();
+            return bso.bytes();
+        } catch (IOException e) {
+            // this is a memory stream so no real I/O happens and a IOException can't really happen at runtime
+            throw Throwables.propagate(e);
         }
-        builder.endObject();
-        builder.flush();
-        return bso.bytes();
     }
 
     public static Settings decodeSettings(String encodedSettings) throws IOException {
         Map<String, String> loaded = new JsonSettingsLoader().load(encodedSettings);
-        return ImmutableSettings.builder().put(loaded).build();
+        return Settings.builder().put(loaded).build();
 
 
     }
@@ -219,6 +225,7 @@ public class FulltextAnalyzerResolver {
     /**
      * used to get custom analyzers, tokenizers, token-filters or char-filters with name ``name``
      * from crate-cluster-settings
+     *
      * @param name
      * @param type
      * @return a full settings instance for the thingy with given name and type or null if it does not exists
@@ -228,7 +235,7 @@ public class FulltextAnalyzerResolver {
             return null;
         }
         String encodedSettings = clusterService.state().metaData().persistentSettings().get(
-                String.format(Locale.ENGLISH, "%s.%s.%s", Constants.CUSTOM_ANALYSIS_SETTINGS_PREFIX, type.getName(), name)
+            String.format(Locale.ENGLISH, "%s.%s.%s", Constants.CUSTOM_ANALYSIS_SETTINGS_PREFIX, type.getName(), name)
         );
         Settings decoded = null;
         if (encodedSettings != null) {
@@ -243,26 +250,27 @@ public class FulltextAnalyzerResolver {
 
     private Settings getCustomThingies(CustomType type) {
         Map<String, Settings> settingsMap = clusterService.state().metaData().persistentSettings
-                ().getGroups(Constants.CUSTOM_ANALYSIS_SETTINGS_PREFIX);
+            ().getGroups(Constants.CUSTOM_ANALYSIS_SETTINGS_PREFIX);
         Settings result = settingsMap.get(type.getName());
-        return result != null ? result : ImmutableSettings.EMPTY;
+        return result != null ? result : Settings.EMPTY;
     }
 
     /**
      * used to check if custom analyzer, tokenizer, token-filter or char-filter with name ``name`` exists
+     *
      * @param name
      * @param type
      * @return true if exists, false otherwise
      */
     private boolean hasCustomThingy(String name, CustomType type) {
         return clusterService.state().metaData().persistentSettings().getAsMap().containsKey(
-                String.format(Locale.ROOT, "%s.%s.%s", Constants.CUSTOM_ANALYSIS_SETTINGS_PREFIX, type.getName(), name));
+            String.format(Locale.ROOT, "%s.%s.%s", Constants.CUSTOM_ANALYSIS_SETTINGS_PREFIX, type.getName(), name));
     }
 
     /**
      * resolve the full settings necessary for the custom analyzer with name ``name``
      * to be included in index-settings to get applied on an index.
-     *
+     * <p>
      * Resolves all custom tokenizer, token-filter and char-filter settings and includes them
      *
      * @param name the name of the analyzer to resolve
@@ -270,7 +278,7 @@ public class FulltextAnalyzerResolver {
      * @throws AnalyzerInvalidException if no custom analyzer with name ``name`` could be found
      */
     public Settings resolveFullCustomAnalyzerSettings(String name) throws AnalyzerInvalidException {
-        ImmutableSettings.Builder builder = ImmutableSettings.builder();
+        Settings.Builder builder = Settings.builder();
         Settings analyzerSettings = getCustomAnalyzer(name);
         if (analyzerSettings != null) {
 
@@ -287,7 +295,7 @@ public class FulltextAnalyzerResolver {
             }
 
             String[] tokenFilterNames = analyzerSettings.getAsArray(String.format(Locale.ENGLISH, "index.analysis.analyzer.%s.filter", name));
-            for (int i=0; i<tokenFilterNames.length; i++) {
+            for (int i = 0; i < tokenFilterNames.length; i++) {
                 Settings customTokenFilterSettings = getCustomTokenFilter(tokenFilterNames[i]);
                 if (customTokenFilterSettings != null) {
                     builder.put(customTokenFilterSettings);
@@ -297,7 +305,7 @@ public class FulltextAnalyzerResolver {
             }
 
             String[] charFilterNames = analyzerSettings.getAsArray(String.format(Locale.ENGLISH, "index.analysis.analyzer.%s.char_filter", name));
-            for (int i=0; i<charFilterNames.length; i++) {
+            for (int i = 0; i < charFilterNames.length; i++) {
                 Settings customCharFilterSettings = getCustomCharFilter(charFilterNames[i]);
                 if (customCharFilterSettings != null) {
                     builder.put(customCharFilterSettings);

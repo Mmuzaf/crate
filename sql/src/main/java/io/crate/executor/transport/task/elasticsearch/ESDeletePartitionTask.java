@@ -21,67 +21,43 @@
 
 package io.crate.executor.transport.task.elasticsearch;
 
-import com.google.common.util.concurrent.SettableFuture;
-import io.crate.executor.TaskResult;
-import io.crate.executor.transport.task.AbstractChainedTask;
-import io.crate.planner.node.ddl.ESDeletePartitionNode;
-import org.elasticsearch.action.ActionListener;
+import com.google.common.base.Function;
+import com.google.common.base.Functions;
+import io.crate.data.Row;
+import io.crate.data.Row1;
+import io.crate.executor.JobTask;
+import io.crate.executor.transport.OneRowActionListener;
+import io.crate.operation.projectors.RowReceiver;
+import io.crate.planner.node.ddl.ESDeletePartition;
 import org.elasticsearch.action.admin.indices.delete.DeleteIndexRequest;
 import org.elasticsearch.action.admin.indices.delete.DeleteIndexResponse;
 import org.elasticsearch.action.admin.indices.delete.TransportDeleteIndexAction;
 import org.elasticsearch.action.support.IndicesOptions;
 
-import java.util.List;
-import java.util.UUID;
+public class ESDeletePartitionTask extends JobTask {
 
-public class ESDeletePartitionTask extends AbstractChainedTask {
-
-    private static final TaskResult RESULT_PARTITION = TaskResult.ROW_COUNT_UNKNOWN;
+    private static final Function<Object, Row> TO_UNKNOWN_COUNT_ROW = Functions.<Row>constant(new Row1(-1L));
+    ;
 
     private final TransportDeleteIndexAction transport;
     private final DeleteIndexRequest request;
-    private final ActionListener<DeleteIndexResponse> listener;
-
-    static class DeleteIndexListener implements ActionListener<DeleteIndexResponse> {
-
-        private final SettableFuture<TaskResult> future;
-
-        DeleteIndexListener(SettableFuture<TaskResult> future) {
-            this.future = future;
-        }
-
-        @Override
-        public void onResponse(DeleteIndexResponse deleteIndexResponse) {
-            future.set(RESULT_PARTITION);
-        }
-
-        @Override
-        public void onFailure(Throwable e) {
-            future.setException(e);
-        }
-    }
-
-    public ESDeletePartitionTask(UUID jobId,
-                                 TransportDeleteIndexAction transport,
-                                 ESDeletePartitionNode node) {
-        super(jobId);
-        this.transport = transport;
-        this.request = new DeleteIndexRequest(node.indices());
-        if (node.indices().length > 1) {
-            /**
-             * table is partitioned, in case of concurrent "delete from partitions"
-             * it could be that some partitions are already deleted,
-             * so ignore it if some are missing
-             */
-            this.request.indicesOptions(IndicesOptions.lenientExpandOpen());
-        } else {
-            this.request.indicesOptions(IndicesOptions.strictExpandOpen());
-        }
-        this.listener = new DeleteIndexListener(result);
-    }
 
     @Override
-    protected void doStart(List<TaskResult> upstreamResults) {
-        transport.execute(request, listener);
+    public void execute(RowReceiver rowReceiver, Row parameters) {
+        OneRowActionListener<DeleteIndexResponse> actionListener = new OneRowActionListener<>(rowReceiver, TO_UNKNOWN_COUNT_ROW);
+        transport.execute(request, actionListener);
+    }
+
+    public ESDeletePartitionTask(ESDeletePartition esDeletePartition, TransportDeleteIndexAction transport) {
+        super(esDeletePartition.jobId());
+        this.transport = transport;
+        this.request = new DeleteIndexRequest(esDeletePartition.indices());
+
+        /**
+         * table is partitioned, in case of concurrent "delete from partitions"
+         * it could be that some partitions are already deleted,
+         * so ignore it if some are missing
+         */
+        this.request.indicesOptions(IndicesOptions.lenientExpandOpen());
     }
 }

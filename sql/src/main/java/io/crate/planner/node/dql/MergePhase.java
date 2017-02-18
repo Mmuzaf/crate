@@ -25,14 +25,11 @@ import com.google.common.base.MoreObjects;
 import com.google.common.collect.ImmutableSet;
 import com.google.common.collect.Iterables;
 import com.google.common.collect.Lists;
-import io.crate.analyze.OrderBy;
-import io.crate.analyze.symbol.Symbol;
 import io.crate.analyze.symbol.Symbols;
-import io.crate.planner.consumer.OrderByPositionVisitor;
+import io.crate.planner.PositionalOrderBy;
 import io.crate.planner.distribution.DistributionInfo;
 import io.crate.planner.distribution.UpstreamPhase;
 import io.crate.planner.node.ExecutionPhaseVisitor;
-import io.crate.planner.node.PlanNodeVisitor;
 import io.crate.planner.projection.Projection;
 import io.crate.types.DataType;
 import io.crate.types.DataTypes;
@@ -46,14 +43,9 @@ import java.util.*;
 /**
  * A plan node which merges results from upstreams
  */
-public class MergePhase extends AbstractDQLPlanPhase implements UpstreamPhase {
+public class MergePhase extends AbstractProjectionsPhase implements UpstreamPhase {
 
-    public static final ExecutionPhaseFactory<MergePhase> FACTORY = new ExecutionPhaseFactory<MergePhase>() {
-        @Override
-        public MergePhase create() {
-            return new MergePhase();
-        }
-    };
+    public static final ExecutionPhaseFactory<MergePhase> FACTORY = MergePhase::new;
 
     private Collection<? extends DataType> inputTypes;
     private int numUpstreams;
@@ -63,10 +55,7 @@ public class MergePhase extends AbstractDQLPlanPhase implements UpstreamPhase {
     /**
      * expects sorted input and produces sorted output
      */
-    private boolean sortedInputOutput = false;
-    private int[] orderByIndices;
-    private boolean[] reverseFlags;
-    private Boolean[] nullsFirst;
+    @Nullable private PositionalOrderBy positionalOrderBy;
 
     private MergePhase() {
     }
@@ -75,10 +64,11 @@ public class MergePhase extends AbstractDQLPlanPhase implements UpstreamPhase {
                       int executionNodeId,
                       String name,
                       int numUpstreams,
+                      Collection<String> executionNodes,
                       Collection<? extends DataType> inputTypes,
                       List<Projection> projections,
-                      DistributionInfo distributionInfo
-                      ) {
+                      DistributionInfo distributionInfo,
+                      @Nullable PositionalOrderBy positionalOrderBy) {
         super(jobId, executionNodeId, name, projections);
         this.inputTypes = inputTypes;
         this.numUpstreams = numUpstreams;
@@ -88,54 +78,8 @@ public class MergePhase extends AbstractDQLPlanPhase implements UpstreamPhase {
         } else {
             outputTypes = Symbols.extractTypes(Iterables.getLast(projections).outputs());
         }
-    }
-
-    public static MergePhase localMerge(UUID jobId,
-                                        int executionPhaseId,
-                                        List<Projection> projections,
-                                        int numUpstreams,
-                                        Collection<? extends DataType> inputTypes) {
-        return new MergePhase(
-                jobId,
-                executionPhaseId,
-                "localMerge",
-                numUpstreams,
-                inputTypes,
-                projections,
-                DistributionInfo.DEFAULT_SAME_NODE
-        );
-    }
-
-    public static MergePhase sortedMerge(UUID jobId,
-                                         int executionPhaseId,
-                                         OrderBy orderBy,
-                                         List<? extends Symbol> sourceSymbols,
-                                         @Nullable List<Symbol> orderBySymbolOverwrite,
-                                         List<Projection> projections,
-                                         int numUpstreams,
-                                         Collection<? extends DataType> inputTypes) {
-
-        int[] orderByIndices = OrderByPositionVisitor.orderByPositions(
-                MoreObjects.firstNonNull(orderBySymbolOverwrite, orderBy.orderBySymbols()),
-                sourceSymbols
-        );
-        assert orderBy.reverseFlags().length == orderByIndices.length :
-                "length of reverseFlags and orderByIndices must match";
-
-        MergePhase mergeNode = new MergePhase(
-                jobId,
-                executionPhaseId,
-                "sortedLocalMerge",
-                numUpstreams,
-                inputTypes,
-                projections,
-                DistributionInfo.DEFAULT_SAME_NODE
-        );
-        mergeNode.sortedInputOutput = true;
-        mergeNode.orderByIndices = orderByIndices;
-        mergeNode.reverseFlags = orderBy.reverseFlags();
-        mergeNode.nullsFirst = orderBy.nullsFirst();
-        return mergeNode;
+        this.positionalOrderBy = positionalOrderBy;
+        this.executionNodes = executionNodes;
     }
 
     @Override
@@ -144,7 +88,7 @@ public class MergePhase extends AbstractDQLPlanPhase implements UpstreamPhase {
     }
 
     @Override
-    public Collection<String> executionNodes() {
+    public Collection<String> nodeIds() {
         if (executionNodes == null) {
             return ImmutableSet.of();
         } else {
@@ -174,28 +118,9 @@ public class MergePhase extends AbstractDQLPlanPhase implements UpstreamPhase {
         return inputTypes;
     }
 
-    public boolean sortedInputOutput() {
-        return sortedInputOutput;
-    }
-
     @Nullable
-    public int[] orderByIndices() {
-        return orderByIndices;
-    }
-
-    @Nullable
-    public boolean[] reverseFlags() {
-        return reverseFlags;
-    }
-
-    @Nullable
-    public Boolean[] nullsFirst() {
-        return nullsFirst;
-    }
-
-    @Override
-    public <C, R> R accept(PlanNodeVisitor<C, R> visitor, C context) {
-        return visitor.visitMergeNode(this, context);
+    public PositionalOrderBy orderByPositions() {
+        return positionalOrderBy;
     }
 
     @Override
@@ -226,18 +151,7 @@ public class MergePhase extends AbstractDQLPlanPhase implements UpstreamPhase {
             }
         }
 
-        sortedInputOutput = in.readBoolean();
-        if (sortedInputOutput) {
-            int orderByIndicesLength = in.readVInt();
-            orderByIndices = new int[orderByIndicesLength];
-            reverseFlags = new boolean[orderByIndicesLength];
-            nullsFirst = new Boolean[orderByIndicesLength];
-            for (int i = 0; i < orderByIndicesLength; i++) {
-                orderByIndices[i] = in.readVInt();
-                reverseFlags[i] = in.readBoolean();
-                nullsFirst[i] = in.readOptionalBoolean();
-            }
-        }
+        positionalOrderBy = PositionalOrderBy.fromStream(in);
     }
 
     @Override
@@ -261,34 +175,21 @@ public class MergePhase extends AbstractDQLPlanPhase implements UpstreamPhase {
             }
         }
 
-        out.writeBoolean(sortedInputOutput);
-        if (sortedInputOutput) {
-            out.writeVInt(orderByIndices.length);
-            for (int i = 0; i < orderByIndices.length; i++) {
-                out.writeVInt(orderByIndices[i]);
-                out.writeBoolean(reverseFlags[i]);
-                out.writeOptionalBoolean(nullsFirst[i]);
-            }
-        }
+        PositionalOrderBy.toStream(positionalOrderBy, out);
     }
 
     @Override
     public String toString() {
         MoreObjects.ToStringHelper helper = MoreObjects.toStringHelper(this)
-                .add("executionPhaseId", executionPhaseId())
-                .add("name", name())
-                .add("projections", projections)
-                .add("outputTypes", outputTypes)
-                .add("jobId", jobId())
-                .add("numUpstreams", numUpstreams)
-                .add("nodeOperations", executionNodes)
-                .add("inputTypes", inputTypes)
-                .add("sortedInputOutput", sortedInputOutput);
-        if (sortedInputOutput) {
-            helper.add("orderByIndices", Arrays.toString(orderByIndices))
-                  .add("reverseFlags", Arrays.toString(reverseFlags))
-                  .add("nullsFirst", Arrays.toString(nullsFirst));
-        }
+            .add("executionPhaseId", phaseId())
+            .add("name", name())
+            .add("projections", projections)
+            .add("outputTypes", outputTypes)
+            .add("jobId", jobId())
+            .add("numUpstreams", numUpstreams)
+            .add("nodeOperations", executionNodes)
+            .add("inputTypes", inputTypes)
+            .add("orderBy", positionalOrderBy);
         return helper.toString();
     }
 }

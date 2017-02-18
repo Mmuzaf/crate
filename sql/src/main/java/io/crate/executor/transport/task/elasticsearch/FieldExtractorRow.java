@@ -21,28 +21,29 @@
 
 package io.crate.executor.transport.task.elasticsearch;
 
-import io.crate.core.collections.Buckets;
-import io.crate.core.collections.Row;
+import com.google.common.base.Function;
+import io.crate.data.Buckets;
+import io.crate.data.Row;
 
 import java.util.List;
 
 public class FieldExtractorRow<T> implements Row {
 
-    private final List<FieldExtractor<T>> fieldExtractors;
+    private final List<Function<T, Object>> fieldExtractors;
     private T current;
 
-    public FieldExtractorRow(List<FieldExtractor<T>> extractors) {
+    public FieldExtractorRow(List<Function<T, Object>> extractors) {
         fieldExtractors = extractors;
     }
 
     @Override
-    public int size() {
+    public int numColumns() {
         return fieldExtractors.size();
     }
 
     @Override
     public Object get(int index) {
-        return fieldExtractors.get(index).extract(current);
+        return fieldExtractors.get(index).apply(current);
     }
 
     @Override

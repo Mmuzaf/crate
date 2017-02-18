@@ -21,60 +21,45 @@
 
 package io.crate.jobs;
 
-import com.google.common.util.concurrent.FutureCallback;
-import com.google.common.util.concurrent.Futures;
 import io.crate.operation.join.NestedLoopOperation;
-import io.crate.operation.projectors.FlatProjectorChain;
-import io.crate.operation.projectors.ListenableRowReceiver;
+import io.crate.operation.projectors.RowReceiver;
 import io.crate.planner.node.dql.join.NestedLoopPhase;
+import org.elasticsearch.common.logging.ESLogger;
 
-import javax.annotation.Nonnull;
 import javax.annotation.Nullable;
-import java.util.concurrent.atomic.AtomicInteger;
-import java.util.concurrent.atomic.AtomicReference;
 
-public class NestedLoopContext extends AbstractExecutionSubContext implements DownstreamExecutionSubContext, ExecutionState {
+public class NestedLoopContext extends AbstractExecutionSubContext implements DownstreamExecutionSubContext {
 
-    private final AtomicInteger activeSubContexts = new AtomicInteger(0);
     private final NestedLoopPhase nestedLoopPhase;
-    private final FlatProjectorChain flatProjectorChain;
 
     @Nullable
-    private final PageDownstreamContext leftPageDownstreamContext;
+    private final PageBucketReceiver leftBucketReceiver;
     @Nullable
-    private final PageDownstreamContext rightPageDownstreamContext;
-    private final ListenableRowReceiver leftRowReceiver;
-    private final ListenableRowReceiver rightRowReceiver;
+    private final PageBucketReceiver rightBucketReceiver;
+    private final RowReceiver leftRowReceiver;
+    private final RowReceiver rightRowReceiver;
 
-    private volatile boolean isKilled;
-    private final AtomicReference<Throwable> failure = new AtomicReference<>(null);
-
-    public NestedLoopContext(NestedLoopPhase phase,
-                             FlatProjectorChain flatProjectorChain,
+    public NestedLoopContext(ESLogger logger,
+                             NestedLoopPhase nestedLoopPhase,
                              NestedLoopOperation nestedLoopOperation,
-                             @Nullable PageDownstreamContext leftPageDownstreamContext,
-                             @Nullable PageDownstreamContext rightPageDownstreamContext) {
-        super(phase.executionPhaseId());
+                             @Nullable PageBucketReceiver leftBucketReceiver,
+                             @Nullable PageBucketReceiver rightBucketReceiver) {
+        super(nestedLoopPhase.phaseId(), logger);
 
-        nestedLoopPhase = phase;
-        this.flatProjectorChain = flatProjectorChain;
-        this.leftPageDownstreamContext = leftPageDownstreamContext;
-        this.rightPageDownstreamContext = rightPageDownstreamContext;
+        this.nestedLoopPhase = nestedLoopPhase;
+        this.leftBucketReceiver = leftBucketReceiver;
+        this.rightBucketReceiver = rightBucketReceiver;
 
         leftRowReceiver = nestedLoopOperation.leftRowReceiver();
         rightRowReceiver = nestedLoopOperation.rightRowReceiver();
 
-        if (leftPageDownstreamContext == null) {
-            Futures.addCallback(leftRowReceiver.finishFuture(), new RemoveContextCallback());
-        } else {
-            leftPageDownstreamContext.future.addCallback(new RemoveContextCallback());
-        }
-
-        if (rightPageDownstreamContext == null) {
-            Futures.addCallback(rightRowReceiver.finishFuture(), new RemoveContextCallback());
-        } else {
-            rightPageDownstreamContext.future.addCallback(new RemoveContextCallback());
-        }
+        nestedLoopOperation.completionFuture().whenComplete((Object result, Throwable t) -> {
+            if (t == null) {
+                future.close(null);
+            } else {
+                future.close(t);
+            }
+        });
     }
 
     @Override
@@ -84,103 +69,50 @@ public class NestedLoopContext extends AbstractExecutionSubContext implements Do
 
     @Override
     public int id() {
-        return nestedLoopPhase.executionPhaseId();
-    }
-
-    @Override
-    public void keepAliveListener(KeepAliveListener listener) {
-    }
-
-    @Override
-    protected void innerPrepare() {
-        flatProjectorChain.prepare(this);
-    }
-
-    @Override
-    protected void innerStart() {
-        if (leftPageDownstreamContext != null) {
-            leftPageDownstreamContext.start();
-        }
-        if (rightPageDownstreamContext != null) {
-            rightPageDownstreamContext.start();
-        }
+        return nestedLoopPhase.phaseId();
     }
 
     @Override
     protected void innerClose(@Nullable Throwable t) {
-        closeSubContext(t, leftPageDownstreamContext, leftRowReceiver);
-        closeSubContext(t, rightPageDownstreamContext, rightRowReceiver);
+        closeReceiver(t, leftBucketReceiver, leftRowReceiver);
+        closeReceiver(t, rightBucketReceiver, rightRowReceiver);
     }
 
-    private static void closeSubContext(@Nullable Throwable t, @Nullable PageDownstreamContext subContext, ListenableRowReceiver rowReceiver) {
-        if (subContext == null) {
-            finishOrFail(t, rowReceiver);
-        } else {
-            subContext.close(t);
-        }
-    }
-
-    private static void finishOrFail(@Nullable Throwable t, ListenableRowReceiver rowReceiver) {
-        if (t == null) {
-            rowReceiver.finish();
-        } else {
+    private static void closeReceiver(@Nullable Throwable t, @Nullable PageBucketReceiver subContext, RowReceiver rowReceiver) {
+        if (subContext == null && t != null) {
             rowReceiver.fail(t);
         }
     }
 
     @Override
     protected void innerKill(@Nullable Throwable t) {
-        isKilled = true;
-        killSubContext(t, leftPageDownstreamContext, leftRowReceiver);
-        killSubContext(t, rightPageDownstreamContext, rightRowReceiver);
+        killReceiver(t, leftBucketReceiver, leftRowReceiver);
+        killReceiver(t, rightBucketReceiver, rightRowReceiver);
     }
 
-    private static void killSubContext(Throwable t, @Nullable PageDownstreamContext subContext, ListenableRowReceiver rowReceiver) {
+    private static void killReceiver(Throwable t, @Nullable PageBucketReceiver subContext, RowReceiver rowReceiver) {
         if (subContext == null) {
-            rowReceiver.fail(t);
-        } else {
-            subContext.kill(t);
+            rowReceiver.kill(t);
         }
     }
 
     @Override
-    public boolean isKilled() {
-        return isKilled;
-    }
-
-    @Override
-    public PageDownstreamContext pageDownstreamContext(byte inputId) {
+    public PageBucketReceiver getBucketReceiver(byte inputId) {
         assert inputId < 2 : "Only 0 and 1 inputId's supported";
         if (inputId == 0) {
-            return leftPageDownstreamContext;
+            return leftBucketReceiver;
         }
-        return rightPageDownstreamContext;
+        return rightBucketReceiver;
     }
 
-    private class RemoveContextCallback implements FutureCallback<Object> {
-
-        public RemoveContextCallback() {
-            activeSubContexts.incrementAndGet();
-        }
-
-        @Override
-        public void onSuccess(@Nullable Object result) {
-            countdown();
-        }
-
-        private void countdown() {
-            if (activeSubContexts.decrementAndGet() == 0) {
-                Throwable t = failure.get();
-                if (future.firstClose()) {
-                    future.close(t);
-                }
-            }
-        }
-
-        @Override
-        public void onFailure(@Nonnull Throwable t) {
-            failure.set(t);
-            countdown();
-        }
+    @Override
+    public String toString() {
+        return "NestedLoopContext{" +
+               "id=" + id() +
+               ", leftCtx=" + leftBucketReceiver +
+               ", rightCtx=" + rightBucketReceiver +
+               ", closed=" + future.closed() +
+               '}';
     }
+
 }

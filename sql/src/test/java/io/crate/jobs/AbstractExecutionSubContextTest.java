@@ -22,9 +22,11 @@
 
 package io.crate.jobs;
 
-import com.carrotsearch.ant.tasks.junit4.dependencies.com.google.common.base.Throwables;
+import com.google.common.base.Throwables;
 import com.google.common.collect.ImmutableList;
 import io.crate.test.integration.CrateUnitTest;
+import org.elasticsearch.common.logging.ESLogger;
+import org.elasticsearch.common.logging.Loggers;
 import org.junit.Before;
 import org.junit.Test;
 
@@ -35,20 +37,20 @@ import java.util.List;
 import java.util.concurrent.atomic.AtomicInteger;
 
 import static org.hamcrest.Matchers.contains;
+import static org.hamcrest.Matchers.greaterThan;
 
 public class AbstractExecutionSubContextTest extends CrateUnitTest {
 
     private TestingExecutionSubContext ctx;
 
-
-    Runnable killRunnable = new Runnable() {
+    private Runnable killRunnable = new Runnable() {
         @Override
         public void run() {
             ctx.kill(null);
         }
     };
 
-    Runnable closeRunnable = new Runnable() {
+    private Runnable closeRunnable = new Runnable() {
         @Override
         public void run() {
             ctx.close();
@@ -66,7 +68,7 @@ public class AbstractExecutionSubContextTest extends CrateUnitTest {
         List<Thread> threads = new ArrayList<Thread>(calls);
         for (int i = 0; i < calls; i++) {
             Thread t = new Thread(task);
-            t.run();
+            t.start();
             threads.add(t);
         }
         for (Thread thread : threads) {
@@ -80,17 +82,19 @@ public class AbstractExecutionSubContextTest extends CrateUnitTest {
 
     public static class TestingExecutionSubContext extends AbstractExecutionSubContext {
 
+        private static final ESLogger LOGGER = Loggers.getLogger(TestingExecutionSubContext.class);
+
         final AtomicInteger numPrepare = new AtomicInteger();
         final AtomicInteger numStart = new AtomicInteger();
         final AtomicInteger numClose = new AtomicInteger();
         final AtomicInteger numKill = new AtomicInteger();
 
         public TestingExecutionSubContext(int id) {
-            super(id);
+            super(id, LOGGER);
         }
 
         public TestingExecutionSubContext() {
-            super(0);
+            this(0);
         }
 
         @Override
@@ -109,7 +113,7 @@ public class AbstractExecutionSubContextTest extends CrateUnitTest {
         }
 
         @Override
-        protected void innerPrepare() {
+        public void innerPrepare() {
             numPrepare.incrementAndGet();
         }
 
@@ -120,10 +124,10 @@ public class AbstractExecutionSubContextTest extends CrateUnitTest {
 
         public List<Integer> stats() {
             return ImmutableList.of(
-                    numPrepare.get(),
-                    numStart.get(),
-                    numClose.get(),
-                    numKill.get()
+                numPrepare.get(),
+                numStart.get(),
+                numClose.get(),
+                numKill.get()
             );
         }
 
@@ -149,17 +153,6 @@ public class AbstractExecutionSubContextTest extends CrateUnitTest {
     }
 
     @Test
-    public void testCloseBeforePrepare() throws Exception {
-        TestingExecutionSubContext ctx = new TestingExecutionSubContext();
-        ctx.close();
-        ctx.prepare();
-        ctx.start();
-        ctx.close();
-        assertThat(ctx.stats(), contains(0, 0, 1, 0));
-    }
-
-
-    @Test
     public void testParallelClose() throws Exception {
         ctx.prepare();
         ctx.start();
@@ -173,7 +166,7 @@ public class AbstractExecutionSubContextTest extends CrateUnitTest {
         ctx.start();
         runAsync(killRunnable, 3);
         assertThat(ctx.stats(), contains(1, 1, 0, 1));
-        assertTrue(ctx.isKilled());
+        assertThat(ctx.numKill.get(), greaterThan(0));
     }
 
 }

@@ -26,42 +26,52 @@ import com.google.common.collect.HashMultimap;
 import com.google.common.collect.Iterables;
 import com.google.common.collect.Multimap;
 import io.crate.analyze.symbol.*;
+import io.crate.metadata.ReplaceMode;
 import io.crate.metadata.ReplacingSymbolVisitor;
 import io.crate.operation.operator.AndOperator;
-import org.elasticsearch.common.collect.IdentityHashSet;
+import io.crate.sql.tree.QualifiedName;
 
 import javax.annotation.Nullable;
+import java.util.Collections;
+import java.util.IdentityHashMap;
+import java.util.List;
+import java.util.Set;
 
-public class QuerySplittingVisitor extends ReplacingSymbolVisitor<QuerySplittingVisitor.Context> {
+class QuerySplittingVisitor extends ReplacingSymbolVisitor<QuerySplittingVisitor.Context> {
 
     public static final QuerySplittingVisitor INSTANCE = new QuerySplittingVisitor();
 
     private QuerySplittingVisitor() {
-        super(true);
+        super(ReplaceMode.MUTATE);
     }
 
     public static class Context {
         private AnalyzedRelation seenRelation;
-        private final IdentityHashSet<AnalyzedRelation> seenRelations = new IdentityHashSet<>();
-        private final Multimap<AnalyzedRelation, Symbol> queries = HashMultimap.create();
+        private final Set<AnalyzedRelation> seenRelations = Collections.newSetFromMap(new IdentityHashMap<AnalyzedRelation, Boolean>());
+        private final Multimap<QualifiedName, Symbol> queries = HashMultimap.create();
+        private final List<JoinPair> joinPairs;
         private boolean multiRelation = false;
         private Symbol query;
+
+        public Context(List<JoinPair> joinPairs) {
+            this.joinPairs = joinPairs;
+        }
 
         public Symbol query() {
             return query;
         }
 
-        public Multimap<AnalyzedRelation, Symbol> queries() {
+        public Multimap<QualifiedName, Symbol> queries() {
             return queries;
         }
     }
 
-    public Context process(Symbol query) {
-        Context context = new Context();
+    public Context process(Symbol query, List<JoinPair> joinPairs) {
+        Context context = new Context(joinPairs);
         context.query = process(query, context);
         if (!context.multiRelation) {
-            assert context.seenRelation != null;
-            context.queries.put(context.seenRelation, context.query);
+            assert context.seenRelation != null : "context.seenRelation must not be null";
+            context.queries.put(context.seenRelation.getQualifiedName(), context.query);
             context.query = null;
         }
         return context;
@@ -69,7 +79,7 @@ public class QuerySplittingVisitor extends ReplacingSymbolVisitor<QuerySplitting
 
     @Override
     public Symbol process(Symbol symbol, @Nullable Context context) {
-        assert context != null;
+        assert context != null : "context must not be null";
         context.seenRelation = null;
         return super.process(symbol, context);
     }
@@ -108,7 +118,7 @@ public class QuerySplittingVisitor extends ReplacingSymbolVisitor<QuerySplitting
             } else if (leftMultiRel) {
                 context.multiRelation = true;
                 if (rightRelation != null) {
-                    context.queries.put(rightRelation, right);
+                    context.queries.put(rightRelation.getQualifiedName(), right);
                     function.arguments().set(1, Literal.BOOLEAN_TRUE);
                     context.seenRelation = null;
                     return function;
@@ -118,7 +128,7 @@ public class QuerySplittingVisitor extends ReplacingSymbolVisitor<QuerySplitting
             } else if (rightMultiRel) {
                 context.multiRelation = true;
                 if (leftRelation != null) {
-                    context.queries.put(leftRelation, left);
+                    context.queries.put(leftRelation.getQualifiedName(), left);
                     function.arguments().set(0, Literal.BOOLEAN_TRUE);
                     context.seenRelation = null;
                     return function;
@@ -134,7 +144,7 @@ public class QuerySplittingVisitor extends ReplacingSymbolVisitor<QuerySplitting
                     context.seenRelation = leftRelation;
                     context.multiRelation = false;
                 } else {
-                    context.queries.put(leftRelation, left);
+                    context.queries.put(leftRelation.getQualifiedName(), left);
                     function.arguments().set(0, Literal.BOOLEAN_TRUE);
                     context.seenRelation = rightRelation;
                 }
@@ -145,6 +155,10 @@ public class QuerySplittingVisitor extends ReplacingSymbolVisitor<QuerySplitting
             context.multiRelation = context.seenRelations.size() > 1;
             if (context.seenRelations.size() == 1) {
                 context.seenRelation = Iterables.getOnlyElement(context.seenRelations);
+                if (JoinPairs.isOuterRelation(context.seenRelation.getQualifiedName(), context.joinPairs)) {
+                    // don't split by marking as multi relation
+                    context.multiRelation = true;
+                }
             } else if (context.seenRelations.isEmpty()) {
                 context.seenRelation = null;
             } else {

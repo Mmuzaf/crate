@@ -46,6 +46,10 @@ public class ProjectionVisitor<C, R> {
         return visitProjection(projection, context);
     }
 
+    public R visitMergeCountProjection(MergeCountProjection projection, C context) {
+        return visitProjection(projection, context);
+    }
+
     public R visitWriterProjection(WriterProjection projection, C context) {
         return visitProjection(projection, context);
     }
@@ -72,6 +76,18 @@ public class ProjectionVisitor<C, R> {
 
     public R visitFetchProjection(FetchProjection projection, C context) {
         return visitProjection(projection, context);
+    }
+
+    public R visitSysUpdateProjection(SysUpdateProjection projection, C context) {
+        return visitProjection(projection, context);
+    }
+
+    public R visitOrderedTopN(OrderedTopNProjection orderedTopNProjection, C context) {
+        return visitProjection(orderedTopNProjection, context);
+    }
+
+    public R visitEvalProjection(EvalProjection evalProjection, C context) {
+        return visitProjection(evalProjection, context);
     }
 }
 

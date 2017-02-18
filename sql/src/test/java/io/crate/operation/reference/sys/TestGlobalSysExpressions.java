@@ -22,186 +22,102 @@
 package io.crate.operation.reference.sys;
 
 
-import io.crate.metadata.*;
+import io.crate.metadata.ClusterReferenceResolver;
+import io.crate.metadata.Reference;
+import io.crate.metadata.RowGranularity;
 import io.crate.metadata.settings.CrateSettings;
-import io.crate.metadata.sys.MetaDataSysModule;
-import io.crate.metadata.sys.SysClusterTableInfo;
-import io.crate.metadata.sys.SysNodesTableInfo;
-import io.crate.metadata.table.TableInfo;
-import io.crate.operation.Input;
 import io.crate.operation.reference.NestedObjectExpression;
-import io.crate.operation.reference.sys.cluster.ClusterSettingsExpression;
-import io.crate.operation.reference.sys.node.NodeLoadExpression;
+import io.crate.operation.reference.sys.cluster.SysClusterExpressionModule;
 import io.crate.test.integration.CrateUnitTest;
 import io.crate.types.DataTypes;
-import org.elasticsearch.action.admin.indices.template.put.TransportPutIndexTemplateAction;
+import org.elasticsearch.cluster.ClusterName;
 import org.elasticsearch.cluster.ClusterService;
-import org.elasticsearch.cluster.ClusterState;
-import org.elasticsearch.cluster.metadata.IndexTemplateMetaData;
-import org.elasticsearch.cluster.metadata.MetaData;
-import org.elasticsearch.common.collect.ImmutableOpenMap;
-import org.elasticsearch.common.inject.AbstractModule;
 import org.elasticsearch.common.inject.Injector;
+import org.elasticsearch.common.inject.Module;
 import org.elasticsearch.common.inject.ModulesBuilder;
-import org.elasticsearch.common.inject.multibindings.MapBinder;
-import org.elasticsearch.common.settings.ImmutableSettings;
 import org.elasticsearch.common.settings.Settings;
-import org.elasticsearch.monitor.os.OsService;
-import org.elasticsearch.monitor.os.OsStats;
-import org.elasticsearch.node.service.NodeService;
-import org.elasticsearch.threadpool.ThreadPool;
-import org.junit.After;
+import org.elasticsearch.common.unit.MemorySizeValue;
+import org.elasticsearch.test.cluster.NoopClusterService;
 import org.junit.Before;
 import org.junit.Test;
 
 import java.util.Map;
-import java.util.concurrent.TimeUnit;
 
 import static io.crate.testing.TestingHelpers.refInfo;
 import static org.hamcrest.Matchers.is;
-import static org.mockito.Mockito.mock;
-import static org.mockito.Mockito.when;
 
 public class TestGlobalSysExpressions extends CrateUnitTest {
 
-    private Injector injector;
-    private NestedReferenceResolver resolver;
-    private Schemas schemas;
-
-    private ReferenceInfo loadInfo;
-    private ReferenceInfo load1Info;
-    private ThreadPool threadPool;
-
+    private ClusterReferenceResolver resolver;
 
     @Before
     public void prepare() throws Exception {
-        threadPool = new ThreadPool("testing");
-        injector = new ModulesBuilder().add(
-                new TestModule(),
-                new MetaDataModule(),
-                new MetaDataSysModule()
-        ).createInjector();
-        resolver = injector.getInstance(NestedReferenceResolver.class);
-        schemas = injector.getInstance(Schemas.class);
-        loadInfo = schemas.getTableInfo(SysNodesTableInfo.IDENT).getReferenceInfo(new ColumnIdent("load"));
-        load1Info = schemas.getTableInfo(SysNodesTableInfo.IDENT).getReferenceInfo(new ColumnIdent("load", "1"));
-    }
-
-    @After
-    public void after() throws Exception {
-        threadPool.shutdown();
-        threadPool.awaitTermination(1, TimeUnit.SECONDS);
-    }
-
-
-    class TestModule extends AbstractModule {
-
-        @Override
-        protected void configure() {
-            bind(Settings.class).toInstance(ImmutableSettings.EMPTY);
-            bind(ThreadPool.class).toInstance(threadPool);
-
-            OsService osService = mock(OsService.class);
-            OsStats osStats = mock(OsStats.class);
-            when(osService.stats()).thenReturn(osStats);
-            when(osStats.loadAverage()).thenReturn(new double[]{1, 5, 15});
-            bind(OsService.class).toInstance(osService);
-
-            NodeService nodeService = mock(NodeService.class);
-            bind(NodeService.class).toInstance(nodeService);
-
-            ClusterService clusterService = mock(ClusterService.class);
-            ClusterState state = mock(ClusterState.class);
-            MetaData metaData = mock(MetaData.class);
-            when(metaData.concreteAllOpenIndices()).thenReturn(new String[0]);
-            when(metaData.templates()).thenReturn(ImmutableOpenMap.<String, IndexTemplateMetaData>of());
-            when(state.metaData()).thenReturn(metaData);
-            when(clusterService.state()).thenReturn(state);
-            bind(ClusterService.class).toInstance(clusterService);
-            bind(TransportPutIndexTemplateAction.class).toInstance(mock(TransportPutIndexTemplateAction.class));
-
-            NodeLoadExpression loadExpr = new NodeLoadExpression(osStats);
-
-            MapBinder<ReferenceIdent, ReferenceImplementation> b = MapBinder
-                    .newMapBinder(binder(), ReferenceIdent.class, ReferenceImplementation.class);
-            b.addBinding(new ReferenceIdent(SysNodesTableInfo.IDENT, "load")).toInstance(loadExpr);
-
-            b.addBinding(new ReferenceIdent(SysClusterTableInfo.IDENT, new ColumnIdent(ClusterSettingsExpression.NAME))).to(
-                    ClusterSettingsExpression.class).asEagerSingleton();
-        }
-    }
-
-    @Test
-    public void testInfoLookup() throws Exception {
-        ReferenceIdent ident = loadInfo.ident();
-        TableInfo sysNodesTableInfo = schemas.getTableInfo(SysNodesTableInfo.IDENT);
-        assertEquals(loadInfo, sysNodesTableInfo.getReferenceInfo(ident.columnIdent()));
-
-        ident = load1Info.ident();
-        assertEquals(sysNodesTableInfo.getReferenceInfo(ident.columnIdent()), load1Info);
-    }
-
-
-    @Test
-    public void testChildImplementationLookup() throws Exception {
-        ReferenceInfo refInfo = refInfo("sys.nodes.load", DataTypes.OBJECT, RowGranularity.NODE);
-        NestedObjectExpression load = (NestedObjectExpression) resolver.getImplementation(refInfo);
-
-        Input ci = load.getChildImplementation("1");
-        assertEquals(1D, ci.value());
-
-        SimpleObjectExpression<Double> l1 = (SimpleObjectExpression<Double>) resolver.getImplementation(load1Info);
-        assertTrue(ci == l1);
+        Injector injector = new ModulesBuilder()
+            .add(new SysClusterExpressionModule())
+            .add((Module) binder -> {
+                binder.bind(ClusterService.class).toInstance(new NoopClusterService());
+                binder.bind(Settings.class).toInstance(Settings.EMPTY);
+                binder.bind(ClusterName.class).toInstance(new ClusterName("cluster"));
+                binder.bind(ClusterReferenceResolver.class).asEagerSingleton();
+            }).createInjector();
+        resolver = injector.getInstance(ClusterReferenceResolver.class);
     }
 
     @Test
     public void testClusterSettings() throws Exception {
-        ReferenceInfo refInfo = refInfo("sys.cluster.settings", DataTypes.OBJECT, RowGranularity.CLUSTER);
+        Reference refInfo = refInfo("sys.cluster.settings", DataTypes.OBJECT, RowGranularity.CLUSTER);
         NestedObjectExpression settingsExpression = (NestedObjectExpression) resolver.getImplementation(refInfo);
 
         Map settings = settingsExpression.value();
 
         Map stats = (Map) settings.get(CrateSettings.STATS.name());
-        assertEquals(CrateSettings.STATS_ENABLED.defaultValue(),
-                stats.get(CrateSettings.STATS_ENABLED.name()));
-        assertEquals(CrateSettings.STATS_JOBS_LOG_SIZE.defaultValue(),
-                stats.get(CrateSettings.STATS_JOBS_LOG_SIZE.name()));
-        assertEquals(CrateSettings.STATS_OPERATIONS_LOG_SIZE.defaultValue(),
-                stats.get(CrateSettings.STATS_OPERATIONS_LOG_SIZE.name()));
+        assertThat(stats.get(CrateSettings.STATS_ENABLED.name()),
+            is(CrateSettings.STATS_ENABLED.defaultValue()));
+        assertThat(stats.get(CrateSettings.STATS_JOBS_LOG_SIZE.name()),
+            is(CrateSettings.STATS_JOBS_LOG_SIZE.defaultValue()));
+        assertThat(stats.get(CrateSettings.STATS_OPERATIONS_LOG_SIZE.name()),
+            is(CrateSettings.STATS_OPERATIONS_LOG_SIZE.defaultValue()));
+        Map statsBreakerLog = (Map) ((Map) stats.get(CrateSettings.STATS_BREAKER.name()))
+            .get(CrateSettings.STATS_BREAKER_LOG.name());
+        Map statsBreakerLogJobs = (Map) statsBreakerLog.get(CrateSettings.STATS_BREAKER_LOG_JOBS.name());
+        assertThat(statsBreakerLogJobs.get(CrateSettings.STATS_BREAKER_LOG_JOBS_LIMIT.name()),
+            is(MemorySizeValue.parseBytesSizeValueOrHeapRatio(  // convert default string value (percentage) to byte size string
+                CrateSettings.STATS_BREAKER_LOG_JOBS_LIMIT.defaultValue(),
+                CrateSettings.STATS_BREAKER_LOG_JOBS_LIMIT.settingName()).toString()));
 
         Map cluster = (Map) settings.get(CrateSettings.CLUSTER.name());
         Map gracefulStop = (Map) cluster.get(CrateSettings.GRACEFUL_STOP.name());
         assertThat(
-                gracefulStop.get(CrateSettings.GRACEFUL_STOP_MIN_AVAILABILITY.name()),
-                is((Object)CrateSettings.GRACEFUL_STOP_MIN_AVAILABILITY.defaultValue()));
+            gracefulStop.get(CrateSettings.GRACEFUL_STOP_MIN_AVAILABILITY.name()),
+            is(CrateSettings.GRACEFUL_STOP_MIN_AVAILABILITY.defaultValue()));
         assertThat(
-                gracefulStop.get(CrateSettings.GRACEFUL_STOP_REALLOCATE.name()),
-                is((Object)CrateSettings.GRACEFUL_STOP_REALLOCATE.defaultValue()));
+            gracefulStop.get(CrateSettings.GRACEFUL_STOP_REALLOCATE.name()),
+            is(CrateSettings.GRACEFUL_STOP_REALLOCATE.defaultValue()));
         assertThat(
-                gracefulStop.get(CrateSettings.GRACEFUL_STOP_TIMEOUT.name()),
-                is((Object)CrateSettings.GRACEFUL_STOP_TIMEOUT.defaultValue().toString())
+            gracefulStop.get(CrateSettings.GRACEFUL_STOP_TIMEOUT.name()),
+            is(CrateSettings.GRACEFUL_STOP_TIMEOUT.defaultValue().toString())
         );
         assertThat(
-                gracefulStop.get(CrateSettings.GRACEFUL_STOP_FORCE.name()),
-                is((Object) CrateSettings.GRACEFUL_STOP_FORCE.defaultValue())
+            gracefulStop.get(CrateSettings.GRACEFUL_STOP_FORCE.name()),
+            is(CrateSettings.GRACEFUL_STOP_FORCE.defaultValue())
         );
         assertThat(
-                gracefulStop.get(CrateSettings.GRACEFUL_STOP_TIMEOUT.name()),
-                is((Object)CrateSettings.GRACEFUL_STOP_TIMEOUT.defaultValue().toString())
+            gracefulStop.get(CrateSettings.GRACEFUL_STOP_TIMEOUT.name()),
+            is(CrateSettings.GRACEFUL_STOP_TIMEOUT.defaultValue().toString())
         );
         Map routing = (Map) cluster.get(CrateSettings.ROUTING.name());
         Map routingAllocation = (Map) routing.get(CrateSettings.ROUTING_ALLOCATION.name());
         assertThat(
-                routingAllocation.get(CrateSettings.ROUTING_ALLOCATION_ENABLE.name()),
-                is((Object) CrateSettings.ROUTING_ALLOCATION_ENABLE.defaultValue())
-                );
+            routingAllocation.get(CrateSettings.ROUTING_ALLOCATION_ENABLE.name()),
+            is(CrateSettings.ROUTING_ALLOCATION_ENABLE.defaultValue())
+        );
 
         Map gateway = (Map) settings.get(CrateSettings.GATEWAY.name());
         assertThat(gateway.get(CrateSettings.GATEWAY_RECOVER_AFTER_TIME.name()),
-                is((Object) CrateSettings.GATEWAY_RECOVER_AFTER_TIME.defaultValue().toString()));
+            is(CrateSettings.GATEWAY_RECOVER_AFTER_TIME.defaultValue().toString()));
         assertEquals(gateway.get(CrateSettings.GATEWAY_RECOVERY_AFTER_NODES.name()),
-                CrateSettings.GATEWAY_RECOVERY_AFTER_NODES.defaultValue());
+            CrateSettings.GATEWAY_RECOVERY_AFTER_NODES.defaultValue());
         assertEquals(gateway.get(CrateSettings.GATEWAY_EXPECTED_NODES.name()),
-                CrateSettings.GATEWAY_EXPECTED_NODES.defaultValue());
+            CrateSettings.GATEWAY_EXPECTED_NODES.defaultValue());
     }
 }

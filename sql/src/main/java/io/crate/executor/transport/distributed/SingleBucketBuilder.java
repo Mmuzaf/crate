@@ -22,69 +22,66 @@
 package io.crate.executor.transport.distributed;
 
 import com.google.common.base.Throwables;
-import com.google.common.util.concurrent.ListenableFuture;
-import com.google.common.util.concurrent.SettableFuture;
 import io.crate.Streamer;
-import io.crate.core.collections.Bucket;
-import io.crate.core.collections.Row;
+import io.crate.data.Bucket;
+import io.crate.data.Row;
 import io.crate.executor.transport.StreamBucket;
-import io.crate.jobs.ExecutionState;
-import io.crate.operation.RowUpstream;
-import io.crate.operation.projectors.Requirement;
-import io.crate.operation.projectors.Requirements;
-import io.crate.operation.projectors.RowReceiver;
+import io.crate.operation.projectors.*;
 
 import java.io.IOException;
 import java.util.Set;
+import java.util.concurrent.CompletableFuture;
 
 
 public class SingleBucketBuilder implements RowReceiver {
 
     private final StreamBucket.Builder bucketBuilder;
-    private final SettableFuture<Bucket> bucketFuture = SettableFuture.create();
+    private final CompletableFuture<Bucket> bucketFuture = new CompletableFuture<>();
 
     public SingleBucketBuilder(Streamer<?>[] streamers) {
         bucketBuilder = new StreamBucket.Builder(streamers);
     }
 
     @Override
-    public boolean setNextRow(Row row) {
+    public CompletableFuture<Bucket> completionFuture() {
+        return bucketFuture;
+    }
+
+    @Override
+    public Result setNextRow(Row row) {
         try {
             bucketBuilder.add(row);
         } catch (Throwable e) {
             Throwables.propagate(e);
         }
-        return true;
-    }
-
-    public ListenableFuture<Bucket> result() {
-        return bucketFuture;
+        return Result.CONTINUE;
     }
 
     @Override
-    public void finish() {
+    public void pauseProcessed(ResumeHandle resumeable) {
+    }
+
+    @Override
+    public void finish(RepeatHandle repeatHandle) {
         try {
-            bucketFuture.set(bucketBuilder.build());
+            bucketFuture.complete(bucketBuilder.build());
         } catch (IOException e) {
-            bucketFuture.setException(e);
+            bucketFuture.completeExceptionally(e);
         }
     }
 
     @Override
     public void fail(Throwable throwable) {
-        bucketFuture.setException(throwable);
+        bucketFuture.completeExceptionally(throwable);
     }
 
     @Override
-    public void prepare(ExecutionState executionState) {
+    public void kill(Throwable throwable) {
+        bucketFuture.completeExceptionally(throwable);
     }
 
     @Override
     public Set<Requirement> requirements() {
         return Requirements.NO_REQUIREMENTS;
-    }
-
-    @Override
-    public void setUpstream(RowUpstream rowUpstream) {
     }
 }

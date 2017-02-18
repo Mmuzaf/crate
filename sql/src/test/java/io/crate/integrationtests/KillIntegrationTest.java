@@ -21,32 +21,43 @@
 
 package io.crate.integrationtests;
 
+import com.google.common.util.concurrent.SettableFuture;
 import io.crate.action.sql.SQLActionException;
-import io.crate.action.sql.SQLResponse;
 import io.crate.exceptions.Exceptions;
+import io.crate.plugin.SQLPlugin;
+import io.crate.testing.SQLResponse;
+import io.crate.testing.UseJdbc;
+import io.crate.testing.plugin.CrateTestingPlugin;
+import org.elasticsearch.action.ActionFuture;
+import org.elasticsearch.plugins.Plugin;
 import org.elasticsearch.threadpool.ThreadPool;
 import org.junit.After;
 import org.junit.Before;
 import org.junit.Rule;
 import org.junit.Test;
-import org.junit.rules.ExpectedException;
 import org.junit.rules.TemporaryFolder;
 
 import javax.annotation.Nullable;
+import java.nio.file.Paths;
+import java.util.Collection;
 import java.util.UUID;
-import java.util.concurrent.ExecutorService;
-import java.util.concurrent.Executors;
 import java.util.concurrent.TimeUnit;
-import java.util.concurrent.atomic.AtomicReference;
 
+import static com.carrotsearch.randomizedtesting.RandomizedTest.$;
 import static org.hamcrest.Matchers.*;
 
+@UseJdbc
 public class KillIntegrationTest extends SQLTransportIntegrationTest {
 
     private Setup setup = new Setup(sqlExecutor);
 
-    @Rule
-    public ExpectedException expectedException = ExpectedException.none();
+    @Override
+    protected Collection<Class<? extends Plugin>> nodePlugins() {
+        return pluginList(
+            SQLPlugin.class,
+            CrateTestingPlugin.class
+        );
+    }
 
     @Rule
     public TemporaryFolder temporaryFolder = new TemporaryFolder();
@@ -74,43 +85,60 @@ public class KillIntegrationTest extends SQLTransportIntegrationTest {
     }
 
     private void assertGotCancelled(final String statement, @Nullable final Object[] params, boolean killAll) throws Exception {
-        final ExecutorService executor = Executors.newSingleThreadExecutor();
-        final AtomicReference<Throwable> thrown = new AtomicReference<>();
         try {
-            executor.submit(new Runnable() {
-                @Override
-                public void run() {
-                    try {
-                        execute(statement, params);
-                    } catch (Throwable e) {
-                        Throwable unwrapped = Exceptions.unwrap(e);
-                        thrown.compareAndSet(null, unwrapped);
-                    }
-                }
-            });
-            Thread.sleep(100L);
+            ActionFuture<SQLResponse> future = sqlExecutor.execute(statement, params);
+            String jobId = waitForJobEntry(statement);
+            if (jobId == null) {
+                // query finished too fast
+                return;
+            }
             if (killAll) {
                 execute("kill all");
             } else {
-                SQLResponse logResponse = execute("select * from sys.jobs where stmt = ?", new Object[]{statement});
-                String jobId = logResponse.rows()[0][0].toString();
-                execute("kill ?", new Object[]{jobId});
+                execute("kill ?", $(jobId));
             }
-            executor.shutdown();
-            executor.awaitTermination(5L, TimeUnit.SECONDS);
-            Throwable exception = thrown.get();
-            if (exception != null) {
+            try {
+                future.get(10, TimeUnit.SECONDS);
+            } catch (Throwable exception) {
+                exception = Exceptions.unwrap(exception); // wrapped in ExecutionException
                 assertThat(exception, instanceOf(SQLActionException.class));
-                assertThat(((SQLActionException) exception).stackTrace(), anyOf(
-                        containsString("Job killed"), // CancellationException
-                        containsString("JobExecutionContext for job"), // ContextMissingException when job execution context not found
-                        containsString("SearchContext for job") // ContextMissingException when search context not found
+                assertThat(exception.toString(), anyOf(
+                    containsString("Job killed"), // CancellationException
+                    containsString("JobExecutionContext for job"), // ContextMissingException when job execution context not found
+                    containsString("SearchContext for job") // ContextMissingException when search context not found
                 ));
             }
         } finally {
-            executor.shutdownNow();
             waitUntilThreadPoolTasksFinished(ThreadPool.Names.SEARCH);
         }
+    }
+
+    /**
+     * Wait for a statement to appear in sys.jobs.
+     * If the query finished execution (is in sys.jobs_log) it will return null
+     */
+    @Nullable
+    private String waitForJobEntry(final String statement) throws Exception {
+        final SettableFuture<String> jobIdFuture = SettableFuture.create();
+        assertBusy(new Runnable() {
+            @Override
+            public void run() {
+                SQLResponse logResponse = execute("select * from sys.jobs where stmt = ?", $(statement));
+                if (logResponse.rowCount() == 0) {
+                    logResponse = execute("select * from sys.jobs_log where stmt = ?", $(statement));
+                    if (logResponse.rowCount() > 0L) {
+                        // query finished before jobId could be retrieved
+                        // finishing without killing - test will pass which is okay because it is not deterministic by design
+                        jobIdFuture.set(null);
+                        return;
+                    }
+                }
+                assertThat(logResponse.rowCount(), greaterThan(0L));
+                String jobId = logResponse.rows()[0][0].toString();
+                jobIdFuture.set(jobId);
+            }
+        });
+        return jobIdFuture.get(10, TimeUnit.SECONDS);
     }
 
     @Test
@@ -121,7 +149,7 @@ public class KillIntegrationTest extends SQLTransportIntegrationTest {
 
     @Test
     public void testKillCopyTo() throws Exception {
-        String path = temporaryFolder.newFolder().getAbsolutePath();
+        String path = Paths.get(temporaryFolder.newFolder().toURI()).toUri().toString();
         setup.setUpEmployees();
         assertGotCancelled("copy employees to directory ?", new Object[]{path}, true);
     }
@@ -130,12 +158,11 @@ public class KillIntegrationTest extends SQLTransportIntegrationTest {
     public void testKillGroupBy() throws Exception {
         setup.setUpEmployees();
         assertGotCancelled("SELECT sleep(500), sum(income) as summed_income, count(distinct name), department " +
-                "from employees " +
-                "group by 1, department " +
-                "having avg(income) > 100 " +
-                "order by department desc nulls first " +
-                "limit 10", null, true);
-        runJobContextReapers();
+                           "from employees " +
+                           "group by 1, department " +
+                           "having avg(income) > 100 " +
+                           "order by department desc nulls first " +
+                           "limit 10", null, true);
     }
 
     @Test
@@ -157,7 +184,7 @@ public class KillIntegrationTest extends SQLTransportIntegrationTest {
     @Test
     public void testKillNonExisitingJob() throws Exception {
         UUID jobId = UUID.randomUUID();
-        SQLResponse killResponse = execute("KILL ?", new Object[]{jobId});
+        SQLResponse killResponse = execute("KILL ?", new Object[]{jobId.toString()});
         assertThat(killResponse.rowCount(), is(0L));
         SQLResponse logResponse = execute("select * from sys.jobs_log where error = ?", new Object[]{"KILLED"});
         assertThat(logResponse.rowCount(), is(0L));

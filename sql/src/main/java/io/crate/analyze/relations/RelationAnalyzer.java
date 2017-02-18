@@ -21,150 +21,235 @@
 
 package io.crate.analyze.relations;
 
-import com.google.common.base.Optional;
+import com.google.common.collect.ImmutableList;
 import com.google.common.collect.Iterables;
 import com.google.common.collect.Multimap;
+import io.crate.action.sql.SessionContext;
 import io.crate.analyze.*;
 import io.crate.analyze.expressions.ExpressionAnalysisContext;
+import io.crate.analyze.expressions.ExpressionAnalyzer;
+import io.crate.analyze.expressions.SubqueryAnalyzer;
+import io.crate.analyze.relations.select.SelectAnalysis;
 import io.crate.analyze.relations.select.SelectAnalyzer;
-import io.crate.analyze.symbol.*;
+import io.crate.analyze.symbol.Aggregations;
+import io.crate.analyze.symbol.Function;
 import io.crate.analyze.symbol.Literal;
-import io.crate.analyze.symbol.format.SymbolFormatter;
+import io.crate.analyze.symbol.Symbol;
 import io.crate.analyze.symbol.format.SymbolPrinter;
 import io.crate.analyze.validator.GroupBySymbolValidator;
 import io.crate.analyze.validator.HavingSymbolValidator;
 import io.crate.analyze.validator.SemanticSortValidator;
 import io.crate.exceptions.AmbiguousColumnAliasException;
-import io.crate.metadata.FunctionInfo;
-import io.crate.metadata.TableIdent;
+import io.crate.exceptions.RelationUnknownException;
+import io.crate.exceptions.UnsupportedFeatureException;
+import io.crate.exceptions.ValidationException;
+import io.crate.metadata.*;
 import io.crate.metadata.doc.DocTableInfo;
+import io.crate.metadata.sys.SysClusterTableInfo;
+import io.crate.metadata.table.Operation;
 import io.crate.metadata.table.TableInfo;
-import io.crate.operation.operator.AndOperator;
+import io.crate.metadata.tablefunctions.TableFunctionImplementation;
+import io.crate.planner.consumer.OrderByWithAggregationValidator;
+import io.crate.planner.node.dql.join.JoinType;
 import io.crate.sql.tree.*;
 import io.crate.types.DataTypes;
-import org.elasticsearch.common.inject.Inject;
-import org.elasticsearch.common.inject.Singleton;
+import org.elasticsearch.cluster.ClusterService;
 
 import javax.annotation.Nullable;
 import java.util.*;
 
-@Singleton
-public class RelationAnalyzer extends DefaultTraversalVisitor<AnalyzedRelation, RelationAnalysisContext> {
+@SuppressWarnings("OptionalUsedAsFieldOrParameterType")
+public class RelationAnalyzer extends DefaultTraversalVisitor<AnalyzedRelation, StatementAnalysisContext> {
 
-    private final static AggregationSearcher AGGREGATION_SEARCHER = new AggregationSearcher();
+    private final ClusterService clusterService;
+    private final Functions functions;
+    private final Schemas schemas;
+    private static final List<Relation> SYS_CLUSTER_SOURCE = ImmutableList.<Relation>of(
+        new Table(new QualifiedName(
+            ImmutableList.of(SysClusterTableInfo.IDENT.schema(), SysClusterTableInfo.IDENT.name()))
+        )
+    );
 
-    private final AnalysisMetaData analysisMetaData;
-    private static final EnumSet<Join.Type> ALLOWED_JOIN_TYPES = EnumSet.of(Join.Type.CROSS, Join.Type.INNER);
-
-    @Inject
-    public RelationAnalyzer(AnalysisMetaData analysisMetaData) {
-        this.analysisMetaData = analysisMetaData;
+    public RelationAnalyzer(ClusterService clusterService, Functions functions, Schemas schemas) {
+        this.clusterService = clusterService;
+        this.functions = functions;
+        this.schemas = schemas;
     }
 
+    public AnalyzedRelation analyze(Node node, StatementAnalysisContext statementContext) {
+        AnalyzedRelation relation = process(node, statementContext);
+        return RelationNormalizer.normalize(relation, functions, statementContext.transactionContext());
+    }
 
-    public AnalyzedRelation analyze(Node node, RelationAnalysisContext relationAnalysisContext) {
-        return process(node, relationAnalysisContext);
+    public AnalyzedRelation analyzeUnbound(Query query, SessionContext sessionContext, ParamTypeHints paramTypeHints) {
+        return process(query, new StatementAnalysisContext(sessionContext, paramTypeHints, Operation.READ, null));
     }
 
     public AnalyzedRelation analyze(Node node, Analysis analysis) {
-        return analyze(node, new RelationAnalysisContext(analysis.parameterContext(), analysisMetaData));
+        return analyze(
+            node,
+            new StatementAnalysisContext(
+                analysis.sessionContext(),
+                analysis.parameterContext(),
+                Operation.READ,
+                analysis.transactionContext())
+        );
     }
 
     @Override
-    protected AnalyzedRelation visitQuery(Query node, RelationAnalysisContext context) {
+    protected AnalyzedRelation visitQuery(Query node, StatementAnalysisContext context) {
         return process(node.getQueryBody(), context);
     }
 
     @Override
-    protected AnalyzedRelation visitUnion(Union node, RelationAnalysisContext context) {
-        throw new UnsupportedOperationException("UNION is not supported");
+    protected AnalyzedRelation visitUnion(Union node, StatementAnalysisContext context) {
+        throw new UnsupportedFeatureException("UNION is not supported");
     }
 
     @Override
-    protected AnalyzedRelation visitJoin(Join node, RelationAnalysisContext context) {
-        if (!ALLOWED_JOIN_TYPES.contains(node.getType())) {
-            throw new UnsupportedOperationException("Explicit " + node.getType().name() + " join syntax is not supported");
-        }
-        process(node.getLeft(), context);
-        process(node.getRight(), context);
+    protected AnalyzedRelation visitIntersect(Intersect node, StatementAnalysisContext context) {
+        throw new UnsupportedFeatureException("INTERSECT is not supported");
+    }
 
+    @Override
+    protected AnalyzedRelation visitExcept(Except node, StatementAnalysisContext context) {
+        throw new UnsupportedFeatureException("EXCEPT is not supported");
+    }
+
+    @Override
+    protected AnalyzedRelation visitJoin(Join node, StatementAnalysisContext statementContext) {
+        process(node.getLeft(), statementContext);
+        process(node.getRight(), statementContext);
+
+        RelationAnalysisContext relationContext = statementContext.currentRelationContext();
         Optional<JoinCriteria> optCriteria = node.getCriteria();
+        Symbol joinCondition = null;
         if (optCriteria.isPresent()) {
             JoinCriteria joinCriteria = optCriteria.get();
             if (joinCriteria instanceof JoinOn) {
-                context.addJoinExpression(((JoinOn) joinCriteria).getExpression());
+                ExpressionAnalyzer expressionAnalyzer = new ExpressionAnalyzer(
+                    functions,
+                    statementContext.sessionContext(),
+                    statementContext.convertParamFunction(),
+                    new FullQualifedNameFieldProvider(relationContext.sources()),
+                    new SubqueryAnalyzer(this, statementContext));
+                try {
+                    joinCondition = expressionAnalyzer.convert(
+                        ((JoinOn) joinCriteria).getExpression(), relationContext.expressionAnalysisContext());
+                } catch (RelationUnknownException e) {
+                    throw new ValidationException(String.format(Locale.ENGLISH,
+                        "missing FROM-clause entry for relation '%s'", e.qualifiedName()));
+                }
             } else {
                 throw new UnsupportedOperationException(String.format(Locale.ENGLISH, "join criteria %s not supported",
-                        joinCriteria.getClass().getSimpleName()));
+                    joinCriteria.getClass().getSimpleName()));
             }
         }
+
+        relationContext.addJoinType(JoinType.values()[node.getType().ordinal()], joinCondition);
         return null;
     }
 
     @Override
-    protected AnalyzedRelation visitQuerySpecification(QuerySpecification node, RelationAnalysisContext context) {
-        if (node.getFrom() == null) {
-            throw new IllegalArgumentException("FROM clause is missing.");
+    protected AnalyzedRelation visitQuerySpecification(QuerySpecification node, StatementAnalysisContext statementContext) {
+        List<Relation> from = node.getFrom() != null ? node.getFrom() : SYS_CLUSTER_SOURCE;
+
+        statementContext.startRelation();
+
+        for (Relation relation : from) {
+            process(relation, statementContext);
         }
-        for (Relation relation : node.getFrom()) {
-            process(relation, context);
-        }
+
+        RelationAnalysisContext context = statementContext.currentRelationContext();
+        ExpressionAnalyzer expressionAnalyzer = new ExpressionAnalyzer(
+            functions,
+            statementContext.sessionContext(),
+            statementContext.convertParamFunction(),
+            new FullQualifedNameFieldProvider(context.sources()),
+            new SubqueryAnalyzer(this, statementContext));
         ExpressionAnalysisContext expressionAnalysisContext = context.expressionAnalysisContext();
-        WhereClause whereClause = analyzeWhere(node.getWhere(), context);
+        Symbol querySymbol = expressionAnalyzer.generateQuerySymbol(node.getWhere(), expressionAnalysisContext);
+        WhereClause whereClause = new WhereClause(querySymbol);
 
-        SelectAnalyzer.SelectAnalysis selectAnalysis = SelectAnalyzer.analyzeSelect(node.getSelect(), context);
+        SelectAnalysis selectAnalysis = SelectAnalyzer.analyzeSelect(
+            node.getSelect(), context, expressionAnalyzer, expressionAnalysisContext);
 
-        List<Symbol> groupBy = analyzeGroupBy(selectAnalysis, node.getGroupBy(), context);
+        List<Symbol> groupBy = analyzeGroupBy(
+            selectAnalysis,
+            node.getGroupBy(),
+            expressionAnalyzer,
+            expressionAnalysisContext);
 
         if (!node.getGroupBy().isEmpty() || expressionAnalysisContext.hasAggregates) {
-            ensureNonAggregatesInGroupBy(selectAnalysis.outputSymbols(), groupBy);
+            ensureNonAggregatesInGroupBy(selectAnalysis.outputSymbols(), selectAnalysis.outputNames(), groupBy);
         }
+        boolean isDistinct = false;
         if (node.getSelect().isDistinct() && groupBy.isEmpty()) {
             groupBy = rewriteGlobalDistinct(selectAnalysis.outputSymbols());
+            isDistinct = true;
         }
-        if (groupBy != null && groupBy.isEmpty()){
+        if (groupBy != null && groupBy.isEmpty()) {
             groupBy = null;
         }
-
         QuerySpec querySpec = new QuerySpec()
-                .orderBy(analyzeOrderBy(selectAnalysis, node.getOrderBy(), context))
-                .having(analyzeHaving(node.getHaving(), groupBy, context))
-                .limit(context.expressionAnalyzer().integerFromExpression(node.getLimit()))
-                .offset(context.expressionAnalyzer().integerFromExpression(node.getOffset()))
-                .outputs(selectAnalysis.outputSymbols())
-                .where(whereClause)
-                .groupBy(groupBy)
-                .hasAggregates(expressionAnalysisContext.hasAggregates);
+            .orderBy(analyzeOrderBy(
+                selectAnalysis,
+                node.getOrderBy(),
+                expressionAnalyzer,
+                expressionAnalysisContext,
+                expressionAnalysisContext.hasAggregates || groupBy != null, isDistinct))
+            .having(analyzeHaving(
+                node.getHaving(),
+                groupBy,
+                expressionAnalyzer,
+                context.expressionAnalysisContext()))
+            .limit(optionalLongSymbol(node.getLimit(), expressionAnalyzer, expressionAnalysisContext))
+            .offset(optionalLongSymbol(node.getOffset(), expressionAnalyzer, expressionAnalysisContext))
+            .outputs(selectAnalysis.outputSymbols())
+            .where(whereClause)
+            .groupBy(groupBy)
+            .hasAggregates(expressionAnalysisContext.hasAggregates);
 
+        QueriedRelation relation;
         if (context.sources().size() == 1) {
             AnalyzedRelation source = Iterables.getOnlyElement(context.sources().values());
-            QueriedTableRelation relation;
             if (source instanceof DocTableRelation) {
-                relation = new QueriedDocTable(
-                        (DocTableRelation) source, selectAnalysis.outputNames(), querySpec);
+                relation = new QueriedDocTable((DocTableRelation) source, selectAnalysis.outputNames(), querySpec);
             } else if (source instanceof TableRelation) {
-                relation =  new QueriedTable((TableRelation) source, selectAnalysis.outputNames(), querySpec);
+                relation = new QueriedTable((TableRelation) source, selectAnalysis.outputNames(), querySpec);
             } else {
-                throw new UnsupportedOperationException
-                        ("Only tables are allowed in the FROM clause, got: " + source);
+                assert source instanceof QueriedRelation : "expecting relation to be an instance of QueriedRelation";
+                relation = new QueriedSelectRelation((QueriedRelation) source, selectAnalysis.outputNames(), querySpec);
             }
-            relation.normalize(analysisMetaData);
-            return relation;
-        }
-        // TODO: implement multi table selects
-        // once this is used .normalize should for this class needs to be handled here too
-        return new MultiSourceSelect(
+        } else {
+            relation = new MultiSourceSelect(
                 context.sources(),
+                selectAnalysis.outputSymbols(),
                 selectAnalysis.outputNames(),
-                querySpec
-        );
+                querySpec,
+                context.joinPairs()
+            );
+        }
+
+        statementContext.endRelation();
+        return relation;
+    }
+
+    private Optional<Symbol> optionalLongSymbol(Optional<Expression> optExpression,
+                                                ExpressionAnalyzer expressionAnalyzer,
+                                                ExpressionAnalysisContext expressionAnalysisContext) {
+        if (optExpression.isPresent()) {
+            Symbol symbol = expressionAnalyzer.convert(optExpression.get(), expressionAnalysisContext);
+            return Optional.of(ExpressionAnalyzer.castIfNeededOrFail(symbol, DataTypes.LONG));
+        }
+        return Optional.empty();
     }
 
     @Nullable
     private List<Symbol> rewriteGlobalDistinct(List<Symbol> outputSymbols) {
         List<Symbol> groupBy = new ArrayList<>(outputSymbols.size());
         for (Symbol symbol : outputSymbols) {
-            if (!isAggregate(symbol)) {
+            if (!Aggregations.containsAggregation(symbol)) {
                 GroupBySymbolValidator.validate(symbol);
                 groupBy.add(symbol);
             }
@@ -172,52 +257,28 @@ public class RelationAnalyzer extends DefaultTraversalVisitor<AnalyzedRelation, 
         return groupBy;
     }
 
-    private void ensureNonAggregatesInGroupBy(List<Symbol> outputSymbols, List<Symbol> groupBy) throws IllegalArgumentException {
-        for (Symbol output : outputSymbols) {
+    private void ensureNonAggregatesInGroupBy(List<Symbol> outputSymbols,
+                                              List<Path> outputNames,
+                                              List<Symbol> groupBy) throws IllegalArgumentException {
+        for (int i = 0; i < outputSymbols.size(); i++) {
+            Symbol output = outputSymbols.get(i);
             if (groupBy == null || !groupBy.contains(output)) {
-                if (!isAggregate(output)) {
+                if (!Aggregations.containsAggregation(output)) {
                     throw new IllegalArgumentException(
-                            SymbolFormatter.format("column '%s' must appear in the GROUP BY clause " +
-                                                   "or be used in an aggregation function", output));
+                        String.format(Locale.ENGLISH, "column '%s' must appear in the GROUP BY clause " +
+                                      "or be used in an aggregation function", outputNames.get(i).outputName()));
                 }
             }
-        }
-    }
-
-    private boolean isAggregate(Symbol s) {
-        return AGGREGATION_SEARCHER.process(s, null);
-    }
-
-    static class AggregationSearcher extends SymbolVisitor<Void, Boolean> {
-
-        @Override
-        protected Boolean visitSymbol(Symbol symbol, Void context) {
-            return false;
-        }
-
-        @Override
-        public Boolean visitFunction(Function symbol, Void context) {
-            if (symbol.info().type() == FunctionInfo.Type.AGGREGATE) {
-                return true;
-            } else {
-                for (Symbol argument : symbol.arguments()) {
-                    if (process(argument, context)) {
-                        return true;
-                    }
-                }
-            }
-            return false;
-        }
-
-        @Override
-        public Boolean visitAggregation(Aggregation symbol, Void context) {
-            return true;
         }
     }
 
     @Nullable
-    private OrderBy analyzeOrderBy(SelectAnalyzer.SelectAnalysis selectAnalysis, List<SortItem> orderBy,
-                                   RelationAnalysisContext context) {
+    private OrderBy analyzeOrderBy(SelectAnalysis selectAnalysis,
+                                   List<SortItem> orderBy,
+                                   ExpressionAnalyzer expressionAnalyzer,
+                                   ExpressionAnalysisContext expressionAnalysisContext,
+                                   boolean hasAggregatesOrGrouping,
+                                   boolean isDistinct) {
         int size = orderBy.size();
         if (size == 0) {
             return null;
@@ -229,8 +290,12 @@ public class RelationAnalyzer extends DefaultTraversalVisitor<AnalyzedRelation, 
         for (int i = 0; i < size; i++) {
             SortItem sortItem = orderBy.get(i);
             Expression sortKey = sortItem.getSortKey();
-            Symbol symbol = symbolFromSelectOutputReferenceOrExpression(sortKey, selectAnalysis, "ORDER BY", context);
+            Symbol symbol = symbolFromSelectOutputReferenceOrExpression(
+                sortKey, selectAnalysis, "ORDER BY", expressionAnalyzer, expressionAnalysisContext);
             SemanticSortValidator.validate(symbol);
+            if (hasAggregatesOrGrouping) {
+                OrderByWithAggregationValidator.validate(symbol, selectAnalysis.outputSymbols(), isDistinct);
+            }
 
             symbols.add(symbol);
             switch (sortItem.getNullOrdering()) {
@@ -249,60 +314,44 @@ public class RelationAnalyzer extends DefaultTraversalVisitor<AnalyzedRelation, 
         return new OrderBy(symbols, reverseFlags, nullsFirst);
     }
 
-    private List<Symbol> analyzeGroupBy(SelectAnalyzer.SelectAnalysis selectAnalysis, List<Expression> groupBy,
-                                        RelationAnalysisContext context) {
+    private List<Symbol> analyzeGroupBy(SelectAnalysis selectAnalysis,
+                                        List<Expression> groupBy,
+                                        ExpressionAnalyzer expressionAnalyzer,
+                                        ExpressionAnalysisContext expressionAnalysisContext) {
         List<Symbol> groupBySymbols = new ArrayList<>(groupBy.size());
         for (Expression expression : groupBy) {
             Symbol symbol = symbolFromSelectOutputReferenceOrExpression(
-                    expression, selectAnalysis, "GROUP BY", context);
+                expression, selectAnalysis, "GROUP BY", expressionAnalyzer, expressionAnalysisContext);
             GroupBySymbolValidator.validate(symbol);
             groupBySymbols.add(symbol);
         }
         return groupBySymbols;
     }
 
-    private HavingClause analyzeHaving(Optional<Expression> having, List<Symbol> groupBy, RelationAnalysisContext context) {
+    private HavingClause analyzeHaving(Optional<Expression> having,
+                                       @Nullable List<Symbol> groupBy,
+                                       ExpressionAnalyzer expressionAnalyzer,
+                                       ExpressionAnalysisContext expressionAnalysisContext) {
         if (having.isPresent()) {
-            if (!context.expressionAnalysisContext().hasAggregates && (groupBy == null || groupBy.isEmpty())) {
+            if (!expressionAnalysisContext.hasAggregates && (groupBy == null || groupBy.isEmpty())) {
                 throw new IllegalArgumentException("HAVING clause can only be used in GROUP BY or global aggregate queries");
             }
-            Symbol symbol = context.expressionAnalyzer().convert(having.get(), context.expressionAnalysisContext());
+            Symbol symbol = expressionAnalyzer.convert(having.get(), expressionAnalysisContext);
             HavingSymbolValidator.validate(symbol, groupBy);
-            return new HavingClause(context.expressionAnalyzer().normalize(symbol));
+            return new HavingClause(symbol);
         }
         return null;
-    }
-
-    private WhereClause analyzeWhere(Optional<Expression> where, RelationAnalysisContext context) {
-        List<Expression> joinExpressions = context.joinExpressions();
-        if (!where.isPresent() && joinExpressions.isEmpty()) {
-            return WhereClause.MATCH_ALL;
-        }
-        Symbol query;
-        if (where.isPresent()) {
-            query = context.expressionAnalyzer().convert(where.get(), context.expressionAnalysisContext());
-        } else {
-            query = Literal.BOOLEAN_TRUE;
-        }
-        if (!joinExpressions.isEmpty()) {
-            for (Expression joinExpression : joinExpressions) {
-                Symbol joinCondition = context.expressionAnalyzer().convert(joinExpression, context.expressionAnalysisContext());
-                query = new Function(AndOperator.INFO, Arrays.asList(query, joinCondition));
-            }
-        }
-        query = context.expressionAnalyzer().normalize(query);
-        return new WhereClause(query);
     }
 
 
     /**
      * <h2>resolve expression by also taking alias and ordinal-reference into account</h2>
-     *
+     * <p>
      * <p>
      * in group by or order by clauses it is possible to reference anything in the
      * select list by using a number or alias
      * </p>
-     *
+     * <p>
      * These are allowed:
      * <pre>
      *     select name as n  ... order by n
@@ -311,9 +360,10 @@ public class RelationAnalyzer extends DefaultTraversalVisitor<AnalyzedRelation, 
      * </pre>
      */
     private Symbol symbolFromSelectOutputReferenceOrExpression(Expression expression,
-                                                               SelectAnalyzer.SelectAnalysis selectAnalysis,
+                                                               SelectAnalysis selectAnalysis,
                                                                String clause,
-                                                               RelationAnalysisContext context) {
+                                                               ExpressionAnalyzer expressionAnalyzer,
+                                                               ExpressionAnalysisContext expressionAnalysisContext) {
         Symbol symbol;
         if (expression instanceof QualifiedNameReference) {
             List<String> parts = ((QualifiedNameReference) expression).getName().getParts();
@@ -324,14 +374,14 @@ public class RelationAnalyzer extends DefaultTraversalVisitor<AnalyzedRelation, 
                 }
             }
         }
-        symbol = context.expressionAnalyzer().convert(expression, context.expressionAnalysisContext());
+        symbol = expressionAnalyzer.convert(expression, expressionAnalysisContext);
         if (symbol.symbolType().isValueSymbol()) {
             Literal longLiteral;
             try {
                 longLiteral = io.crate.analyze.symbol.Literal.convert(symbol, DataTypes.LONG);
             } catch (ClassCastException | IllegalArgumentException e) {
                 throw new UnsupportedOperationException(String.format(Locale.ENGLISH,
-                        "Cannot use %s in %s clause", SymbolPrinter.INSTANCE.printSimple(symbol), clause));
+                    "Cannot use %s in %s clause", SymbolPrinter.INSTANCE.printSimple(symbol), clause));
             }
             symbol = ordinalOutputReference(selectAnalysis.outputSymbols(), longLiteral, clause);
         }
@@ -343,13 +393,13 @@ public class RelationAnalyzer extends DefaultTraversalVisitor<AnalyzedRelation, 
         int idx = ((Long) longLiteral.value()).intValue() - 1;
         if (idx < 0) {
             throw new IllegalArgumentException(String.format(Locale.ENGLISH,
-                    "%s position %s is not in select list", clauseName, idx + 1));
+                "%s position %s is not in select list", clauseName, idx + 1));
         }
         try {
             return outputSymbols.get(idx);
         } catch (IndexOutOfBoundsException e) {
             throw new IllegalArgumentException(String.format(Locale.ENGLISH,
-                    "%s position %s is not in select list", clauseName, idx + 1));
+                "%s position %s is not in select list", clauseName, idx + 1));
         }
     }
 
@@ -366,25 +416,71 @@ public class RelationAnalyzer extends DefaultTraversalVisitor<AnalyzedRelation, 
     }
 
     @Override
-    protected AnalyzedRelation visitAliasedRelation(AliasedRelation node, RelationAnalysisContext context) {
-        AnalyzedRelation childRelation = process(node.getRelation(),
-                new RelationAnalysisContext(context.parameterContext(), analysisMetaData));
-        context.addSourceRelation(node.getAlias(), childRelation);
+    protected AnalyzedRelation visitAliasedRelation(AliasedRelation node, StatementAnalysisContext context) {
+        context.startRelation(true);
+        AnalyzedRelation childRelation = process(node.getRelation(), context);
+        context.endRelation();
+        childRelation.setQualifiedName(new QualifiedName(node.getAlias()));
+        context.currentRelationContext().addSourceRelation(node.getAlias(), childRelation);
         return childRelation;
     }
 
     @Override
-    protected AnalyzedRelation visitTable(Table node, RelationAnalysisContext context) {
-        TableInfo tableInfo = analysisMetaData.schemas().getTableInfo(
-                TableIdent.of(node, context.parameterContext().defaultSchema()));
+    protected AnalyzedRelation visitTable(Table node, StatementAnalysisContext context) {
+        TableInfo tableInfo = schemas.getTableInfo(TableIdent.of(node, context.sessionContext().defaultSchema()));
+        Operation.blockedRaiseException(tableInfo, context.currentOperation());
         AnalyzedRelation tableRelation;
         // Dispatching of doc relations is based on the returned class of the schema information.
-        if (tableInfo instanceof DocTableInfo){
+        if (tableInfo instanceof DocTableInfo) {
             tableRelation = new DocTableRelation((DocTableInfo) tableInfo);
         } else {
             tableRelation = new TableRelation(tableInfo);
         }
-        context.addSourceRelation(tableInfo.ident().schema(), tableInfo.ident().name(), tableRelation);
+        context.currentRelationContext().addSourceRelation(
+            tableInfo.ident().schema(), tableInfo.ident().name(), tableRelation);
         return tableRelation;
+    }
+
+    @Override
+    public AnalyzedRelation visitTableFunction(TableFunction node, StatementAnalysisContext statementContext) {
+        RelationAnalysisContext context = statementContext.currentRelationContext();
+        ExpressionAnalyzer expressionAnalyzer = new ExpressionAnalyzer(
+            functions,
+            statementContext.sessionContext(),
+            statementContext.convertParamFunction(),
+            new FieldProvider() {
+                @Override
+                public Symbol resolveField(QualifiedName qualifiedName, Operation operation) {
+                    throw new UnsupportedOperationException("Can only resolve literals");
+                }
+
+                @Override
+                public Symbol resolveField(QualifiedName qualifiedName, @Nullable List path, Operation operation) {
+                    throw new UnsupportedOperationException("Can only resolve literals");
+                }
+            },
+            null
+        );
+
+        Function function = (Function) expressionAnalyzer.convert(node.functionCall(), context.expressionAnalysisContext());
+        FunctionImplementation functionImplementation = functions.getSafe(function.info().ident());
+        if (functionImplementation.info().type() != FunctionInfo.Type.TABLE) {
+            throw new UnsupportedFeatureException(
+                "Non table function " + function.info().ident().name() + " is not supported in from clause");
+        }
+        TableFunctionImplementation tableFunction = (TableFunctionImplementation) functionImplementation;
+        TableInfo tableInfo = tableFunction.createTableInfo(clusterService);
+        Operation.blockedRaiseException(tableInfo, statementContext.currentOperation());
+        TableRelation tableRelation = new TableFunctionRelation(tableInfo, tableFunction, function);
+        context.addSourceRelation(node.name(), tableRelation);
+        return tableRelation;
+    }
+
+    @Override
+    protected AnalyzedRelation visitTableSubquery(TableSubquery node, StatementAnalysisContext context) {
+        if (!context.currentRelationContext().isAliasedRelation()) {
+            throw new UnsupportedOperationException("subquery in FROM must have an alias");
+        }
+        return super.visitTableSubquery(node, context);
     }
 }

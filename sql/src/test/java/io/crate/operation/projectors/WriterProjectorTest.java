@@ -22,11 +22,10 @@
 package io.crate.operation.projectors;
 
 import com.google.common.collect.ImmutableSet;
-import io.crate.core.collections.Bucket;
-import io.crate.core.collections.Row;
-import io.crate.core.collections.Row1;
+import io.crate.data.Bucket;
+import io.crate.data.Row;
+import io.crate.data.Row1;
 import io.crate.exceptions.UnhandledServerException;
-import io.crate.jobs.ExecutionState;
 import io.crate.metadata.ColumnIdent;
 import io.crate.operation.collect.CollectExpression;
 import io.crate.planner.projection.WriterProjection;
@@ -34,14 +33,11 @@ import io.crate.test.integration.CrateUnitTest;
 import io.crate.testing.CollectingRowReceiver;
 import io.crate.testing.TestingHelpers;
 import org.apache.lucene.util.BytesRef;
-import org.elasticsearch.common.settings.ImmutableSettings;
-import org.elasticsearch.common.settings.Settings;
 import org.junit.Rule;
 import org.junit.Test;
 import org.junit.rules.TemporaryFolder;
 
 import java.nio.file.Paths;
-import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.HashMap;
 import java.util.Locale;
@@ -52,7 +48,6 @@ import java.util.concurrent.Executors;
 import static io.crate.testing.TestingHelpers.isRow;
 import static org.hamcrest.Matchers.contains;
 import static org.hamcrest.core.Is.is;
-import static org.mockito.Mockito.mock;
 
 public class WriterProjectorTest extends CrateUnitTest {
 
@@ -67,32 +62,31 @@ public class WriterProjectorTest extends CrateUnitTest {
         String fileAbsolutePath = folder.newFile("out.json").getAbsolutePath();
         String uri = Paths.get(fileAbsolutePath).toUri().toString();
         WriterProjector projector = new WriterProjector(
-                executorService,
-                uri,
-                null,
-                null,
-                ImmutableSet.<CollectExpression<Row, ?>>of(),
-                new HashMap<ColumnIdent, Object>(),
-                null,
-                WriterProjection.OutputFormat.JSON_OBJECT
+            executorService,
+            uri,
+            null,
+            null,
+            ImmutableSet.<CollectExpression<Row, ?>>of(),
+            new HashMap<ColumnIdent, Object>(),
+            null,
+            WriterProjection.OutputFormat.JSON_OBJECT
         );
         CollectingRowReceiver rowReceiver = new CollectingRowReceiver();
         projector.downstream(rowReceiver);
 
-        projector.prepare(mock(ExecutionState.class));
         for (int i = 0; i < 5; i++) {
             projector.setNextRow(new Row1(new BytesRef(String.format(Locale.ENGLISH, "input line %02d", i))));
         }
-        projector.finish();
+        projector.finish(RepeatHandle.UNSUPPORTED);
 
         Bucket rows = rowReceiver.result();
         assertThat(rows, contains(isRow(5L)));
 
         assertEquals("input line 00\n" +
-                "input line 01\n" +
-                "input line 02\n" +
-                "input line 03\n" +
-                "input line 04\n", TestingHelpers.readFile(fileAbsolutePath));
+                     "input line 01\n" +
+                     "input line 02\n" +
+                     "input line 03\n" +
+                     "input line 04\n", TestingHelpers.readFile(fileAbsolutePath));
     }
 
     @Test
@@ -104,7 +98,7 @@ public class WriterProjectorTest extends CrateUnitTest {
 
         Map someMap = (Map) convertedMap.get("some");
         Map nestedMap = (Map) someMap.get("nested");
-        assertThat((String)nestedMap.get("column"), is("foo"));
+        assertThat((String) nestedMap.get("column"), is("foo"));
     }
 
     @Test
@@ -114,19 +108,18 @@ public class WriterProjectorTest extends CrateUnitTest {
 
         String uri = Paths.get(folder.newFolder().toURI()).toUri().toString();
         WriterProjector projector = new WriterProjector(
-                executorService,
-                uri,
-                null,
-                null,
-                ImmutableSet.<CollectExpression<Row, ?>>of(),
-                new HashMap<ColumnIdent, Object>(),
-                null,
-                WriterProjection.OutputFormat.JSON_OBJECT
+            executorService,
+            uri,
+            null,
+            null,
+            ImmutableSet.<CollectExpression<Row, ?>>of(),
+            new HashMap<ColumnIdent, Object>(),
+            null,
+            WriterProjection.OutputFormat.JSON_OBJECT
         );
         CollectingRowReceiver rowReceiver = new CollectingRowReceiver();
         projector.downstream(rowReceiver);
-        projector.prepare(mock(ExecutionState.class));
-        projector.finish();
+        projector.finish(RepeatHandle.UNSUPPORTED);
         rowReceiver.result();
     }
 
@@ -137,19 +130,18 @@ public class WriterProjectorTest extends CrateUnitTest {
 
         String uri = Paths.get(folder.newFile().toURI()).resolve("out.json").toUri().toString();
         WriterProjector projector = new WriterProjector(
-                executorService,
-                uri,
-                null,
-                null,
-                ImmutableSet.<CollectExpression<Row, ?>>of(),
-                new HashMap<ColumnIdent, Object>(),
-                null,
-                WriterProjection.OutputFormat.JSON_OBJECT
+            executorService,
+            uri,
+            null,
+            null,
+            ImmutableSet.<CollectExpression<Row, ?>>of(),
+            new HashMap<ColumnIdent, Object>(),
+            null,
+            WriterProjection.OutputFormat.JSON_OBJECT
         );
         CollectingRowReceiver rowReceiver = new CollectingRowReceiver();
         projector.downstream(rowReceiver);
-        projector.prepare(mock(ExecutionState.class));
-        projector.finish();
+        projector.finish(RepeatHandle.UNSUPPORTED);
         rowReceiver.result();
     }
 }

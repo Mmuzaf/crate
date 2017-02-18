@@ -21,26 +21,46 @@
 
 package io.crate.planner.node.dql;
 
-import io.crate.planner.PlanAndPlannedAnalyzedRelation;
+import io.crate.planner.Plan;
 import io.crate.planner.PlanVisitor;
-import io.crate.planner.distribution.UpstreamPhase;
+import io.crate.planner.PositionalOrderBy;
+import io.crate.planner.ResultDescription;
+import io.crate.planner.distribution.DistributionInfo;
 import io.crate.planner.projection.Projection;
+import io.crate.types.DataType;
 
 import javax.annotation.Nullable;
+import java.util.Collection;
+import java.util.List;
 import java.util.UUID;
 
-public class DistributedGroupBy extends PlanAndPlannedAnalyzedRelation {
+public class DistributedGroupBy implements Plan, ResultDescription {
 
-    private final CollectPhase collectNode;
+    private final RoutedCollectPhase collectPhase;
     private final MergePhase reducerMergeNode;
-    private MergePhase localMergeNode;
-    private final UUID id;
 
-    public DistributedGroupBy(CollectPhase collectNode, MergePhase reducerMergeNode, @Nullable MergePhase localMergeNode, UUID id) {
-        this.collectNode = collectNode;
+    private int limit;
+    private int offset;
+    private int numOutputs;
+
+    private final int maxRowsPerNode;
+    @Nullable
+    private PositionalOrderBy orderBy;
+
+    public DistributedGroupBy(RoutedCollectPhase collectPhase,
+                              MergePhase reducerMergeNode,
+                              int limit,
+                              int offset,
+                              int numOutputs,
+                              int maxRowsPerNode,
+                              @Nullable PositionalOrderBy orderBy) {
+        this.collectPhase = collectPhase;
         this.reducerMergeNode = reducerMergeNode;
-        this.localMergeNode = localMergeNode;
-        this.id = id;
+        this.limit = limit;
+        this.offset = offset;
+        this.numOutputs = numOutputs;
+        this.maxRowsPerNode = maxRowsPerNode;
+        this.orderBy = orderBy;
     }
 
     @Override
@@ -50,37 +70,81 @@ public class DistributedGroupBy extends PlanAndPlannedAnalyzedRelation {
 
     @Override
     public UUID jobId() {
-        return id;
+        return collectPhase.jobId();
     }
 
-    public CollectPhase collectNode() {
-        return collectNode;
+    public RoutedCollectPhase collectPhase() {
+        return collectPhase;
     }
 
     public MergePhase reducerMergeNode() {
         return reducerMergeNode;
     }
 
-    public MergePhase localMergeNode() {
-        return localMergeNode;
-    }
-
     @Override
-    public void addProjection(Projection projection) {
-        if (localMergeNode != null) {
-            localMergeNode.addProjection(projection);
-        } else {
-            reducerMergeNode.addProjection(projection);
+    public void addProjection(Projection projection,
+                              @Nullable Integer newLimit,
+                              @Nullable Integer newOffset,
+                              @Nullable Integer newNumOutputs,
+                              @Nullable PositionalOrderBy newOrderBy) {
+        reducerMergeNode.addProjection(projection);
+        if (newLimit != null) {
+            limit = newLimit;
+        }
+        if (newOffset != null) {
+            offset = newOffset;
+        }
+        if (newOrderBy != null) {
+            orderBy = newOrderBy;
+        }
+        if (newNumOutputs != null) {
+            numOutputs = newNumOutputs;
         }
     }
 
     @Override
-    public boolean resultIsDistributed() {
-        return localMergeNode == null;
+    public ResultDescription resultDescription() {
+        return this;
     }
 
     @Override
-    public UpstreamPhase resultPhase() {
-        return localMergeNode != null ? localMergeNode : reducerMergeNode;
+    public void setDistributionInfo(DistributionInfo distributionInfo) {
+        reducerMergeNode.distributionInfo(distributionInfo);
+    }
+
+    @Override
+    public Collection<String> nodeIds() {
+        return reducerMergeNode.nodeIds();
+    }
+
+    @Nullable
+    @Override
+    public PositionalOrderBy orderBy() {
+        return orderBy;
+    }
+
+    @Override
+    public int limit() {
+        return limit;
+    }
+
+    @Override
+    public int maxRowsPerNode() {
+        return maxRowsPerNode;
+    }
+
+    @Override
+    public int offset() {
+        return offset;
+    }
+
+    @Override
+    public int numOutputs() {
+        return numOutputs;
+    }
+
+    @Override
+    public List<DataType> streamOutputs() {
+        return reducerMergeNode.outputTypes();
     }
 }

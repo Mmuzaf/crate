@@ -21,119 +21,83 @@
 
 package io.crate.analyze;
 
-import com.google.common.collect.ImmutableList;
 import io.crate.analyze.relations.QueriedDocTable;
-import io.crate.analyze.symbol.Function;
 import io.crate.analyze.symbol.Literal;
 import io.crate.exceptions.PartitionUnknownException;
 import io.crate.exceptions.SchemaUnknownException;
 import io.crate.exceptions.TableUnknownException;
 import io.crate.exceptions.UnsupportedFeatureException;
-import io.crate.metadata.MetaDataModule;
 import io.crate.metadata.PartitionName;
-import io.crate.metadata.Schemas;
-import io.crate.metadata.sys.MetaDataSysModule;
-import io.crate.metadata.table.SchemaInfo;
 import io.crate.metadata.table.TableInfo;
-import io.crate.operation.operator.EqOperator;
-import io.crate.operation.operator.OperatorModule;
 import io.crate.planner.projection.WriterProjection;
-import io.crate.testing.MockedClusterServiceModule;
+import io.crate.test.integration.CrateUnitTest;
+import io.crate.testing.SQLExecutor;
+import io.crate.types.ArrayType;
+import io.crate.types.DataTypes;
 import org.apache.lucene.util.BytesRef;
-import org.elasticsearch.common.inject.Module;
 import org.elasticsearch.common.lucene.BytesRefs;
-import org.junit.Rule;
+import org.elasticsearch.test.cluster.NoopClusterService;
 import org.junit.Test;
-import org.junit.rules.ExpectedException;
 
-import java.util.Arrays;
-import java.util.List;
+import java.util.Collections;
 
-import static io.crate.testing.TestingHelpers.isFunction;
-import static io.crate.testing.TestingHelpers.isLiteral;
-import static io.crate.testing.TestingHelpers.isReference;
-import static org.hamcrest.Matchers.contains;
-import static org.hamcrest.Matchers.instanceOf;
-import static org.hamcrest.Matchers.is;
+import static com.carrotsearch.randomizedtesting.RandomizedTest.$;
+import static io.crate.analyze.TableDefinitions.TEST_PARTITIONED_TABLE_IDENT;
+import static io.crate.analyze.TableDefinitions.USER_TABLE_IDENT;
+import static io.crate.testing.SymbolMatchers.*;
+import static org.hamcrest.Matchers.*;
 import static org.hamcrest.core.IsEqual.equalTo;
-import static org.mockito.Mockito.mock;
-import static org.mockito.Mockito.when;
 
-public class CopyAnalyzerTest extends BaseAnalyzerTest {
+public class CopyAnalyzerTest extends CrateUnitTest {
 
-    @Rule
-    public ExpectedException expectedException = ExpectedException.none();
-
-    static class TestMetaDataModule extends MetaDataModule {
-        @Override
-        protected void bindSchemas() {
-            super.bindSchemas();
-            SchemaInfo schemaInfo = mock(SchemaInfo.class);
-            when(schemaInfo.name()).thenReturn(Schemas.DEFAULT_SCHEMA_NAME);
-            when(schemaInfo.getTableInfo(USER_TABLE_IDENT.name())).thenReturn(USER_TABLE_INFO);
-            when(schemaInfo.getTableInfo(TEST_PARTITIONED_TABLE_IDENT.name())).thenReturn(TEST_PARTITIONED_TABLE_INFO);
-            schemaBinder.addBinding(Schemas.DEFAULT_SCHEMA_NAME).toInstance(schemaInfo);
-        }
-    }
-
-    @Override
-    protected List<Module> getModules() {
-        List<Module> modules = super.getModules();
-        modules.addAll(Arrays.<Module>asList(
-                new MockedClusterServiceModule(),
-                new TestMetaDataModule(),
-                new MetaDataSysModule(),
-                new OperatorModule())
-        );
-        return modules;
-    }
+    private SQLExecutor e = SQLExecutor.builder(new NoopClusterService()).enableDefaultTables().build();
 
     @Test
     public void testCopyFromExistingTable() throws Exception {
-        CopyFromAnalyzedStatement analysis = (CopyFromAnalyzedStatement)analyze("copy users from '/some/distant/file.ext'");
+        CopyFromAnalyzedStatement analysis = e.analyze("copy users from '/some/distant/file.ext'");
         assertThat(analysis.table().ident(), is(USER_TABLE_IDENT));
         assertThat(analysis.uri(), isLiteral("/some/distant/file.ext"));
     }
 
     @Test
     public void testCopyFromExistingPartitionedTable() throws Exception {
-        CopyFromAnalyzedStatement analysis = (CopyFromAnalyzedStatement)analyze("copy parted from '/some/distant/file.ext'");
+        CopyFromAnalyzedStatement analysis = e.analyze("copy parted from '/some/distant/file.ext'");
         assertThat(analysis.table().ident(), is(TEST_PARTITIONED_TABLE_IDENT));
         assertThat(analysis.uri(), isLiteral("/some/distant/file.ext"));
     }
 
-    @Test (expected = IllegalArgumentException.class)
+    @Test(expected = IllegalArgumentException.class)
     public void testCopyFromPartitionedTablePARTITIONKeywordTooManyArgs() throws Exception {
-        analyze("copy parted partition (a=1, b=2, c=3) from '/some/distant/file.ext'");
+        e.analyze("copy parted partition (a=1, b=2, c=3) from '/some/distant/file.ext'");
     }
 
     @Test
     public void testCopyFromPartitionedTablePARTITIONKeywordValidArgs() throws Exception {
-        CopyFromAnalyzedStatement analysis = (CopyFromAnalyzedStatement) analyze(
-                "copy parted partition (date=1395874800000) from '/some/distant/file.ext'");
-        String parted = new PartitionName("parted", Arrays.asList(new BytesRef("1395874800000"))).ident();
+        CopyFromAnalyzedStatement analysis = e.analyze(
+            "copy parted partition (date=1395874800000) from '/some/distant/file.ext'");
+        String parted = new PartitionName("parted", Collections.singletonList(new BytesRef("1395874800000"))).ident();
         assertThat(analysis.partitionIdent(), equalTo(parted));
     }
 
-    @Test( expected = TableUnknownException.class)
+    @Test(expected = TableUnknownException.class)
     public void testCopyFromNonExistingTable() throws Exception {
-        analyze("copy unknown from '/some/distant/file.ext'");
+        e.analyze("copy unknown from '/some/distant/file.ext'");
     }
 
-    @Test( expected = UnsupportedOperationException.class)
+    @Test(expected = UnsupportedOperationException.class)
     public void testCopyFromSystemTable() throws Exception {
-        analyze("copy sys.shards from '/nope/nope/still.nope'");
+        e.analyze("copy sys.shards from '/nope/nope/still.nope'");
     }
 
-    @Test( expected = SchemaUnknownException.class)
+    @Test(expected = SchemaUnknownException.class)
     public void testCopyFromUnknownSchema() throws Exception {
-        analyze("copy suess.shards from '/nope/nope/still.nope'");
+        e.analyze("copy suess.shards from '/nope/nope/still.nope'");
     }
 
     @Test
     public void testCopyFromParameter() throws Exception {
         String path = "/some/distant/file.ext";
-        CopyFromAnalyzedStatement analysis = (CopyFromAnalyzedStatement)analyze("copy users from ?", new Object[]{path});
+        CopyFromAnalyzedStatement analysis = e.analyze("copy users from ?", new Object[]{path});
         assertThat(analysis.table().ident(), is(USER_TABLE_IDENT));
         Object value = ((Literal) analysis.uri()).value();
         assertThat(BytesRefs.toString(value), is(path));
@@ -141,30 +105,31 @@ public class CopyAnalyzerTest extends BaseAnalyzerTest {
 
     @Test
     public void testCopyToFile() throws Exception {
-        CopyToAnalyzedStatement analysis = (CopyToAnalyzedStatement)analyze("copy users to '/blah.txt'");
-        TableInfo tableInfo = ((QueriedDocTable) analysis.subQueryRelation()).tableRelation().tableInfo();
-        assertThat(tableInfo.ident(), is(USER_TABLE_IDENT));
-        assertThat(analysis.uri(), isLiteral("/blah.txt"));
+        expectedException.expect(UnsupportedOperationException.class);
+        expectedException.expectMessage("Using COPY TO without specifying a DIRECTORY is not supported");
+        e.analyze("copy users to '/blah.txt'");
     }
 
     @Test
     public void testCopyToDirectory() throws Exception {
-        CopyToAnalyzedStatement analysis = (CopyToAnalyzedStatement)analyze("copy users to directory '/foo'");
-        assertThat(analysis.isDirectoryUri(), is(true));
+        CopyToAnalyzedStatement analysis = e.analyze("copy users to directory '/foo'");
+        TableInfo tableInfo = analysis.subQueryRelation().tableRelation().tableInfo();
+        assertThat(tableInfo.ident(), is(USER_TABLE_IDENT));
+        assertThat(analysis.uri(), isLiteral("/foo"));
     }
 
     @Test
     public void testCopySysTableTo() throws Exception {
         expectedException.expect(UnsupportedOperationException.class);
         expectedException.expectMessage("Cannot COPY sys.nodes TO. COPY TO only supports user tables");
-        analyze("copy sys.nodes to directory '/foo'");
+        e.analyze("copy sys.nodes to directory '/foo'");
     }
 
     @Test
     public void testCopyToWithColumnList() throws Exception {
-        CopyToAnalyzedStatement analysis = (CopyToAnalyzedStatement)analyze("copy users (id, name) to DIRECTORY '/tmp'");
+        CopyToAnalyzedStatement analysis = e.analyze("copy users (id, name) to DIRECTORY '/tmp'");
         assertThat(analysis.subQueryRelation(), instanceOf(QueriedDocTable.class));
-        QuerySpec querySpec = ((QueriedDocTable) analysis.subQueryRelation()).querySpec();
+        QuerySpec querySpec = analysis.subQueryRelation().querySpec();
         assertThat(querySpec.outputs().size(), is(2));
         assertThat(querySpec.outputs().get(0), isReference("_doc['id']"));
         assertThat(querySpec.outputs().get(1), isReference("_doc['name']"));
@@ -172,43 +137,42 @@ public class CopyAnalyzerTest extends BaseAnalyzerTest {
 
     @Test
     public void testCopyToFileWithCompressionParams() throws Exception {
-        CopyToAnalyzedStatement analysis = (CopyToAnalyzedStatement)analyze("copy users to '/blah.txt' with (compression='gzip')");
-        TableInfo tableInfo = ((QueriedDocTable) analysis.subQueryRelation()).tableRelation().tableInfo();
+        CopyToAnalyzedStatement analysis = e.analyze("copy users to directory '/blah' with (compression='gzip')");
+        TableInfo tableInfo = analysis.subQueryRelation().tableRelation().tableInfo();
         assertThat(tableInfo.ident(), is(USER_TABLE_IDENT));
 
-        assertThat(analysis.uri(), isLiteral("/blah.txt"));
+        assertThat(analysis.uri(), isLiteral("/blah"));
         assertThat(analysis.compressionType(), is(WriterProjection.CompressionType.GZIP));
     }
 
     @Test
     public void testCopyToFileWithUnknownParams() throws Exception {
         expectedException.expect(IllegalArgumentException.class);
-        expectedException.expectMessage("Unknown setting 'foo'");
-        CopyToAnalyzedStatement analysis = (CopyToAnalyzedStatement)analyze("copy users to '/blah.txt' with (foo='gzip')");
+        expectedException.expectMessage("setting 'foo' not supported");
+        e.analyze("copy users to directory '/blah' with (foo='gzip')");
     }
 
     @Test
     public void testCopyToFileWithPartitionedTable() throws Exception {
-        CopyToAnalyzedStatement analysis = (CopyToAnalyzedStatement) analyze("copy parted to '/blah.txt'");
-        TableInfo tableInfo = ((QueriedDocTable) analysis.subQueryRelation()).tableRelation().tableInfo();
+        CopyToAnalyzedStatement analysis = e.analyze("copy parted to directory '/blah'");
+        TableInfo tableInfo = analysis.subQueryRelation().tableRelation().tableInfo();
         assertThat(tableInfo.ident(), is(TEST_PARTITIONED_TABLE_IDENT));
         assertThat(analysis.overwrites().size(), is(1));
     }
 
     @Test
     public void testCopyToFileWithPartitionClause() throws Exception {
-        CopyToAnalyzedStatement analysis = (CopyToAnalyzedStatement) analyze("copy parted partition (date=1395874800000) to '/blah.txt'");
-        String parted = new PartitionName("parted", Arrays.asList(new BytesRef("1395874800000"))).asIndexName();
-        QuerySpec querySpec = ((QueriedDocTable) analysis.subQueryRelation()).querySpec();
+        CopyToAnalyzedStatement analysis = e.analyze("copy parted partition (date=1395874800000) to directory '/blah'");
+        String parted = new PartitionName("parted", Collections.singletonList(new BytesRef("1395874800000"))).asIndexName();
+        QuerySpec querySpec = analysis.subQueryRelation().querySpec();
         assertThat(querySpec.where().partitions(), contains(parted));
     }
 
     @Test
     public void testCopyToDirectoryWithPartitionClause() throws Exception {
-        CopyToAnalyzedStatement analysis = (CopyToAnalyzedStatement) analyze("copy parted partition (date=1395874800000) to directory '/tmp'");
-        assertThat(analysis.isDirectoryUri(), is(true));
-        String parted = new PartitionName("parted", Arrays.asList(new BytesRef("1395874800000"))).asIndexName();
-        QuerySpec querySpec = ((QueriedDocTable) analysis.subQueryRelation()).querySpec();
+        CopyToAnalyzedStatement analysis = e.analyze("copy parted partition (date=1395874800000) to directory '/tmp'");
+        String parted = new PartitionName("parted", Collections.singletonList(new BytesRef("1395874800000"))).asIndexName();
+        QuerySpec querySpec = analysis.subQueryRelation().querySpec();
         assertThat(querySpec.where().partitions(), contains(parted));
         assertThat(analysis.overwrites().size(), is(0));
     }
@@ -217,41 +181,41 @@ public class CopyAnalyzerTest extends BaseAnalyzerTest {
     public void testCopyToDirectoryWithNotExistingPartitionClause() throws Exception {
         expectedException.expect(PartitionUnknownException.class);
         expectedException.expectMessage("No partition for table 'doc.parted' with ident '04130' exists");
-        analyze("copy parted partition (date=0) to directory '/tmp/'");
+        e.analyze("copy parted partition (date=0) to directory '/tmp/'");
     }
 
     @Test
     public void testCopyToWithWhereClause() throws Exception {
-        CopyToAnalyzedStatement analysis = (CopyToAnalyzedStatement) analyze("copy parted where id = 1 to '/tmp/foo.json'");
-        QuerySpec querySpec = ((QueriedDocTable) analysis.subQueryRelation()).querySpec();
+        CopyToAnalyzedStatement analysis = e.analyze("copy parted where id = 1 to directory '/tmp/foo'");
+        QuerySpec querySpec = analysis.subQueryRelation().querySpec();
         assertThat(querySpec.where().query(), isFunction("op_="));
     }
 
     @Test
     public void testCopyToWithPartitionIdentAndPartitionInWhereClause() throws Exception {
-        CopyToAnalyzedStatement analysis = (CopyToAnalyzedStatement) analyze(
-                "copy parted partition (date=1395874800000) where date = 1395874800000 to '/tmp/foo.json'");
-        String parted = new PartitionName("parted", Arrays.asList(new BytesRef("1395874800000"))).asIndexName();
-        QuerySpec querySpec = ((QueriedDocTable) analysis.subQueryRelation()).querySpec();
+        CopyToAnalyzedStatement analysis = e.analyze(
+            "copy parted partition (date=1395874800000) where date = 1395874800000 to directory '/tmp/foo'");
+        String parted = new PartitionName("parted", Collections.singletonList(new BytesRef("1395874800000"))).asIndexName();
+        QuerySpec querySpec = analysis.subQueryRelation().querySpec();
         assertThat(querySpec.where().partitions(), contains(parted));
     }
 
     @Test
     public void testCopyToWithPartitionInWhereClause() throws Exception {
-        CopyToAnalyzedStatement analysis = (CopyToAnalyzedStatement) analyze(
-                "copy parted where date = 1395874800000 to '/tmp/foo.json'");
-        String parted = new PartitionName("parted", Arrays.asList(new BytesRef("1395874800000"))).asIndexName();
-        QuerySpec querySpec = ((QueriedDocTable) analysis.subQueryRelation()).querySpec();
+        CopyToAnalyzedStatement analysis = e.analyze(
+            "copy parted where date = 1395874800000 to directory '/tmp/foo'");
+        String parted = new PartitionName("parted", Collections.singletonList(new BytesRef("1395874800000"))).asIndexName();
+        QuerySpec querySpec = analysis.subQueryRelation().querySpec();
         assertThat(querySpec.where().partitions(), contains(parted));
         assertThat(analysis.overwrites().size(), is(1));
     }
 
     @Test
     public void testCopyToWithPartitionIdentAndWhereClause() throws Exception {
-        CopyToAnalyzedStatement analysis = (CopyToAnalyzedStatement) analyze(
-                "copy parted partition (date=1395874800000) where id = 1 to '/tmp/foo.json'");
-        String parted = new PartitionName("parted", Arrays.asList(new BytesRef("1395874800000"))).asIndexName();
-        QuerySpec querySpec = ((QueriedDocTable) analysis.subQueryRelation()).querySpec();
+        CopyToAnalyzedStatement analysis = e.analyze(
+            "copy parted partition (date=1395874800000) where id = 1 to directory '/tmp/foo'");
+        String parted = new PartitionName("parted", Collections.singletonList(new BytesRef("1395874800000"))).asIndexName();
+        QuerySpec querySpec = analysis.subQueryRelation().querySpec();
         assertThat(querySpec.where().partitions(), contains(parted));
         assertThat(querySpec.where().query(), isFunction("op_="));
     }
@@ -260,23 +224,23 @@ public class CopyAnalyzerTest extends BaseAnalyzerTest {
     public void testCopyToWithInvalidPartitionInWhereClause() throws Exception {
         expectedException.expect(IllegalArgumentException.class);
         expectedException.expectMessage("Given partition ident does not match partition evaluated from where clause");
-        analyze("copy parted partition (date=1395874800000) where date = 1395961200000 to '/tmp/foo.json'");
+        e.analyze("copy parted partition (date=1395874800000) where date = 1395961200000 to directory '/tmp/foo'");
     }
 
     @Test
     public void testCopyToWithNotExistingPartitionClause() throws Exception {
         expectedException.expect(PartitionUnknownException.class);
         expectedException.expectMessage("No partition for table 'doc.parted' with ident '04130' exists");
-        analyze("copy parted partition (date=0) to '/tmp/blah.txt'");
+        e.analyze("copy parted partition (date=0) to directory '/tmp/blah'");
     }
 
     @Test
     public void testCopyToFileWithSelectedColumnsAndOutputFormatParam() throws Exception {
-        CopyToAnalyzedStatement analysis = (CopyToAnalyzedStatement)analyze("copy users (id, name) to '/blah.txt' with (format='json_object')");
-        TableInfo tableInfo = ((QueriedDocTable) analysis.subQueryRelation()).tableRelation().tableInfo();
+        CopyToAnalyzedStatement analysis = e.analyze("copy users (id, name) to directory '/blah' with (format='json_object')");
+        TableInfo tableInfo = analysis.subQueryRelation().tableRelation().tableInfo();
         assertThat(tableInfo.ident(), is(USER_TABLE_IDENT));
 
-        assertThat(analysis.uri(), isLiteral("/blah.txt"));
+        assertThat(analysis.uri(), isLiteral("/blah"));
         assertThat(analysis.outputFormat(), is(WriterProjection.OutputFormat.JSON_OBJECT));
         assertThat(analysis.outputNames(), contains("id", "name"));
     }
@@ -285,13 +249,50 @@ public class CopyAnalyzerTest extends BaseAnalyzerTest {
     public void testCopyToFileWithUnsupportedOutputFormatParam() throws Exception {
         expectedException.expect(UnsupportedFeatureException.class);
         expectedException.expectMessage("Output format not supported without specifying columns.");
-        analyze("copy users to '/blah.txt' with (format='json_array')");
+        e.analyze("copy users to directory '/blah' with (format='json_array')");
     }
 
     @Test
     public void testCopyFromWithReferenceAssignedToProperty() throws Exception {
         expectedException.expect(IllegalArgumentException.class);
         expectedException.expectMessage("Can't use column reference in property assignment \"compression = gzip\". Use literals instead.");
-        analyze("copy users from '/blah.txt' with (compression = gzip)");
+        e.analyze("copy users from '/blah.txt' with (compression = gzip)");
+    }
+
+    @Test
+    public void testCopyFromFileUriArray() throws Exception {
+        Object[] files = $("/f1.json", "/f2.json");
+        CopyFromAnalyzedStatement copyFrom = e.analyze("copy users from ?", new Object[]{files});
+        assertThat(copyFrom.uri(), isLiteral($(new BytesRef("/f1.json"), new BytesRef("/f2.json")), new ArrayType(DataTypes.STRING)));
+    }
+
+    @Test
+    public void testCopyFromInvalidTypedExpression() throws Exception {
+        expectedException.expect(IllegalArgumentException.class);
+        expectedException.expectMessage("fileUri must be of type STRING or STRING ARRAY. Got integer_array");
+        Object[] files = $(1, 2, 3);
+        e.analyze("copy users from ?", new Object[]{files});
+    }
+
+    @Test
+    public void testStringAsNodeFiltersArgument() throws Exception {
+        expectedException.expect(IllegalArgumentException.class);
+        expectedException.expectMessage("Invalid parameter passed to node_filters. " +
+                                        "Expected an object with name or id keys and string values. Got 'invalid'");
+        e.analyze("copy users from '/' with (node_filters='invalid')");
+    }
+
+    @Test
+    public void testObjectWithWrongKeyAsNodeFiltersArgument() throws Exception {
+        expectedException.expect(IllegalArgumentException.class);
+        expectedException.expectMessage("Invalid node_filters arguments: [dummy]");
+        e.analyze("copy users from '/' with (node_filters={dummy='invalid'})");
+    }
+
+    @Test
+    public void testObjectWithInvalidValueTypeAsNodeFiltersArgument() throws Exception {
+        expectedException.expect(IllegalArgumentException.class);
+        expectedException.expectMessage("node_filters argument 'name' must be a String, not 20 (Long)");
+        e.analyze("copy users from '/' with (node_filters={name=20})");
     }
 }

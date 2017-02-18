@@ -22,44 +22,20 @@
 
 package io.crate.operation.projectors;
 
-import com.google.common.util.concurrent.ListenableFuture;
-import com.google.common.util.concurrent.SettableFuture;
-
-import javax.annotation.ParametersAreNonnullByDefault;
+import io.crate.data.Row;
 
 public class RowReceivers {
 
-    public static ListenableRowReceiver listenableRowReceiver(RowReceiver rowReceiver) {
-        if (rowReceiver instanceof ListenableRowReceiver) {
-            return (ListenableRowReceiver) rowReceiver;
-        }
-        return new SettableFutureRowReceiver(rowReceiver);
+    public static void sendOneRow(RowReceiver receiver, Row row) {
+        receiver.setNextRow(row);
+        receiver.finish(RepeatHandle.UNSUPPORTED);
     }
 
-    @ParametersAreNonnullByDefault
-    private static class SettableFutureRowReceiver extends ForwardingRowReceiver implements ListenableRowReceiver {
-
-        private final SettableFuture<Void> finishedFuture = SettableFuture.create();
-
-        SettableFutureRowReceiver(RowReceiver rowReceiver) {
-            super(rowReceiver);
-        }
-
-        @Override
-        public void finish() {
-            super.finish();
-            finishedFuture.set(null);
-        }
-
-        @Override
-        public void fail(Throwable throwable) {
-            super.fail(throwable);
-            finishedFuture.setException(throwable);
-        }
-
-        @Override
-        public ListenableFuture<Void> finishFuture() {
-            return finishedFuture;
+    public static void sendOneRow(RowReceiver receiver, Row row, Throwable t) {
+        if (t != null) {
+            receiver.fail(t);
+        } else {
+            sendOneRow(receiver, row);
         }
     }
 }

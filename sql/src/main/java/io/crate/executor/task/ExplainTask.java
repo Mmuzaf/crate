@@ -22,24 +22,20 @@
 
 package io.crate.executor.task;
 
-import com.google.common.collect.ImmutableList;
-import com.google.common.util.concurrent.ListenableFuture;
-import com.google.common.util.concurrent.SettableFuture;
-import io.crate.core.collections.Row1;
-import io.crate.core.collections.SingleRowBucket;
-import io.crate.executor.QueryResult;
+import io.crate.data.Row;
+import io.crate.data.Row1;
 import io.crate.executor.Task;
-import io.crate.executor.TaskResult;
+import io.crate.operation.projectors.RepeatHandle;
+import io.crate.operation.projectors.RowReceiver;
 import io.crate.planner.PlanPrinter;
 import io.crate.planner.node.management.ExplainPlan;
 
 import java.util.List;
 import java.util.Map;
+import java.util.concurrent.CompletableFuture;
 
 public class ExplainTask implements Task {
 
-    private final SettableFuture<TaskResult> result = SettableFuture.create();
-    private final List<ListenableFuture<TaskResult>> results = ImmutableList.<ListenableFuture<TaskResult>>of(result);
     private final ExplainPlan explainPlan;
 
     public ExplainTask(ExplainPlan explainPlan) {
@@ -47,22 +43,18 @@ public class ExplainTask implements Task {
     }
 
     @Override
-    public void start() {
+    public void execute(RowReceiver rowReceiver, Row parameters) {
         try {
             Map<String, Object> map = PlanPrinter.objectMap(explainPlan.subPlan());
-            result.set(new QueryResult(new SingleRowBucket(new Row1(map))));
-        } catch (Throwable e) {
-            result.setException(e);
+            rowReceiver.setNextRow(new Row1(map));
+            rowReceiver.finish(RepeatHandle.UNSUPPORTED);
+        } catch (Throwable t) {
+            rowReceiver.fail(t);
         }
     }
 
     @Override
-    public List<? extends ListenableFuture<TaskResult>> result() {
-        return results;
-    }
-
-    @Override
-    public void upstreamResult(List<? extends ListenableFuture<TaskResult>> result) {
-        throw new UnsupportedOperationException("ExplainTask doesn't support upstreamResults");
+    public List<CompletableFuture<Long>> executeBulk() {
+        throw new UnsupportedOperationException("ExplainTask cannot be executed as bulk operation");
     }
 }

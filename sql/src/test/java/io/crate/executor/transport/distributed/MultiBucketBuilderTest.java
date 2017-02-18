@@ -22,8 +22,8 @@
 package io.crate.executor.transport.distributed;
 
 import io.crate.Streamer;
-import io.crate.core.collections.Bucket;
-import io.crate.core.collections.Row1;
+import io.crate.data.Bucket;
+import io.crate.data.Row1;
 import io.crate.types.DataTypes;
 import org.junit.Before;
 import org.junit.Test;
@@ -40,8 +40,8 @@ public class MultiBucketBuilderTest {
 
     @Before
     public void setUp() throws Exception {
-        builders.add(new ModuloBucketBuilder(new Streamer[] {DataTypes.INTEGER.streamer() }, 1, 0));
-        builders.add(new BroadcastingBucketBuilder(new Streamer[] {DataTypes.INTEGER.streamer()}, 1));
+        builders.add(new ModuloBucketBuilder(new Streamer[]{DataTypes.INTEGER.streamer()}, 1, 0));
+        builders.add(new BroadcastingBucketBuilder(new Streamer[]{DataTypes.INTEGER.streamer()}, 1));
     }
 
     @Test

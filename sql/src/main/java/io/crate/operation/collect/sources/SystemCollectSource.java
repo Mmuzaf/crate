@@ -21,139 +21,115 @@
 
 package io.crate.operation.collect.sources;
 
-import com.google.common.base.Function;
-import com.google.common.base.Supplier;
-import com.google.common.collect.*;
-import io.crate.analyze.OrderBy;
-import io.crate.analyze.WhereClause;
-import io.crate.analyze.symbol.Literal;
-import io.crate.analyze.symbol.Symbol;
-import io.crate.core.collections.Buckets;
-import io.crate.core.collections.Row;
+import com.google.common.collect.ImmutableList;
+import com.google.common.collect.ImmutableMap;
+import com.google.common.collect.Iterables;
+import io.crate.analyze.EvaluatingNormalizer;
+import io.crate.data.Row;
 import io.crate.metadata.Functions;
-import io.crate.metadata.RowCollectExpression;
+import io.crate.metadata.ReplaceMode;
+import io.crate.metadata.RowGranularity;
 import io.crate.metadata.information.*;
+import io.crate.metadata.pg_catalog.PgCatalogTables;
+import io.crate.metadata.pg_catalog.PgTypeTable;
 import io.crate.metadata.sys.*;
-import io.crate.operation.Input;
-import io.crate.operation.InputRow;
+import io.crate.operation.InputFactory;
 import io.crate.operation.collect.*;
-import io.crate.operation.projectors.InputCondition;
+import io.crate.operation.collect.files.SummitsIterable;
+import io.crate.operation.collect.stats.JobsLogs;
+import io.crate.operation.projectors.Requirement;
 import io.crate.operation.projectors.RowReceiver;
-import io.crate.operation.projectors.sorting.OrderingByPosition;
 import io.crate.operation.reference.sys.RowContextReferenceResolver;
+import io.crate.operation.reference.sys.check.SysCheck;
 import io.crate.operation.reference.sys.check.SysChecker;
-import io.crate.operation.reference.sys.repositories.SysRepositories;
+import io.crate.operation.reference.sys.check.SysNodeCheck;
+import io.crate.operation.reference.sys.node.local.NodeSysExpression;
+import io.crate.operation.reference.sys.node.local.NodeSysReferenceResolver;
+import io.crate.operation.reference.sys.repositories.SysRepositoriesService;
 import io.crate.operation.reference.sys.snapshot.SysSnapshots;
 import io.crate.planner.node.dql.CollectPhase;
-import io.crate.types.DataTypes;
+import io.crate.planner.node.dql.RoutedCollectPhase;
+import org.elasticsearch.cluster.ClusterService;
 import org.elasticsearch.common.inject.Inject;
-import org.elasticsearch.discovery.DiscoveryService;
 
-import javax.annotation.Nullable;
-import java.util.*;
+import java.util.Collection;
+import java.util.List;
+import java.util.Map;
+import java.util.Set;
+import java.util.function.Supplier;
 
 /**
  * this collect service can be used to retrieve a collector for system tables (which don't contain shards)
+ * <p>
+ * System tables are generally represented as Iterable of some type and are converted on-the-fly to {@link Row}
  */
 public class SystemCollectSource implements CollectSource {
 
-    private final CollectInputSymbolVisitor<RowCollectExpression<?, ?>> docInputSymbolVisitor;
+    private final Functions functions;
+    private final NodeSysExpression nodeSysExpression;
     private final ImmutableMap<String, Supplier<Iterable<?>>> iterableGetters;
-    private final DiscoveryService discoveryService;
+    private final ClusterService clusterService;
+    private final InputFactory inputFactory;
 
 
     @Inject
-    public SystemCollectSource(DiscoveryService discoveryService,
+    public SystemCollectSource(ClusterService clusterService,
                                Functions functions,
-                               StatsTables statsTables,
+                               NodeSysExpression nodeSysExpression,
+                               JobsLogs jobsLogs,
                                InformationSchemaIterables informationSchemaIterables,
-                               SysChecker sysChecker,
-                               SysRepositories sysRepositories,
-                               SysSnapshots sysSnapshots) {
-        docInputSymbolVisitor = new CollectInputSymbolVisitor<>(functions, RowContextReferenceResolver.INSTANCE);
+                               Set<SysCheck> sysChecks,
+                               Set<SysNodeCheck> sysNodeChecks,
+                               SysRepositoriesService sysRepositoriesService,
+                               SysSnapshots sysSnapshots,
+                               PgCatalogTables pgCatalogTables) {
+        this.clusterService = clusterService;
+        inputFactory = new InputFactory(functions);
+        this.functions = functions;
+        this.nodeSysExpression = nodeSysExpression;
 
         iterableGetters = ImmutableMap.<String, Supplier<Iterable<?>>>builder()
-                .put(InformationSchemataTableInfo.IDENT.fqn(), informationSchemaIterables.schemas())
-                .put(InformationTablesTableInfo.IDENT.fqn(), informationSchemaIterables.tables())
-                .put(InformationPartitionsTableInfo.IDENT.fqn(), informationSchemaIterables.partitions())
-                .put(InformationColumnsTableInfo.IDENT.fqn(), informationSchemaIterables.columns())
-                .put(InformationTableConstraintsTableInfo.IDENT.fqn(), informationSchemaIterables.constraints())
-                .put(InformationRoutinesTableInfo.IDENT.fqn(), informationSchemaIterables.routines())
-                .put(SysJobsTableInfo.IDENT.fqn(), statsTables.jobsGetter())
-                .put(SysJobsLogTableInfo.IDENT.fqn(), statsTables.jobsLogGetter())
-                .put(SysOperationsTableInfo.IDENT.fqn(), statsTables.operationsGetter())
-                .put(SysOperationsLogTableInfo.IDENT.fqn(), statsTables.operationsLogGetter())
-                .put(SysChecksTableInfo.IDENT.fqn(), sysChecker)
-                .put(SysRepositoriesTableInfo.IDENT.fqn(), sysRepositories)
-                .put(SysSnapshotsTableInfo.IDENT.fqn(), sysSnapshots)
-                .build();
-        this.discoveryService = discoveryService;
+            .put(InformationSchemataTableInfo.IDENT.fqn(), informationSchemaIterables::schemas)
+            .put(InformationTablesTableInfo.IDENT.fqn(), informationSchemaIterables::tables)
+            .put(InformationPartitionsTableInfo.IDENT.fqn(), informationSchemaIterables::partitions)
+            .put(InformationColumnsTableInfo.IDENT.fqn(), informationSchemaIterables::columns)
+            .put(InformationTableConstraintsTableInfo.IDENT.fqn(), informationSchemaIterables::constraints)
+            .put(InformationRoutinesTableInfo.IDENT.fqn(), informationSchemaIterables::routines)
+            .put(InformationSqlFeaturesTableInfo.IDENT.fqn(), informationSchemaIterables::features)
+            .put(SysJobsTableInfo.IDENT.fqn(), jobsLogs::jobsGetter)
+            .put(SysJobsLogTableInfo.IDENT.fqn(), jobsLogs::jobsLogGetter)
+            .put(SysOperationsTableInfo.IDENT.fqn(), jobsLogs::operationsGetter)
+            .put(SysOperationsLogTableInfo.IDENT.fqn(), jobsLogs::operationsLogGetter)
+            .put(SysChecksTableInfo.IDENT.fqn(), new SysChecker<>(sysChecks)::checksGetter)
+            .put(SysNodeChecksTableInfo.IDENT.fqn(), new SysChecker<>(sysNodeChecks)::checksGetter)
+            .put(SysRepositoriesTableInfo.IDENT.fqn(), sysRepositoriesService::repositoriesGetter)
+            .put(SysSnapshotsTableInfo.IDENT.fqn(), sysSnapshots::snapshotsGetter)
+            .put(SysSummitsTableInfo.IDENT.fqn(), new SummitsIterable()::summitsGetter)
+            .put(PgTypeTable.IDENT.fqn(), pgCatalogTables::typesGetter)
+            .build();
     }
 
-    public Iterable<Row> toRowsIterable(CollectPhase collectPhase, Iterable<?> iterable) {
-        WhereClause whereClause = collectPhase.whereClause();
-        if (whereClause.noMatch()){
-            return Collections.emptyList();
+    Iterable<Row> toRowsIterable(RoutedCollectPhase collectPhase, Iterable<?> iterable, boolean requiresRepeat) {
+        if (requiresRepeat) {
+            iterable = ImmutableList.copyOf(iterable);
         }
-
-        CollectInputSymbolVisitor.Context ctx = docInputSymbolVisitor.extractImplementations(collectPhase.toCollect());
-        OrderBy orderBy = collectPhase.orderBy();
-        if (orderBy != null) {
-            for (Symbol symbol : orderBy.orderBySymbols()) {
-                docInputSymbolVisitor.process(symbol, ctx);
-            }
-        }
-
-        Input<Boolean> condition;
-        if (whereClause.hasQuery()) {
-            assert DataTypes.BOOLEAN.equals(whereClause.query().valueType());
-            //noinspection unchecked  whereClause().query() is a symbol of type boolean so it must become Input<Boolean>
-            condition = (Input<Boolean>) docInputSymbolVisitor.process(whereClause.query(), ctx);
-        } else {
-            condition = Literal.BOOLEAN_TRUE;
-        }
-
-        @SuppressWarnings("unchecked")
-        Iterable<Row> rows = Iterables.filter(
-                toRowsIterable(iterable, ctx.topLevelInputs(), ctx.docLevelExpressions()),
-                InputCondition.asPredicate(condition)
-        );
-
-        if (orderBy == null) {
-            return rows;
-        }
-        return sortRows(Iterables.transform(rows, Row.MATERIALIZE), collectPhase);
-    }
-
-    private static Iterable<Row> sortRows(Iterable<Object[]> rows, CollectPhase collectPhase) {
-        ArrayList<Object[]> objects = Lists.newArrayList(rows);
-        Ordering<Object[]> ordering = OrderingByPosition.arrayOrdering(collectPhase);
-        Collections.sort(objects, ordering.reverse());
-        return Iterables.transform(objects, Buckets.arrayToRowFunction());
-    }
-
-    private static Iterable<Row> toRowsIterable(
-            Iterable<?> iterable, List<Input<?>> inputs, final Iterable<CollectExpression<Object, ?>> expressions) {
-        final InputRow row = new InputRow(inputs);
-        return Iterables.transform(iterable, new Function<Object, Row>() {
-            @Nullable
-            @Override
-            public Row apply(Object input) {
-                for (CollectExpression<Object, ?> expression : expressions) {
-                    expression.setNextRow(input);
-                }
-                return row;
-            }
-        });
+        return RowsTransformer.toRowsIterable(inputFactory, RowContextReferenceResolver.INSTANCE, collectPhase, iterable);
     }
 
     @Override
-    public Collection<CrateCollector> getCollectors(CollectPhase collectPhase, RowReceiver downstream, JobCollectContext jobCollectContext) {
+    public Collection<CrateCollector> getCollectors(CollectPhase phase, RowReceiver downstream, JobCollectContext jobCollectContext) {
+        RoutedCollectPhase collectPhase = (RoutedCollectPhase) phase;
+        // sys.operations can contain a _node column - these refs need to be normalized into literals
+        EvaluatingNormalizer normalizer = new EvaluatingNormalizer(
+            functions, RowGranularity.DOC, ReplaceMode.COPY, new NodeSysReferenceResolver(nodeSysExpression), null);
+        collectPhase = collectPhase.normalize(normalizer, null);
+
         Map<String, Map<String, List<Integer>>> locations = collectPhase.routing().locations();
-        String table = Iterables.getOnlyElement(locations.get(discoveryService.localNode().id()).keySet());
+        String table = Iterables.getOnlyElement(locations.get(clusterService.localNode().getId()).keySet());
         Supplier<Iterable<?>> iterableGetter = iterableGetters.get(table);
         assert iterableGetter != null : "iterableGetter for " + table + " must exist";
         return ImmutableList.<CrateCollector>of(
-                new RowsCollector(downstream, toRowsIterable(collectPhase, iterableGetter.get())));
+            new RowsCollector(downstream, toRowsIterable(collectPhase, iterableGetter.get(),
+                downstream.requirements().contains(Requirement.REPEAT))));
     }
 }

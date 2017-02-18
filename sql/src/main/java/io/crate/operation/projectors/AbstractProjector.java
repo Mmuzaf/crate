@@ -22,48 +22,34 @@
 
 package io.crate.operation.projectors;
 
-import io.crate.core.collections.Row;
-import io.crate.jobs.ExecutionState;
-import io.crate.operation.RowUpstream;
+import io.crate.concurrent.CompletableFutures;
+import io.crate.data.Row;
 
 import java.util.Set;
+import java.util.concurrent.CompletableFuture;
 
 public abstract class AbstractProjector implements Projector {
 
     // these stateCheck classes are used to avoid having to do null-state checks in concrete implementations
     // -> upstream/downstreams are never null (unless a concrete implementions nulls them)
-    private final static RowUpstream STATE_CHECK_ROW_UPSTREAM = new StateCheckRowUpstream();
     private final static RowReceiver STATE_CHECK_RECEIVER = new StateCheckReceiver();
 
-    private RowUpstream upstream = STATE_CHECK_ROW_UPSTREAM;
     protected RowReceiver downstream = STATE_CHECK_RECEIVER;
-    protected ExecutionState executionState;
 
     @Override
     public void downstream(RowReceiver rowReceiver) {
         assert rowReceiver != null : "rowReceiver must not be null";
         this.downstream = rowReceiver;
-        rowReceiver.setUpstream(this);
     }
 
     @Override
-    public void prepare(ExecutionState executionState) {
-        this.executionState = executionState;
+    public CompletableFuture<?> completionFuture() {
+        return downstream.completionFuture();
     }
 
     @Override
-    public void pause() {
-        upstream.pause();
-    }
-
-    @Override
-    public void resume(boolean async) {
-        upstream.resume(async);
-    }
-
-    @Override
-    public void repeat() {
-        upstream.repeat();
+    public void kill(Throwable throwable) {
+        downstream.kill(throwable);
     }
 
     @Override
@@ -72,29 +58,8 @@ public abstract class AbstractProjector implements Projector {
     }
 
     @Override
-    public void setUpstream(RowUpstream upstream) {
-        assert upstream != null : "upstream must not be null";
-        this.upstream = upstream;
-    }
-
-    private static class StateCheckRowUpstream implements RowUpstream {
-
-        public static final String STATE_ERROR = "upstream not set";
-
-        @Override
-        public void pause() {
-            throw new IllegalStateException(STATE_ERROR);
-        }
-
-        @Override
-        public void resume(boolean async) {
-            throw new IllegalStateException(STATE_ERROR);
-        }
-
-        @Override
-        public void repeat() {
-            throw new IllegalStateException(STATE_ERROR);
-        }
+    public void pauseProcessed(ResumeHandle resumeable) {
+        downstream.pauseProcessed(resumeable);
     }
 
     private static class StateCheckReceiver implements RowReceiver {
@@ -102,12 +67,22 @@ public abstract class AbstractProjector implements Projector {
         private static final String STATE_ERROR = "downstream not set";
 
         @Override
-        public boolean setNextRow(Row row) {
+        public CompletableFuture<?> completionFuture() {
+            return CompletableFutures.failedFuture(new IllegalStateException(STATE_ERROR));
+        }
+
+        @Override
+        public Result setNextRow(Row row) {
             throw new IllegalStateException(STATE_ERROR);
         }
 
         @Override
-        public void finish() {
+        public void pauseProcessed(ResumeHandle resumeable) {
+            throw new IllegalStateException(STATE_ERROR);
+        }
+
+        @Override
+        public void finish(RepeatHandle repeatHandle) {
             throw new IllegalStateException(STATE_ERROR);
         }
 
@@ -117,12 +92,7 @@ public abstract class AbstractProjector implements Projector {
         }
 
         @Override
-        public void prepare(ExecutionState executionState) {
-            throw new IllegalStateException(STATE_ERROR);
-        }
-
-        @Override
-        public void setUpstream(RowUpstream upstream) {
+        public void kill(Throwable throwable) {
             throw new IllegalStateException(STATE_ERROR);
         }
 

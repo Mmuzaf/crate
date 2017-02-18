@@ -21,8 +21,8 @@
 
 package io.crate.operation;
 
-import io.crate.core.collections.Buckets;
-import io.crate.core.collections.Row;
+import io.crate.data.Buckets;
+import io.crate.data.Row;
 
 import java.util.List;
 
@@ -35,7 +35,7 @@ public class InputRow implements Row {
     }
 
     @Override
-    public int size() {
+    public int numColumns() {
         return inputs.size();
     }
 
@@ -52,7 +52,7 @@ public class InputRow implements Row {
     @Override
     public String toString() {
         return "InputRow{" +
-                "inputs=" + inputs +
-                '}';
+               "inputs=" + inputs +
+               '}';
     }
 }

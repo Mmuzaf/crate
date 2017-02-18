@@ -21,41 +21,41 @@
 
 package io.crate.integrationtests;
 
-import io.crate.action.sql.SQLActionException;
-import io.crate.core.collections.CollectionBucket;
+import io.crate.data.CollectionBucket;
+import io.crate.exceptions.Exceptions;
 import io.crate.operation.projectors.sorting.OrderingByPosition;
 import io.crate.testing.TestingHelpers;
-import org.elasticsearch.test.ElasticsearchIntegrationTest;
-import org.junit.Rule;
+import io.crate.testing.UseJdbc;
+import org.elasticsearch.index.IndexNotFoundException;
+import org.elasticsearch.test.ESIntegTestCase;
 import org.junit.Test;
-import org.junit.rules.ExpectedException;
 
 import java.util.Arrays;
 import java.util.Collections;
 import java.util.List;
+import java.util.concurrent.TimeUnit;
 
 import static io.crate.testing.TestingHelpers.printRows;
 import static io.crate.testing.TestingHelpers.printedTable;
 import static org.hamcrest.Matchers.arrayContaining;
+import static org.hamcrest.Matchers.containsInAnyOrder;
 import static org.hamcrest.core.Is.is;
 
-@ElasticsearchIntegrationTest.ClusterScope(minNumDataNodes = 2)
+@ESIntegTestCase.ClusterScope(minNumDataNodes = 2)
+@UseJdbc
 public class JoinIntegrationTest extends SQLTransportIntegrationTest {
-
-    @Rule
-    public ExpectedException expectedException = ExpectedException.none();
 
     @Test
     public void testCrossJoinOrderByOnBothTables() throws Exception {
         createColorsAndSizes();
         execute("select colors.name, sizes.name from colors, sizes order by colors.name, sizes.name");
         assertThat(printedTable(response.rows()), is(
-                "blue| large\n" +
-                "blue| small\n" +
-                "green| large\n" +
-                "green| small\n" +
-                "red| large\n" +
-                "red| small\n"));
+            "blue| large\n" +
+            "blue| small\n" +
+            "green| large\n" +
+            "green| small\n" +
+            "red| large\n" +
+            "red| small\n"));
     }
 
     @Test
@@ -63,16 +63,15 @@ public class JoinIntegrationTest extends SQLTransportIntegrationTest {
         createColorsAndSizes();
         execute("select colors.name, sizes.name from colors, sizes order by sizes.name, colors.name limit 4");
         assertThat(printedTable(response.rows()), is("" +
-                "blue| large\n" +
-                "green| large\n" +
-                "red| large\n" +
-                "blue| small\n"));
+                                                     "blue| large\n" +
+                                                     "green| large\n" +
+                                                     "red| large\n" +
+                                                     "blue| small\n"));
     }
 
     @Test
     public void testInsertFromCrossJoin() throws Exception {
         createColorsAndSizes();
-
         execute("create table target (color string, size string)");
         ensureYellow();
 
@@ -81,10 +80,40 @@ public class JoinIntegrationTest extends SQLTransportIntegrationTest {
 
         execute("select color, size from target order by size, color limit 4");
         assertThat(printedTable(response.rows()), is("" +
-                "blue| large\n" +
-                "green| large\n" +
-                "red| large\n" +
-                "blue| small\n"));
+                                                     "blue| large\n" +
+                                                     "green| large\n" +
+                                                     "red| large\n" +
+                                                     "blue| small\n"));
+    }
+
+    @Test
+    public void testInsertFromInnerJoin() throws Exception {
+        execute("create table t1 (x int)");
+        execute("create table t2 (y int)");
+        execute("create table target (x int, y int)");
+        ensureYellow();
+
+        execute("insert into t1 (x) values (1), (2)");
+        execute("insert into t2 (y) values (2), (3)");
+        execute("refresh table t1, t2");
+
+        execute("insert into target (x, y) (select t1.x, t2.y from t1 inner join t2 on t1.x = t2.y)");
+        execute("refresh table target");
+
+        execute("select x, y from target order by x, y");
+        assertThat(printedTable(response.rows()), is("2| 2\n"));
+    }
+
+    @Test
+    public void testJoinOnEmptyPartitionedTablesWithAndWithoutJoinCondition() throws Exception {
+        execute("create table foo (id long) partitioned by (id)");
+        execute("create table bar (id long) partitioned by (id)");
+        ensureYellow();
+        execute("select * from foo f, bar b where f.id = b.id");
+        assertThat(printedTable(response.rows()), is(""));
+
+        execute("select * from foo f, bar b");
+        assertThat(printedTable(response.rows()), is(""));
     }
 
     @Test
@@ -125,10 +154,10 @@ public class JoinIntegrationTest extends SQLTransportIntegrationTest {
 
         execute("select t2.price, t1.price, name from t1, t2 order by t2.price, t1.price, t2.name");
         assertThat(printedTable(response.rows()), is("" +
-                "28.3| 15.0| foobar\n" +
-                "28.3| 20.3| foobar\n" +
-                "40.1| 15.0| bar\n" +
-                "40.1| 20.3| bar\n"));
+                                                     "28.3| 15.0| foobar\n" +
+                                                     "28.3| 20.3| foobar\n" +
+                                                     "40.1| 15.0| bar\n" +
+                                                     "40.1| 20.3| bar\n"));
     }
 
     @Test
@@ -157,14 +186,14 @@ public class JoinIntegrationTest extends SQLTransportIntegrationTest {
 
         List<Object[]> rows = Arrays.asList(response.rows());
         Collections.sort(rows, OrderingByPosition.arrayOrdering(
-                new int[] {0, 1}, new boolean[]{false, false}, new Boolean[]{null, null}).reverse());
+            new int[]{0, 1}, new boolean[]{false, false}, new Boolean[]{null, null}).reverse());
         assertThat(printRows(rows), is(
-                "blue| large\n" +
-                        "blue| small\n" +
-                        "green| large\n" +
-                        "green| small\n" +
-                        "red| large\n" +
-                        "red| small\n"
+            "blue| large\n" +
+            "blue| small\n" +
+            "green| large\n" +
+            "green| small\n" +
+            "red| large\n" +
+            "red| small\n"
         ));
     }
 
@@ -174,12 +203,12 @@ public class JoinIntegrationTest extends SQLTransportIntegrationTest {
         execute("select colors.name from colors, sizes order by colors.name");
         assertThat(response.rowCount(), is(6L));
         assertThat(printedTable(response.rows()), is("" +
-                "blue\n" +
-                "blue\n" +
-                "green\n" +
-                "green\n" +
-                "red\n" +
-                "red\n"));
+                                                     "blue\n" +
+                                                     "blue\n" +
+                                                     "green\n" +
+                                                     "green\n" +
+                                                     "red\n" +
+                                                     "red\n"));
     }
 
     @Test
@@ -192,30 +221,30 @@ public class JoinIntegrationTest extends SQLTransportIntegrationTest {
         execute("select shards.id, t.name from sys.shards, t where shards.table_name = 't' order by shards.id, t.name");
         assertThat(response.rowCount(), is(6L));
         assertThat(printedTable(response.rows()), is("" +
-                "0| bar\n" +
-                "0| foo\n" +
-                "1| bar\n" +
-                "1| foo\n" +
-                "2| bar\n" +
-                "2| foo\n"));
+                                                     "0| bar\n" +
+                                                     "0| foo\n" +
+                                                     "1| bar\n" +
+                                                     "1| foo\n" +
+                                                     "2| bar\n" +
+                                                     "2| foo\n"));
     }
 
     @Test
     public void testJoinOnSysTables() throws Exception {
         execute("select column_policy, column_name from information_schema.tables, information_schema.columns " +
                 "where " +
-                "tables.schema_name = 'sys' " +
+                "tables.table_schema = 'sys' " +
                 "and tables.table_name = 'shards' " +
-                "and tables.schema_name = columns.schema_name " +
+                "and tables.table_schema = columns.table_schema " +
                 "and tables.table_name = columns.table_name " +
                 "order by columns.column_name " +
                 "limit 4");
         assertThat(response.rowCount(), is(4L));
         assertThat(printedTable(response.rows()),
-                is("strict| id\n" +
-                   "strict| num_docs\n" +
-                   "strict| orphan_partition\n" +
-                   "strict| partition_ident\n"));
+            is("strict| blob_path\n" +
+               "strict| id\n" +
+               "strict| num_docs\n" +
+               "strict| orphan_partition\n"));
     }
 
     @Test
@@ -226,34 +255,34 @@ public class JoinIntegrationTest extends SQLTransportIntegrationTest {
         execute("select s1.id, s2.id, s1.table_name from sys.shards s1, sys.shards s2 order by s1.id asc, s2.id desc");
         assertThat(response.rowCount(), is(9L));
         assertThat(printedTable(response.rows()), is("" +
-                "0| 2| t\n" +
-                "0| 1| t\n" +
-                "0| 0| t\n" +
-                "1| 2| t\n" +
-                "1| 1| t\n" +
-                "1| 0| t\n" +
-                "2| 2| t\n" +
-                "2| 1| t\n" +
-                "2| 0| t\n"));
+                                                     "0| 2| t\n" +
+                                                     "0| 1| t\n" +
+                                                     "0| 0| t\n" +
+                                                     "1| 2| t\n" +
+                                                     "1| 1| t\n" +
+                                                     "1| 0| t\n" +
+                                                     "2| 2| t\n" +
+                                                     "2| 1| t\n" +
+                                                     "2| 0| t\n"));
 
         execute("select s1.id, s2.id, s1.table_name from sys.shards s1, sys.shards s2");
         assertThat(response.rowCount(), is(9L));
 
         List<Object[]> rows = Arrays.asList(response.rows());
         Collections.sort(rows, OrderingByPosition.arrayOrdering(
-                new int[] { 0, 1}, new boolean[] { false, true }, new Boolean[] { null, null }).reverse());
+            new int[]{0, 1}, new boolean[]{false, true}, new Boolean[]{null, null}).reverse());
 
         assertThat(printedTable(new CollectionBucket(rows)),
-                is("" +
-                   "0| 2| t\n" +
-                   "0| 1| t\n" +
-                   "0| 0| t\n" +
-                   "1| 2| t\n" +
-                   "1| 1| t\n" +
-                   "1| 0| t\n" +
-                   "2| 2| t\n" +
-                   "2| 1| t\n" +
-                   "2| 0| t\n"));
+            is("" +
+               "0| 2| t\n" +
+               "0| 1| t\n" +
+               "0| 0| t\n" +
+               "1| 2| t\n" +
+               "1| 1| t\n" +
+               "1| 0| t\n" +
+               "2| 2| t\n" +
+               "2| 1| t\n" +
+               "2| 0| t\n"));
     }
 
     @Test
@@ -261,33 +290,61 @@ public class JoinIntegrationTest extends SQLTransportIntegrationTest {
         // sys table with doc granularity on single node
         execute("select * from information_schema.schemata t1, information_schema.schemata t2 " +
                 "order by t1.schema_name, t2.schema_name");
-        assertThat(response.rowCount(), is(16L));
-        assertThat(printedTable(response.rows()), is("" +
-                "blob| blob\n" +
-                "blob| doc\n" +
-                "blob| information_schema\n" +
-                "blob| sys\n" +
-                "doc| blob\n" +
-                "doc| doc\n" +
-                "doc| information_schema\n" +
-                "doc| sys\n" +
-                "information_schema| blob\n" +
-                "information_schema| doc\n" +
-                "information_schema| information_schema\n" +
-                "information_schema| sys\n" +
-                "sys| blob\n" +
-                "sys| doc\n" +
-                "sys| information_schema\n" +
-                "sys| sys\n"));
+        assertThat(response.rowCount(), is(25L));
+        assertThat(printedTable(response.rows()),
+            is("" +
+               "blob| blob\n" +
+               "blob| doc\n" +
+               "blob| information_schema\n" +
+               "blob| pg_catalog\n" +
+               "blob| sys\n" +
+               "doc| blob\n" +
+               "doc| doc\n" +
+               "doc| information_schema\n" +
+               "doc| pg_catalog\n" +
+               "doc| sys\n" +
+               "information_schema| blob\n" +
+               "information_schema| doc\n" +
+               "information_schema| information_schema\n" +
+               "information_schema| pg_catalog\n" +
+               "information_schema| sys\n" +
+               "pg_catalog| blob\n" +
+               "pg_catalog| doc\n" +
+               "pg_catalog| information_schema\n" +
+               "pg_catalog| pg_catalog\n" +
+               "pg_catalog| sys\n" +
+               "sys| blob\n" +
+               "sys| doc\n" +
+               "sys| information_schema\n" +
+               "sys| pg_catalog\n" +
+               "sys| sys\n"));
     }
 
     @Test
     public void testSelfJoin() throws Exception {
         execute("create table t (x int)");
         ensureYellow();
-        execute("insert into t (x) values (1)");
+        execute("insert into t (x) values (1), (2)");
         execute("refresh table t");
         execute("select * from t as t1, t as t2");
+        assertThat(response.rowCount(), is(4L));
+        assertThat(Arrays.asList(response.rows()), containsInAnyOrder(new Object[]{1, 1},
+            new Object[]{1, 2},
+            new Object[]{2, 1},
+            new Object[]{2, 2}));
+    }
+
+    @Test
+    public void testSelfJoinWithOrder() throws Exception {
+        execute("create table t (x int)");
+        ensureYellow();
+        execute("insert into t (x) values (1), (2)");
+        execute("refresh table t");
+        execute("select * from t as t1, t as t2 order by t1.x, t2.x");
+        assertThat(printedTable(response.rows()), is("1| 1\n" +
+                                                     "1| 2\n" +
+                                                     "2| 1\n" +
+                                                     "2| 2\n"));
     }
 
     @Test
@@ -298,12 +355,23 @@ public class JoinIntegrationTest extends SQLTransportIntegrationTest {
         execute("refresh table employees");
 
         execute("select more.name, less.name, (more.salary - less.salary) from employees as more, employees as less " +
-                "where more.salary > less.salary "+
+                "where more.salary > less.salary " +
                 "order by more.salary desc, less.salary desc");
-        assertThat(printedTable(response.rows()), is("" +
-                "Douglas Adams| Trillian| 200.0\n" +
-                "Douglas Adams| Ford Perfect| 600.0\n" +
-                "Trillian| Ford Perfect| 400.0\n"));
+        assertThat(printedTable(response.rows()), is("Douglas Adams| Trillian| 200.0\n" +
+                                                     "Douglas Adams| Ford Perfect| 600.0\n" +
+                                                     "Trillian| Ford Perfect| 400.0\n"));
+    }
+
+    @Test
+    public void testFilteredSelfJoinWithFilterOnBothRelations() {
+        execute("create table test(id long primary key, num long, txt string) with (number_of_replicas=1)");
+        ensureYellow();
+        execute("insert into test(id, num, txt) values(1, 1, '1111'), (2, 2, '2222'), (3, 1, '2222'), (4, 2, '2222')");
+        execute("refresh table test");
+
+        execute("select t1.id, t2.id from test as t1 inner join test as t2 on t1.num = t2.num " +
+                "where t1.txt = '1111' and t2.txt='2222'");
+        assertThat(TestingHelpers.printedTable(response.rows()), is("1| 3\n"));
     }
 
     @Test
@@ -319,9 +387,9 @@ public class JoinIntegrationTest extends SQLTransportIntegrationTest {
         execute("select employees.name, offices.name from employees inner join offices on size < height " +
                 "where size < height order by height - size limit 3");
         assertThat(printedTable(response.rows()), is("" +
-                "Douglas Adams| Chief Office\n" +
-                "Trillian| Entresol\n" +
-                "Ford Perfect| Hobbit House\n"));
+                                                     "Douglas Adams| Chief Office\n" +
+                                                     "Trillian| Entresol\n" +
+                                                     "Ford Perfect| Hobbit House\n"));
     }
 
     @Test
@@ -336,9 +404,9 @@ public class JoinIntegrationTest extends SQLTransportIntegrationTest {
         createColorsAndSizes();
         execute("select substr(colors.name, 0, 1), sizes.name from colors, sizes order by colors.name, sizes.name limit 3");
         assertThat(printedTable(response.rows()),
-                is("b| large\n" +
-                   "b| small\n" +
-                   "g| large\n"));
+            is("b| large\n" +
+               "b| small\n" +
+               "g| large\n"));
     }
 
     private void createColorsAndSizes() {
@@ -347,13 +415,13 @@ public class JoinIntegrationTest extends SQLTransportIntegrationTest {
         ensureYellow();
 
         execute("insert into colors (name) values (?)", new Object[][]{
-                new Object[]{"red"},
-                new Object[]{"blue"},
-                new Object[]{"green"}
+            new Object[]{"red"},
+            new Object[]{"blue"},
+            new Object[]{"green"}
         });
         execute("insert into sizes (name) values (?)", new Object[][]{
-                new Object[]{"small"},
-                new Object[]{"large"},
+            new Object[]{"small"},
+            new Object[]{"large"},
         });
         execute("refresh table colors, sizes");
     }
@@ -361,8 +429,8 @@ public class JoinIntegrationTest extends SQLTransportIntegrationTest {
     @Test
     public void testJoinTableWithEmptyRouting() throws Exception {
         // no shards in sys.shards -> empty routing
-        execute("SELECT s.id, n.name FROM sys.shards s, sys.nodes n");
-        assertThat(response.cols(), arrayContaining("s.id", "n.name"));
+        execute("SELECT s.id, n.id, n.name FROM sys.shards s, sys.nodes n");
+        assertThat(response.cols(), arrayContaining("id", "id", "name"));
         assertThat(response.rowCount(), is(0L));
     }
 
@@ -405,12 +473,12 @@ public class JoinIntegrationTest extends SQLTransportIntegrationTest {
 
         execute("select temp, name from t_left inner join t_right on t_left.ref_id = t_right.id order by temp");
         assertThat(TestingHelpers.printedTable(response.rows()),
-                is("-1.2| Vienna\n" +
-                   "-0.5| Vienna\n" +
-                   "0.2| Vienna\n" +
-                   "19.7| San Francisco\n" +
-                   "20.8| San Francisco\n" +
-                   "23.2| San Francisco\n"));
+            is("-1.2| Vienna\n" +
+               "-0.5| Vienna\n" +
+               "0.2| Vienna\n" +
+               "19.7| San Francisco\n" +
+               "20.8| San Francisco\n" +
+               "23.2| San Francisco\n"));
     }
 
     @Test
@@ -451,13 +519,13 @@ public class JoinIntegrationTest extends SQLTransportIntegrationTest {
                 "join events on events.id = logs.event_id " +
                 "order by users.name, events.id");
         assertThat(TestingHelpers.printedTable(response.rows()),
-                is("Arthur| Earth destroyed\n" +
-                   "Arthur| Hitch hiking on a vogon ship\n" +
-                   "Trillian| Meeting Arthur\n"));
+            is("Arthur| Earth destroyed\n" +
+               "Arthur| Hitch hiking on a vogon ship\n" +
+               "Trillian| Meeting Arthur\n"));
     }
 
     @Test
-    public void testFetchArrayAndAnalyedColumnsWithJoin() throws Exception {
+    public void testFetchArrayAndAnalyzedColumnsWithJoin() throws Exception {
         execute("create table t1 (id int primary key, text string index using fulltext)");
         execute("create table t2 (id int primary key, tags array(string))");
         ensureYellow();
@@ -467,7 +535,7 @@ public class JoinIntegrationTest extends SQLTransportIntegrationTest {
 
         execute("select text, tags from t1 join t2 on t1.id = t2.id");
         assertThat(TestingHelpers.printedTable(response.rows()),
-                is("Hello World| [foo, bar]\n"));
+            is("Hello World| [foo, bar]\n"));
     }
 
     @Test
@@ -482,7 +550,7 @@ public class JoinIntegrationTest extends SQLTransportIntegrationTest {
         execute("refresh table t1, t2, t3");
         execute("select x+y+z from t1,t2,t3 order by x,y,z");
         assertThat(TestingHelpers.printedTable(response.rows()),
-                is("6\n"));
+            is("6\n"));
     }
 
     @Test
@@ -491,8 +559,125 @@ public class JoinIntegrationTest extends SQLTransportIntegrationTest {
         execute("create table t2 (y integer)");
         execute("create table t3 (z integer)");
         ensureYellow();
-        expectedException.expect(SQLActionException.class);
-        expectedException.expectMessage("One Order by expression must not contain symbols from more than one table");
-        execute("select x,y,z from t1,t2,t3 order by x+y");
+        execute("insert into t1 (x) values (3), (1)");
+        execute("insert into t2 (y) values (4), (2)");
+        execute("insert into t3 (z) values (5), (6)");
+        execute("refresh table t1, t2, t3");
+        execute("select x,y,z from t1,t2,t3 order by x-y+z, x+y");
+        assertThat(TestingHelpers.printedTable(response.rows()),
+            is("1| 4| 5\n" +
+               "1| 4| 6\n" +
+               "1| 2| 5\n" +
+               "3| 4| 5\n" +
+               "1| 2| 6\n" +
+               "3| 4| 6\n" +
+               "3| 2| 5\n" +
+               "3| 2| 6\n"));
+    }
+
+    @Test
+    public void testJoinOnInformationSchema() throws Exception {
+        execute("create table t (id int, name string) with (number_of_replicas = 1)");
+        ensureYellow();
+        execute("insert into t (id, name) values (1, 'Marvin')");
+        execute("refresh table t");
+        execute("select * from t inner join information_schema.tables on t.id = tables.number_of_replicas");
+        assertThat(response.rowCount(), is(1L));
+    }
+
+    @Test
+    public void testJoinWithIndexMissingExceptions() throws Throwable {
+        execute("create table t1 (x int)");
+        execute("create table t2 (x int)");
+        ensureYellow();
+        execute("insert into t1 (x) values (1)");
+        execute("insert into t2 (x) values (2)");
+        execute("refresh table t1, t2");
+
+        PlanForNode plan = plan("select * from t1, t2 where t1.x = t2.x");
+        execute("drop table t2");
+
+        expectedException.expect(IndexNotFoundException.class);
+        try {
+            execute(plan).completionFuture().get(1, TimeUnit.SECONDS);
+        } catch (Throwable t) {
+            throw Exceptions.unwrap(t);
+        }
+    }
+
+    @Test
+    public void testAggOnJoin() throws Exception {
+        execute("create table t1 (x int)");
+        ensureYellow();
+        execute("insert into t1 (x) values (1), (2)");
+        execute("refresh table t1");
+
+        execute("select sum(t1.x) from t1, t1 as t2");
+        assertThat(TestingHelpers.printedTable(response.rows()), is("6.0\n"));
+    }
+
+    @Test
+    public void testAggOnJoinWithScalarAfterAggregation() throws Exception {
+        execute("select sum(t1.col1) * 2 from unnest([1, 2]) t1, unnest([3, 4]) t2");
+        assertThat(TestingHelpers.printedTable(response.rows()), is("12.0\n"));
+    }
+
+    @Test
+    public void testAggOnJoinWithHaving() throws Exception {
+        execute("select sum(t1.col1) from unnest([1, 2]) t1, unnest([3, 4]) t2 having sum(t1.col1) > 8");
+        assertThat(response.rowCount(), is(0L));
+    }
+
+    @Test
+    public void testAggOnJoinWithLimit() throws Exception {
+        execute("select " +
+                "   sum(t1.col1) " +
+                "from unnest([1, 2]) t1, unnest([3, 4]) t2 " +
+                "limit 0");
+        assertThat(response.rowCount(), is(0L));
+    }
+
+    @Test
+    public void testLimitIsAppliedPostJoin() throws Exception {
+        execute("select " +
+                "   sum(t1.col1) " +
+                "from unnest([1, 1]) t1, unnest([1, 1]) t2 " +
+                "limit 1");
+        assertThat(TestingHelpers.printedTable(response.rows()), is("4.0\n"));
+    }
+
+    @Test
+    public void testJoinOnAggWithOrderBy() throws Exception {
+        execute("select sum(t1.col1) from unnest([1, 1]) t1, unnest([1, 1]) t2 order by 1");
+        assertThat(TestingHelpers.printedTable(response.rows()), is("4.0\n"));
+    }
+
+    @Test
+    public void testFailureOfJoinDownstream() throws Exception {
+        // provoke an exception when the NL emits a row, must bubble up and NL must stop
+        expectedException.expectMessage("Cannot cast ");
+        execute("select cast(R.col2 || ' ' || L.col2 as integer)" +
+                "   from " +
+                "       unnest(['hello', 'world'], [1, 2]) L " +
+                "   inner join " +
+                "       unnest(['world', 'hello'], [1, 2]) R " +
+                "   on l.col1 = r.col1 " +
+                "where r.col1 > 1");
+    }
+
+    @Test
+    public void testGlobalAggregateMultiTableJoin() throws Exception {
+        execute("create table t1 (id int primary key, t2 int, val float)");
+        execute("create table t2 (id int primary key, t3 int)");
+        execute("create table t3 (id int primary key)");
+        ensureYellow();
+
+        execute("insert into t3 (id) values (1), (2)");
+        execute("insert into t2 (id, t3) values (1, 1), (2, 1), (3, 2), (3, 4)");
+        execute("insert into t1 (id, t2, val) values (1, 1, 0.12), (2, 2, 1.23), (3, 3, 2.34), (4, 4, 3.45)");
+
+        refresh();
+        execute("select sum(t1.val), avg(t2.id), min(t3.id) from t1 inner join t2 on t1.t2 = t2.id inner join t3 on t2.t3 = t3.id");
+        assertThat(TestingHelpers.printedTable(response.rows()), is("3.689999930560589| 2.0| 1\n"));
     }
 }

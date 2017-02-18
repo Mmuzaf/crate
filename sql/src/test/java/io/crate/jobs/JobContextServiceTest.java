@@ -22,64 +22,39 @@
 package io.crate.jobs;
 
 import com.google.common.collect.ImmutableList;
-import io.crate.Streamer;
-import io.crate.breaker.RamAccountingContext;
-import io.crate.operation.PageDownstream;
-import io.crate.operation.collect.StatsTables;
-import io.crate.operation.projectors.FlatProjectorChain;
+import io.crate.operation.collect.stats.JobsLogs;
 import io.crate.test.integration.CrateUnitTest;
-import org.elasticsearch.common.breaker.CircuitBreaker;
-import org.elasticsearch.common.breaker.NoopCircuitBreaker;
-import org.elasticsearch.common.settings.ImmutableSettings;
-import org.elasticsearch.common.unit.TimeValue;
-import org.elasticsearch.threadpool.ThreadPool;
+import org.elasticsearch.common.settings.Settings;
+import org.elasticsearch.test.cluster.NoopClusterService;
 import org.junit.After;
 import org.junit.Before;
 import org.junit.Test;
-import org.mockito.invocation.InvocationOnMock;
-import org.mockito.stubbing.Answer;
 
 import javax.annotation.Nonnull;
 import java.lang.reflect.Field;
 import java.util.Locale;
 import java.util.Map;
 import java.util.UUID;
+import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.stream.Collectors;
 
-import static org.elasticsearch.common.unit.TimeValue.timeValueMillis;
-import static org.hamcrest.Matchers.greaterThan;
+import static org.hamcrest.Matchers.contains;
 import static org.hamcrest.Matchers.is;
-import static org.mockito.Mockito.mock;
-import static org.mockito.Mockito.when;
 
 public class JobContextServiceTest extends CrateUnitTest {
 
-    private static final RamAccountingContext RAM_ACCOUNTING_CONTEXT =
-            new RamAccountingContext("dummy", new NoopCircuitBreaker(CircuitBreaker.Name.FIELDDATA));
-
-    private final ThreadPool testThreadPool = new ThreadPool(getClass().getSimpleName());
     private JobContextService jobContextService;
-
-    private static final TimeValue TEST_KEEP_ALIVE = TimeValue.timeValueSeconds(30);
-    private static final TimeValue TEST_REAPER_INTERVAL = TimeValue.timeValueSeconds(10);
-
 
     @Before
     public void prepare() throws Exception {
-        jobContextService  = new JobContextService(
-                ImmutableSettings.EMPTY,
-                testThreadPool,
-                mock(StatsTables.class),
-                new LocalReaper(testThreadPool),
-                TEST_KEEP_ALIVE,
-                TEST_REAPER_INTERVAL
-        );
+        JobsLogs jobsLogs = new JobsLogs(() -> true);
+        jobContextService = new JobContextService(Settings.EMPTY, new NoopClusterService(), jobsLogs);
     }
 
     @After
     public void cleanUp() throws Exception {
         jobContextService.close();
-        testThreadPool.shutdownNow();
     }
 
     @Test
@@ -94,12 +69,26 @@ public class JobContextServiceTest extends CrateUnitTest {
     }
 
     @Test
+    public void testGetContextsByCoordinatorNode() throws Exception {
+        JobExecutionContext.Builder builder = jobContextService.newBuilder(UUID.randomUUID());
+        builder.addSubContext(new DummySubContext(1));
+
+        JobExecutionContext ctx = jobContextService.createContext(builder);
+        Iterable<UUID> contexts = jobContextService.getJobIdsByCoordinatorNode("wrongNodeId").collect(Collectors.toList());
+
+        assertThat(contexts.iterator().hasNext(), is(false));
+
+        contexts = jobContextService.getJobIdsByCoordinatorNode("noop_id").collect(Collectors.toList());
+        assertThat(contexts, contains(ctx.jobId()));
+    }
+
+    @Test
     public void testAcquireContextSameJobId() throws Exception {
         UUID jobId = UUID.randomUUID();
 
         expectedException.expect(IllegalArgumentException.class);
         expectedException.expectMessage(String.format(Locale.ENGLISH,
-                "context for job %s already exists", jobId));
+            "context for job %s already exists", jobId));
 
         // create new context
         JobExecutionContext.Builder builder1 = jobContextService.newBuilder(jobId);
@@ -123,31 +112,6 @@ public class JobContextServiceTest extends CrateUnitTest {
     }
 
     @Test
-    public void testAccessTimeOfContext() throws Exception {
-        ThreadPool threadPool = mock(ThreadPool.class);
-        when(threadPool.estimatedTimeInMillis()).thenAnswer(new Answer<Long>() {
-            @Override
-            public Long answer(InvocationOnMock invocation) throws Throwable {
-                return System.currentTimeMillis();
-            }
-        });
-        JobContextService jobContextService = new JobContextService(
-                ImmutableSettings.EMPTY,
-                threadPool,
-                mock(StatsTables.class),
-                new LocalReaper(threadPool),
-                TEST_KEEP_ALIVE,
-                TEST_REAPER_INTERVAL
-        );
-
-        JobExecutionContext ctx1 = getJobExecutionContextWithOneActiveSubContext(jobContextService);
-        long firstAccessTime = ctx1.lastAccessTime();
-        Thread.sleep(1);
-        ctx1.getSubContextOrNull(1);
-        assertThat(ctx1.lastAccessTime(), greaterThan(firstAccessTime));
-    }
-
-    @Test
     public void testKillAllCallsKillOnSubContext() throws Exception {
         final AtomicBoolean killCalled = new AtomicBoolean(false);
         ExecutionSubContext dummyContext = new DummySubContext() {
@@ -167,7 +131,7 @@ public class JobContextServiceTest extends CrateUnitTest {
         @SuppressWarnings("unchecked")
         Map<UUID, JobExecutionContext> activeContexts = (Map<UUID, JobExecutionContext>) activeContextsField.get(jobContextService);
         assertThat(activeContexts.size(), is(1));
-        assertThat(jobContextService.killAll(), is(1L));
+        assertThat(jobContextService.killAll().get(5L, TimeUnit.SECONDS), is(1));
 
         assertThat(killCalled.get(), is(true));
         assertThat(activeContexts.size(), is(0));
@@ -204,7 +168,7 @@ public class JobContextServiceTest extends CrateUnitTest {
         @SuppressWarnings("unchecked")
         Map<UUID, JobExecutionContext> activeContexts = (Map<UUID, JobExecutionContext>) activeContextsField.get(jobContextService);
         assertThat(activeContexts.size(), is(2));
-        assertThat(jobContextService.killJobs(ImmutableList.of(jobId)), is(1L));
+        assertThat(jobContextService.killJobs(ImmutableList.of(jobId)).get(5L, TimeUnit.SECONDS), is(1));
 
         assertThat(killCalled.get(), is(true));
         assertThat(kill2Called.get(), is(false));
@@ -212,12 +176,6 @@ public class JobContextServiceTest extends CrateUnitTest {
 
     }
 
-
-    private int numContexts(JobContextService ctx) throws Exception {
-        Field activeContexts = JobContextService.class.getDeclaredField("activeContexts");
-        activeContexts.setAccessible(true);
-        return ((Map) activeContexts.get(ctx)).size();
-    }
 
     private int numContexts(JobExecutionContext ctx) throws Exception {
         Field subContexts = JobExecutionContext.class.getDeclaredField("subContexts");
@@ -250,11 +208,11 @@ public class JobContextServiceTest extends CrateUnitTest {
         builder.addSubContext(new DummySubContext(1));
         jobContextService.createContext(builder);
 
-        assertThat(jobContextService.killAll(), is(2L));
+        assertThat(jobContextService.killAll().get(), is(2));
     }
 
     @Test
-    public void testKillSingleJob() {
+    public void testKillSingleJob() throws Exception {
         ImmutableList<UUID> jobsToKill = ImmutableList.<UUID>of(UUID.randomUUID(), UUID.randomUUID(), UUID.randomUUID());
         JobExecutionContext.Builder builder = jobContextService.newBuilder(jobsToKill.get(0));
         builder.addSubContext(new DummySubContext());
@@ -267,64 +225,6 @@ public class JobContextServiceTest extends CrateUnitTest {
         builder = jobContextService.newBuilder(UUID.randomUUID());
         builder.addSubContext(new DummySubContext());
         jobContextService.createContext(builder);
-        assertThat(jobContextService.killJobs(jobsToKill), is(1L));
-    }
-
-    @Test
-    public void testCloseContextRemovesSubContext() throws Exception {
-        JobExecutionContext ctx1 = getJobExecutionContextWithOneActiveSubContext(jobContextService);
-        assertThat(numContexts(ctx1), is(1));
-        ctx1.close();
-        assertThat(numContexts(ctx1), is(0));
-    }
-
-    private JobExecutionContext getJobExecutionContextWithOneActiveSubContext(JobContextService jobContextService) {
-        JobExecutionContext.Builder builder1 = jobContextService.newBuilder(UUID.randomUUID());
-        PageDownstreamContext pageDownstreamContext =
-                new PageDownstreamContext(1, "dummy", mock(PageDownstream.class), new Streamer[0], RAM_ACCOUNTING_CONTEXT, 1, mock(FlatProjectorChain.class));
-        builder1.addSubContext(pageDownstreamContext);
-        return jobContextService.createContext(builder1);
-    }
-
-    @Test
-    public void testKeepAliveExpiration() throws Exception {
-        JobContextService jobContextService1 = new JobContextService(
-                ImmutableSettings.EMPTY,
-                testThreadPool,
-                mock(StatsTables.class),
-                new LocalReaper(testThreadPool),
-                timeValueMillis(1),
-                timeValueMillis(5));
-
-        final AbstractExecutionSubContextTest.TestingExecutionSubContext executionSubContext = new AbstractExecutionSubContextTest.TestingExecutionSubContext();
-
-        JobExecutionContext.Builder builder = jobContextService1.newBuilder(UUID.randomUUID());
-        builder.addSubContext(executionSubContext);
-        jobContextService1.createContext(builder);
-
-        assertThat(numContexts(jobContextService1), is(1));
-        Thread.sleep(300);
-
-        assertTrue(executionSubContext.isKilled());
-        assertThat(numContexts(jobContextService1), is(0));
-
-        // close service, stop reaper thread
-        jobContextService1.close();
-    }
-
-    protected static class DummySubContext extends AbstractExecutionSubContext {
-
-        public DummySubContext() {
-            super(1);
-        }
-
-        public DummySubContext(int id) {
-            super(id);
-        }
-
-        @Override
-        public String name() {
-            return "dummy " + id();
-        }
+        assertThat(jobContextService.killJobs(jobsToKill).get(5L, TimeUnit.SECONDS), is(1));
     }
 }

@@ -22,6 +22,7 @@
 
 package io.crate.analyze.symbol;
 
+import io.crate.metadata.Reference;
 import io.crate.types.DataType;
 import org.elasticsearch.common.io.stream.StreamInput;
 import org.elasticsearch.common.io.stream.StreamOutput;
@@ -61,8 +62,7 @@ public class FetchReference extends Symbol {
         return ref;
     }
 
-    @Override
-    public void readFrom(StreamInput in) throws IOException {
+    public FetchReference(StreamInput in) throws IOException {
         throw new UnsupportedOperationException("FetchReference cannot be streamed");
     }
 

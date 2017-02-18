@@ -22,7 +22,7 @@
 package io.crate.operation.reference.doc.blob;
 
 import com.google.common.collect.ImmutableMap;
-import io.crate.metadata.ReferenceInfo;
+import io.crate.metadata.Reference;
 import io.crate.metadata.blob.BlobSchemaInfo;
 import io.crate.operation.collect.blobs.BlobCollectorExpression;
 import io.crate.operation.reference.ReferenceResolver;
@@ -34,26 +34,28 @@ public class BlobReferenceResolver implements ReferenceResolver<BlobCollectorExp
     public static final BlobReferenceResolver INSTANCE = new BlobReferenceResolver();
 
     private static final Map<String, ExpressionBuilder> expressionBuilder =
-            ImmutableMap.of(
-                    BlobDigestExpression.COLUMN_NAME, new ExpressionBuilder() {
-                        @Override
-                        public BlobCollectorExpression<?> create() {
-                            return new BlobDigestExpression();
-                        }
-                    },
-                    BlobLastModifiedExpression.COLUMN_NAME, new ExpressionBuilder() {
-                        @Override
-                        public BlobCollectorExpression<?> create() {
-                            return new BlobLastModifiedExpression();
-                        }
-                    }
-            );
+        ImmutableMap.of(
+            BlobDigestExpression.COLUMN_NAME, new ExpressionBuilder() {
+                @Override
+                public BlobCollectorExpression<?> create() {
+                    return new BlobDigestExpression();
+                }
+            },
+            BlobLastModifiedExpression.COLUMN_NAME, new ExpressionBuilder() {
+                @Override
+                public BlobCollectorExpression<?> create() {
+                    return new BlobLastModifiedExpression();
+                }
+            }
+        );
 
-    private BlobReferenceResolver() {}
+    private BlobReferenceResolver() {
+    }
 
     @Override
-    public BlobCollectorExpression<?> getImplementation(ReferenceInfo refInfo) {
-        assert (BlobSchemaInfo.NAME.equals(refInfo.ident().tableIdent().schema()));
+    public BlobCollectorExpression<?> getImplementation(Reference refInfo) {
+        assert BlobSchemaInfo.NAME.equals(refInfo.ident().tableIdent().schema()) :
+            "schema name must be 'blob";
         ExpressionBuilder builder = expressionBuilder.get(refInfo.ident().columnIdent().name());
         if (builder != null) {
             return builder.create();

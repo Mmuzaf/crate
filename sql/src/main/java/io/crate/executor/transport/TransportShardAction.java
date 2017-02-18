@@ -29,10 +29,12 @@ import com.google.common.collect.Multimaps;
 import io.crate.executor.transport.kill.KillableCallable;
 import io.crate.jobs.KillAllListener;
 import org.elasticsearch.action.support.ActionFilters;
-import org.elasticsearch.action.support.replication.TransportShardReplicationOperationAction;
+import org.elasticsearch.action.support.replication.TransportReplicationAction;
 import org.elasticsearch.cluster.ClusterService;
-import org.elasticsearch.cluster.ClusterState;
+import org.elasticsearch.cluster.action.index.MappingUpdatedAction;
 import org.elasticsearch.cluster.action.shard.ShardStateAction;
+import org.elasticsearch.cluster.metadata.IndexNameExpressionResolver;
+import org.elasticsearch.cluster.metadata.MetaData;
 import org.elasticsearch.common.collect.Tuple;
 import org.elasticsearch.common.settings.Settings;
 import org.elasticsearch.index.shard.ShardId;
@@ -45,19 +47,23 @@ import java.util.UUID;
 import java.util.concurrent.atomic.AtomicBoolean;
 
 public abstract class TransportShardAction<R extends ShardRequest>
-        extends TransportShardReplicationOperationAction<R, R, ShardResponse> implements KillAllListener {
+    extends TransportReplicationAction<R, R, ShardResponse> implements KillAllListener {
 
     private final Multimap<UUID, KillableCallable> activeOperations = Multimaps.synchronizedMultimap(HashMultimap.<UUID, KillableCallable>create());
 
     public TransportShardAction(Settings settings,
                                 String actionName,
                                 TransportService transportService,
+                                MappingUpdatedAction mappingUpdatedAction,
+                                IndexNameExpressionResolver indexNameExpressionResolver,
                                 ClusterService clusterService,
                                 IndicesService indicesService,
                                 ThreadPool threadPool,
                                 ShardStateAction shardStateAction,
-                                ActionFilters actionFilters) {
-        super(settings, actionName, transportService, clusterService, indicesService, threadPool, shardStateAction, actionFilters);
+                                ActionFilters actionFilters,
+                                Class<R> requestClass) {
+        super(settings, actionName, transportService, clusterService, indicesService, threadPool, shardStateAction,
+            mappingUpdatedAction, actionFilters, indexNameExpressionResolver, requestClass, requestClass, ThreadPool.Names.BULK);
     }
 
     @Override
@@ -66,38 +72,32 @@ public abstract class TransportShardAction<R extends ShardRequest>
     }
 
     @Override
-    protected String executor() {
-        return ThreadPool.Names.BULK;
-    }
-
-    @Override
     protected boolean resolveIndex() {
         return true;
     }
 
     @Override
-    protected void shardOperationOnReplica(final ReplicaOperationRequest shardRequest) {
+    protected void shardOperationOnReplica(final R shardRequest) {
         KillableCallable<Tuple> callable = new KillableWrapper() {
             @Override
             public Tuple call() throws Exception {
-                processRequestItemsOnReplica(shardRequest.shardId, shardRequest.request, killed);
+                processRequestItemsOnReplica(shardRequest.shardId(), shardRequest);
                 return null;
             }
         };
-        wrapOperationInKillable(shardRequest.request, callable);
+        wrapOperationInKillable(shardRequest, callable);
     }
 
     @Override
-    protected Tuple<ShardResponse, R> shardOperationOnPrimary(ClusterState clusterState, final PrimaryOperationRequest shardRequest) {
+    protected Tuple<ShardResponse, R> shardOperationOnPrimary(MetaData metaData, final R shardRequest) throws Throwable {
         KillableCallable<Tuple> callable = new KillableWrapper() {
             @Override
             public Tuple call() throws Exception {
-                ShardResponse shardResponse = processRequestItems(shardRequest.shardId, shardRequest.request, killed);
-                return new Tuple<>(shardResponse, shardRequest.request);
+                ShardResponse shardResponse = processRequestItems(shardRequest.shardId(), shardRequest, killed);
+                return new Tuple<>(shardResponse, shardRequest);
             }
         };
-
-        return wrapOperationInKillable(shardRequest.request, callable);
+        return wrapOperationInKillable(shardRequest, callable);
     }
 
     protected Tuple<ShardResponse, R> wrapOperationInKillable(R request, KillableCallable<Tuple> callable) {
@@ -116,7 +116,7 @@ public abstract class TransportShardAction<R extends ShardRequest>
     }
 
     @Override
-    public void killAllJobs(long timestamp) {
+    public void killAllJobs() {
         synchronized (activeOperations) {
             for (KillableCallable callable : activeOperations.values()) {
                 callable.kill();
@@ -136,9 +136,9 @@ public abstract class TransportShardAction<R extends ShardRequest>
         }
     }
 
-    protected abstract ShardResponse processRequestItems(ShardId shardId, R request, AtomicBoolean killed);
+    protected abstract ShardResponse processRequestItems(ShardId shardId, R request, AtomicBoolean killed) throws InterruptedException;
 
-    protected abstract void processRequestItemsOnReplica(ShardId shardId, R request, AtomicBoolean killed);
+    protected abstract void processRequestItemsOnReplica(ShardId shardId, R request);
 
     static abstract class KillableWrapper implements KillableCallable<Tuple> {
 

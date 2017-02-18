@@ -27,11 +27,9 @@ import com.carrotsearch.junitbenchmarks.BenchmarkRule;
 import com.google.common.base.Function;
 import com.google.common.collect.Iterables;
 import com.google.common.collect.Ordering;
-import io.crate.core.collections.ArrayBucket;
-import io.crate.core.collections.Bucket;
-import io.crate.core.collections.Row;
-import io.crate.operation.merge.NumberedIterable;
-import io.crate.operation.merge.SortedPagingIterator;
+import io.crate.data.ArrayBucket;
+import io.crate.data.Bucket;
+import io.crate.data.Row;
 import io.crate.operation.projectors.sorting.OrderingByPosition;
 import org.junit.Before;
 import org.junit.Rule;
@@ -51,7 +49,7 @@ public class SortedPagingIteratorBenchmark {
 
     public static final int NUM_REPEATS = 10;
     public static final Ordering<Row> ORDERING =
-            OrderingByPosition.rowOrdering(new int[]{0}, new boolean[]{false}, new Boolean[]{null});
+        OrderingByPosition.rowOrdering(new int[]{0}, new boolean[]{false}, new Boolean[]{null});
 
     private Bucket bucket1;
     private Bucket bucket2;
@@ -65,14 +63,15 @@ public class SortedPagingIteratorBenchmark {
     }
 
     @SafeVarargs
-    private final Iterable<? extends NumberedIterable<Row>> numbered(Iterable<Row>... buckets) {
+    private final Iterable<? extends KeyIterable<Integer, Row>> numbered(Iterable<Row>... buckets) {
 
-        return Iterables.transform(Arrays.asList(buckets), new Function<Iterable<Row>, NumberedIterable<Row>>() {
+        return Iterables.transform(Arrays.asList(buckets), new Function<Iterable<Row>, KeyIterable<Integer, Row>>() {
             private int i = 0;
+
             @Nullable
             @Override
-            public NumberedIterable<Row> apply(Iterable<Row> input) {
-                return new NumberedIterable<>(i++, input);
+            public KeyIterable<Integer, Row> apply(Iterable<Row> input) {
+                return new KeyIterable<>(i++, input);
             }
         });
     }
@@ -80,7 +79,7 @@ public class SortedPagingIteratorBenchmark {
     @BenchmarkOptions(benchmarkRounds = 10, warmupRounds = 1)
     @Test
     public void testIterateWithRepeat() throws Exception {
-        SortedPagingIterator<Row> iterator = new SortedPagingIterator<>(ORDERING, true);
+        SortedPagingIterator<Integer, Row> iterator = new SortedPagingIterator<>(ORDERING, true);
         iterator.merge(numbered(bucket1, bucket2));
         int size1 = 0;
         while (iterator.hasNext()) {

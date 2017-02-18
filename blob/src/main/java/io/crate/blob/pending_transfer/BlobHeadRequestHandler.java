@@ -27,8 +27,8 @@ import org.elasticsearch.cluster.ClusterService;
 import org.elasticsearch.cluster.node.DiscoveryNode;
 import org.elasticsearch.common.inject.Inject;
 import org.elasticsearch.threadpool.ThreadPool;
-import org.elasticsearch.transport.BaseTransportRequestHandler;
 import org.elasticsearch.transport.TransportChannel;
+import org.elasticsearch.transport.TransportRequestHandler;
 import org.elasticsearch.transport.TransportResponse;
 import org.elasticsearch.transport.TransportService;
 
@@ -61,22 +61,12 @@ public class BlobHeadRequestHandler {
     }
 
     public void registerHandler() {
-        transportService.registerHandler(Actions.GET_BLOB_HEAD, new GetBlobHeadHandler());
-        transportService.registerHandler(Actions.GET_TRANSFER_INFO, new GetTransferInfoHandler());
-        transportService.registerHandler(Actions.PUT_BLOB_HEAD_CHUNK, new PutBlobHeadChunkHandler());
+        transportService.registerRequestHandler(Actions.GET_BLOB_HEAD, GetBlobHeadRequest.class, ThreadPool.Names.GENERIC, new GetBlobHeadHandler());
+        transportService.registerRequestHandler(Actions.GET_TRANSFER_INFO, BlobInfoRequest.class, ThreadPool.Names.GENERIC, new GetTransferInfoHandler());
+        transportService.registerRequestHandler(Actions.PUT_BLOB_HEAD_CHUNK, PutBlobHeadChunkRequest.class, ThreadPool.Names.GENERIC, new PutBlobHeadChunkHandler());
     }
 
-    private class GetBlobHeadHandler extends BaseTransportRequestHandler<GetBlobHeadRequest> {
-        @Override
-        public GetBlobHeadRequest newInstance() {
-            return new GetBlobHeadRequest();
-        }
-
-        @Override
-        public String executor() {
-            return ThreadPool.Names.GENERIC;
-        }
-
+    private class GetBlobHeadHandler extends TransportRequestHandler<GetBlobHeadRequest> {
         /**
          * this is method is called on the recovery source node
          * the target is requesting the head of a file it got a PutReplicaChunkRequest for.
@@ -86,7 +76,8 @@ public class BlobHeadRequestHandler {
 
             final BlobTransferStatus transferStatus = blobTransferTarget.getActiveTransfer(request.transferId);
             assert transferStatus != null :
-                "Received GetBlobHeadRequest for transfer" + request.transferId.toString() + "but don't have an activeTransfer with that id";
+                "Received GetBlobHeadRequest for transfer" + request.transferId.toString() +
+                "but don't have an activeTransfer with that id";
 
             final DiscoveryNode recipientNode = clusterService.state().getNodes().get(request.senderNodeId);
             final long bytesToSend = request.endPos;
@@ -104,52 +95,32 @@ public class BlobHeadRequestHandler {
     }
 
 
-
-    class PutBlobHeadChunkHandler extends BaseTransportRequestHandler<PutBlobHeadChunkRequest> {
-        @Override
-        public PutBlobHeadChunkRequest newInstance() {
-            return new PutBlobHeadChunkRequest();
-        }
-
+    class PutBlobHeadChunkHandler extends TransportRequestHandler<PutBlobHeadChunkRequest> {
         /**
          * called when the target node in a recovery receives a PutBlobHeadChunkRequest
          */
         @Override
         public void messageReceived(PutBlobHeadChunkRequest request, TransportChannel channel) throws Exception {
             BlobTransferStatus transferStatus = blobTransferTarget.getActiveTransfer(request.transferId);
-            assert transferStatus != null;
+            assert transferStatus != null : "transferStatus should not be null";
             transferStatus.digestBlob().addToHead(request.content);
             channel.sendResponse(TransportResponse.Empty.INSTANCE);
         }
-
-        @Override
-        public String executor() {
-            return ThreadPool.Names.GENERIC;
-        }
     }
 
-    class GetTransferInfoHandler extends BaseTransportRequestHandler<BlobInfoRequest> {
-        @Override
-        public BlobInfoRequest newInstance() {
-            return new BlobInfoRequest();
-        }
-
+    class GetTransferInfoHandler extends TransportRequestHandler<BlobInfoRequest> {
         @Override
         public void messageReceived(BlobInfoRequest request, TransportChannel channel) throws Exception {
             final BlobTransferStatus transferStatus = blobTransferTarget.getActiveTransfer(request.transferId);
             assert transferStatus != null :
-                "Received GetBlobHeadRequest for transfer " + request.transferId.toString() + " but don't have an activeTransfer with that id";
+                "Received GetBlobHeadRequest for transfer " + request.transferId.toString() +
+                " but don't have an activeTransfer with that id";
 
             BlobTransferInfoResponse response = new BlobTransferInfoResponse(
                 transferStatus.index(),
                 transferStatus.digestBlob().getDigest()
             );
             channel.sendResponse(response);
-        }
-
-        @Override
-        public String executor() {
-            return ThreadPool.Names.GENERIC;
         }
     }
 }

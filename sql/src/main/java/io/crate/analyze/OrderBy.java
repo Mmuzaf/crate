@@ -24,17 +24,18 @@ package io.crate.analyze;
 import com.google.common.base.Function;
 import com.google.common.base.Predicate;
 import com.google.common.collect.Lists;
+import com.google.common.primitives.Booleans;
 import io.crate.analyze.symbol.Symbol;
+import io.crate.analyze.symbol.Symbols;
+import io.crate.exceptions.AmbiguousOrderByException;
+import io.crate.metadata.TransactionContext;
 import org.elasticsearch.common.io.stream.StreamInput;
 import org.elasticsearch.common.io.stream.StreamOutput;
 import org.elasticsearch.common.io.stream.Streamable;
 
 import javax.annotation.Nullable;
 import java.io.IOException;
-import java.util.ArrayList;
-import java.util.Collection;
-import java.util.List;
-import java.util.ListIterator;
+import java.util.*;
 
 public class OrderBy implements Streamable {
 
@@ -43,16 +44,17 @@ public class OrderBy implements Streamable {
     private Boolean[] nullsFirst;
 
     public OrderBy(List<Symbol> orderBySymbols, boolean[] reverseFlags, Boolean[] nullsFirst) {
-        assert !orderBySymbols.isEmpty(): "orderBySymbols must not be empty";
+        assert !orderBySymbols.isEmpty() : "orderBySymbols must not be empty";
         assert orderBySymbols.size() == reverseFlags.length && reverseFlags.length == nullsFirst.length :
-                "size of symbols / reverseFlags / nullsFirst must match";
+            "size of symbols / reverseFlags / nullsFirst must match";
 
         this.orderBySymbols = orderBySymbols;
         this.reverseFlags = reverseFlags;
         this.nullsFirst = nullsFirst;
     }
 
-    private OrderBy() {}
+    private OrderBy() {
+    }
 
     public List<Symbol> orderBySymbols() {
         return orderBySymbols;
@@ -66,12 +68,12 @@ public class OrderBy implements Streamable {
         return nullsFirst;
     }
 
-    public void normalize(EvaluatingNormalizer normalizer) {
-        normalizer.normalizeInplace(orderBySymbols);
+    public void normalize(EvaluatingNormalizer normalizer, TransactionContext transactionContext) {
+        normalizer.normalizeInplace(orderBySymbols, transactionContext);
     }
 
 
-    public OrderBy subset(Collection<Integer> positions){
+    public OrderBy subset(Collection<Integer> positions) {
         List<Symbol> orderBySymbols = new ArrayList<>(positions.size());
         Boolean[] nullsFirst = new Boolean[positions.size()];
         boolean[] reverseFlags = new boolean[positions.size()];
@@ -119,13 +121,13 @@ public class OrderBy implements Streamable {
         int numOrderBy = in.readVInt();
         reverseFlags = new boolean[numOrderBy];
 
-        for (int i = 0; i <  numOrderBy; i++) {
+        for (int i = 0; i < numOrderBy; i++) {
             reverseFlags[i] = in.readBoolean();
         }
 
         orderBySymbols = new ArrayList<>(numOrderBy);
         for (int i = 0; i < numOrderBy; i++) {
-            orderBySymbols.add(Symbol.fromStream(in));
+            orderBySymbols.add(Symbols.fromStream(in));
         }
 
         nullsFirst = new Boolean[numOrderBy];
@@ -141,7 +143,7 @@ public class OrderBy implements Streamable {
             out.writeBoolean(reverseFlag);
         }
         for (Symbol symbol : orderBySymbols) {
-            Symbol.toStream(symbol, out);
+            Symbols.toStream(symbol, out);
         }
         for (Boolean nullFirst : nullsFirst) {
             out.writeOptionalBoolean(nullFirst);
@@ -157,5 +159,50 @@ public class OrderBy implements Streamable {
         while (listIt.hasNext()) {
             listIt.set(replaceFunction.apply(listIt.next()));
         }
+    }
+
+    public OrderBy merge(@Nullable OrderBy otherOrderBy) {
+        if (otherOrderBy != null) {
+            List<Symbol> newOrderBySymbols = otherOrderBy.orderBySymbols();
+            List<Boolean> newReverseFlags = new ArrayList<>(Booleans.asList(otherOrderBy.reverseFlags()));
+            List<Boolean> newNullsFirst = new ArrayList<>(Arrays.asList(otherOrderBy.nullsFirst()));
+
+            for (int i = 0; i < orderBySymbols.size(); i++) {
+                Symbol orderBySymbol = orderBySymbols.get(i);
+                int idx = newOrderBySymbols.indexOf(orderBySymbol);
+                if (idx == -1) {
+                    newOrderBySymbols.add(orderBySymbol);
+                    newReverseFlags.add(reverseFlags[i]);
+                    newNullsFirst.add(nullsFirst[i]);
+                } else {
+                    if (newReverseFlags.get(idx) != reverseFlags[i]) {
+                        throw new AmbiguousOrderByException(orderBySymbol);
+                    }
+                    if (newNullsFirst.get(idx) != nullsFirst[i]) {
+                        throw new AmbiguousOrderByException(orderBySymbol);
+                    }
+                }
+            }
+
+            this.orderBySymbols = newOrderBySymbols;
+            this.reverseFlags = Booleans.toArray(newReverseFlags);
+            this.nullsFirst = newNullsFirst.toArray(new Boolean[0]);
+        }
+        return this;
+    }
+
+    @Override
+    public boolean equals(Object o) {
+        if (this == o) return true;
+        if (o == null || getClass() != o.getClass()) return false;
+        OrderBy orderBy = (OrderBy) o;
+        return orderBySymbols.equals(orderBy.orderBySymbols) &&
+               Arrays.equals(reverseFlags, orderBy.reverseFlags) &&
+               Arrays.equals(nullsFirst, orderBy.nullsFirst);
+    }
+
+    @Override
+    public int hashCode() {
+        return Objects.hash(orderBySymbols, reverseFlags, nullsFirst);
     }
 }

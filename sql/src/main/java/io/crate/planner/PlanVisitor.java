@@ -21,19 +21,16 @@
 
 package io.crate.planner;
 
-import io.crate.planner.node.ddl.GenericDDLPlan;
-import io.crate.planner.node.dml.CopyTo;
-import io.crate.planner.node.dml.Delete;
-import io.crate.planner.node.dml.InsertFromSubQuery;
+import io.crate.planner.node.ddl.*;
+import io.crate.planner.node.dml.ESDelete;
 import io.crate.planner.node.dml.Upsert;
-import io.crate.planner.node.dql.CollectAndMerge;
-import io.crate.planner.node.dql.CountPlan;
-import io.crate.planner.node.dql.DistributedGroupBy;
-import io.crate.planner.node.dql.QueryThenFetch;
+import io.crate.planner.node.dml.UpsertById;
+import io.crate.planner.node.dql.*;
 import io.crate.planner.node.dql.join.NestedLoop;
 import io.crate.planner.node.management.ExplainPlan;
 import io.crate.planner.node.management.GenericShowPlan;
 import io.crate.planner.node.management.KillPlan;
+import io.crate.planner.statement.SetSessionPlan;
 import org.elasticsearch.common.Nullable;
 
 public class PlanVisitor<C, R> {
@@ -46,11 +43,11 @@ public class PlanVisitor<C, R> {
         return null;
     }
 
-    public R visitIterablePlan(IterablePlan plan, C context) {
+    public R visitNoopPlan(NoopPlan plan, C context) {
         return visitPlan(plan, context);
     }
 
-    public R visitNoopPlan(NoopPlan plan, C context) {
+    public R visitSetSessionPlan(SetSessionPlan plan, C context) {
         return visitPlan(plan, context);
     }
 
@@ -58,19 +55,11 @@ public class PlanVisitor<C, R> {
         return visitPlan(node, context);
     }
 
-    public R visitDelete(Delete node, C context) {
-        return visitPlan(node, context);
-    }
-
     public R visitDistributedGroupBy(DistributedGroupBy node, C context) {
         return visitPlan(node, context);
     }
 
-    public R visitInsertByQuery(InsertFromSubQuery node, C context) {
-        return visitPlan(node, context);
-    }
-
-    public R visitCollectAndMerge(CollectAndMerge plan, C context) {
+    public R visitCollect(Collect plan, C context) {
         return visitPlan(plan, context);
     }
 
@@ -102,8 +91,39 @@ public class PlanVisitor<C, R> {
         return visitPlan(plan, context);
     }
 
-    public R visitCopyTo(CopyTo plan, C context) {
+    public R visitGetPlan(ESGet plan, C context) {
         return visitPlan(plan, context);
     }
 
+    public R visitDropTablePlan(DropTablePlan plan, C context) {
+        return visitPlan(plan, context);
+    }
+
+    public R visitESClusterUpdateSettingsPlan(ESClusterUpdateSettingsPlan plan, C context) {
+        return visitPlan(plan, context);
+    }
+
+    public R visitCreateAnalyzerPlan(CreateAnalyzerPlan plan, C context) {
+        return visitPlan(plan, context);
+    }
+
+    public R visitESDelete(ESDelete plan, C context) {
+        return visitPlan(plan, context);
+    }
+
+    public R visitUpsertById(UpsertById plan, C context) {
+        return visitPlan(plan, context);
+    }
+
+    public R visitESDeletePartition(ESDeletePartition plan, C context) {
+        return visitPlan(plan, context);
+    }
+
+    public R visitMultiPhasePlan(MultiPhasePlan multiPhasePlan, C context) {
+        return visitPlan(multiPhasePlan, context);
+    }
+
+    public R visitMerge(Merge merge, C context) {
+        return visitPlan(merge, context);
+    }
 }

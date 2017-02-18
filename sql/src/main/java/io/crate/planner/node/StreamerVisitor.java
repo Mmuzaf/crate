@@ -22,24 +22,23 @@
 package io.crate.planner.node;
 
 import io.crate.Streamer;
-import io.crate.planner.node.dql.CollectPhase;
-import io.crate.planner.node.dql.CountPhase;
-import io.crate.planner.node.dql.MergePhase;
+import io.crate.planner.node.dql.*;
 import io.crate.planner.node.dql.join.NestedLoopPhase;
 import io.crate.types.DataTypes;
 
 import java.util.Locale;
 
 /**
- * get input and output {@link io.crate.Streamer}s for {@link io.crate.planner.node.PlanNode}s
+ * Get output {@link io.crate.Streamer}s for {@link ExecutionPhase}s
  */
 public class StreamerVisitor {
 
     private static final ExecutionPhaseStreamerVisitor EXECUTION_PHASE_STREAMER_VISITOR = new ExecutionPhaseStreamerVisitor();
 
-    private StreamerVisitor() {}
+    private StreamerVisitor() {
+    }
 
-    public static Streamer<?>[] streamerFromOutputs(ExecutionPhase executionPhase) {
+    public static Streamer<?>[] streamersFromOutputs(ExecutionPhase executionPhase) {
         return EXECUTION_PHASE_STREAMER_VISITOR.process(executionPhase, null);
     }
 
@@ -49,12 +48,12 @@ public class StreamerVisitor {
 
         @Override
         public Streamer<?>[] visitMergePhase(MergePhase phase, Void context) {
-            return DataTypes.getStreamer(phase.outputTypes());
+            return DataTypes.getStreamers(phase.outputTypes());
         }
 
         @Override
-        public Streamer<?>[] visitCollectPhase(CollectPhase phase, Void context) {
-            return DataTypes.getStreamer(phase.outputTypes());
+        public Streamer<?>[] visitRoutedCollectPhase(RoutedCollectPhase phase, Void context) {
+            return DataTypes.getStreamers(phase.outputTypes());
         }
 
         @Override
@@ -64,7 +63,17 @@ public class StreamerVisitor {
 
         @Override
         public Streamer<?>[] visitNestedLoopPhase(NestedLoopPhase phase, Void context) {
-            return DataTypes.getStreamer(phase.outputTypes());
+            return DataTypes.getStreamers(phase.outputTypes());
+        }
+
+        @Override
+        public Streamer<?>[] visitFileUriCollectPhase(FileUriCollectPhase phase, Void context) {
+            return DataTypes.getStreamers(phase.outputTypes());
+        }
+
+        @Override
+        public Streamer<?>[] visitTableFunctionCollect(TableFunctionCollectPhase phase, Void context) {
+            return visitRoutedCollectPhase(phase, context);
         }
 
         @Override

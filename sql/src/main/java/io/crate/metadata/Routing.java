@@ -2,6 +2,10 @@ package io.crate.metadata;
 
 import com.google.common.base.MoreObjects;
 import com.google.common.collect.ImmutableMap;
+import io.crate.core.collections.TreeMapBuilder;
+import org.elasticsearch.cluster.node.DiscoveryNode;
+import org.elasticsearch.cluster.node.DiscoveryNodes;
+import org.elasticsearch.common.collect.Tuple;
 import org.elasticsearch.common.io.stream.StreamInput;
 import org.elasticsearch.common.io.stream.StreamOutput;
 import org.elasticsearch.common.io.stream.Streamable;
@@ -16,7 +20,7 @@ public class Routing implements Streamable {
 
     public static abstract class RoutingLocationVisitor {
 
-        public boolean visitLocations(Map<String, Map<String, List<Integer>>> locations){
+        public boolean visitLocations(Map<String, Map<String, List<Integer>>> locations) {
             return true;
         }
 
@@ -55,7 +59,8 @@ public class Routing implements Streamable {
         }
     }
 
-    private Routing() {}
+    private Routing() {
+    }
 
     public static Routing fromStream(StreamInput in) throws IOException {
         Routing routing = new Routing();
@@ -122,6 +127,65 @@ public class Routing implements Streamable {
             }
         }
         return false;
+    }
+
+    /**
+     * Update the locations of the current new routing by merging them with
+     * the {@paramref otherLocations} that have been computed in an other
+     * routing for the same table.
+     * <p>
+     * if a shard has been already routed in {@paramref otherLocations}
+     * then: use the existing node
+     * else: use the new node
+     *
+     * @param otherLocations locations already routed for the same table
+     */
+    public void mergeLocations(Map<String, Map<String, List<Integer>>> otherLocations) {
+        if (otherLocations.equals(locations)) {
+            return;
+        }
+
+        // All existing shards
+        Map<Tuple<String, Integer>, String> otherShards = new HashMap<>();
+        for (Map.Entry<String, Map<String, List<Integer>>> location : otherLocations.entrySet()) {
+            for (Map.Entry<String, List<Integer>> indexEntry : location.getValue().entrySet()) {
+                for (Integer shardId : indexEntry.getValue()) {
+                    otherShards.put(new Tuple<>(indexEntry.getKey(), shardId), location.getKey());
+                }
+            }
+        }
+
+        // Build new locations by merging existing with new ones
+        Map<String, Map<String, List<Integer>>> newLocations = new HashMap<>();
+        for (Map.Entry<String, Map<String, List<Integer>>> location : locations.entrySet()) {
+            for (Map.Entry<String, List<Integer>> indexEntry : location.getValue().entrySet()) {
+                for (Integer shardId : indexEntry.getValue()) {
+                    String nodeId = otherShards.get(new Tuple<>(indexEntry.getKey(), shardId));
+                    addShardRouting(newLocations,
+                                    indexEntry.getKey(),
+                                    shardId,
+                                    nodeId == null ? location.getKey() : nodeId);
+                }
+            }
+        }
+        locations = newLocations;
+    }
+
+    private static void addShardRouting(Map<String, Map<String, List<Integer>>> newLocations,
+                                 String index,
+                                 Integer shardId,
+                                 String nodeId) {
+        Map<String, List<Integer>> indexMap = newLocations.get(nodeId);
+        if (indexMap == null) {
+            indexMap = new HashMap<>();
+            newLocations.put(nodeId, indexMap);
+        }
+        List<Integer> shards = indexMap.get(index);
+        if (shards == null) {
+            shards = new ArrayList<>();
+            indexMap.put(index, shards);
+        }
+        shards.add(shardId);
     }
 
     @Override
@@ -192,11 +256,11 @@ public class Routing implements Streamable {
         if (locations.isEmpty()) {
             return true;
         }
-        if (!(locations instanceof TreeMap)) {
+        if (!(locations instanceof TreeMap) && locations.size() > 1) {
             return false;
         }
         for (Map<String, List<Integer>> innerMap : locations.values()) {
-            if (!(innerMap instanceof TreeMap)) {
+            if (innerMap.size() > 1 && !(innerMap instanceof TreeMap)) {
                 return false;
             }
         }
@@ -206,12 +270,22 @@ public class Routing implements Streamable {
     /**
      * Return a routing for the given table on the given node id.
      */
-    public static Routing forTableOnNode(TableIdent tableIdent, String nodeId) {
+    public static Routing forTableOnSingleNode(TableIdent tableIdent, String nodeId) {
         Map<String, Map<String, List<Integer>>> locations = new TreeMap<>();
         Map<String, List<Integer>> tableLocation = new TreeMap<>();
-        tableLocation.put(tableIdent.fqn(), null);
+        tableLocation.put(tableIdent.fqn(), Collections.<Integer>emptyList());
         locations.put(nodeId, tableLocation);
         return new Routing(locations);
+    }
+
+    public static Routing forTableOnAllNodes(TableIdent tableIdent, DiscoveryNodes nodes) {
+        TreeMapBuilder<String, Map<String, List<Integer>>> nodesMapBuilder = TreeMapBuilder.newMapBuilder();
+        Map<String, List<Integer>> tableMap = TreeMapBuilder.<String, List<Integer>>newMapBuilder()
+            .put(tableIdent.fqn(), Collections.<Integer>emptyList()).map();
+        for (DiscoveryNode node : nodes) {
+            nodesMapBuilder.put(node.getId(), tableMap);
+        }
+        return new Routing(nodesMapBuilder.map());
     }
 
     @Override
@@ -220,7 +294,7 @@ public class Routing implements Streamable {
         if (o == null || getClass() != o.getClass()) return false;
         Routing routing = (Routing) o;
         return Objects.equals(numShards, routing.numShards) &&
-                Objects.equals(locations, routing.locations);
+               Objects.equals(locations, routing.locations);
     }
 
     @Override

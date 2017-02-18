@@ -25,31 +25,39 @@ import com.google.common.base.Joiner;
 import com.google.common.base.Throwables;
 import com.google.common.collect.Lists;
 import com.google.common.collect.Ordering;
-import io.crate.analyze.WhereClause;
-import io.crate.analyze.symbol.*;
+import io.crate.analyze.symbol.ValueSymbolVisitor;
 import io.crate.analyze.where.DocKeys;
-import io.crate.core.collections.Bucket;
-import io.crate.core.collections.Buckets;
-import io.crate.core.collections.Row;
+import io.crate.data.Bucket;
+import io.crate.data.Buckets;
+import io.crate.data.Row;
 import io.crate.core.collections.Sorted;
 import io.crate.metadata.*;
-import io.crate.operation.Input;
-import io.crate.sql.Identifiers;
+import io.crate.operation.aggregation.impl.AggregationImplModule;
+import io.crate.operation.operator.OperatorModule;
+import io.crate.operation.predicate.PredicateModule;
+import io.crate.operation.scalar.ScalarFunctionModule;
+import io.crate.operation.tablefunctions.TableFunctionModule;
 import io.crate.types.DataType;
 import io.crate.types.DataTypes;
 import org.apache.lucene.util.BytesRef;
+import org.elasticsearch.common.inject.ModulesBuilder;
 import org.elasticsearch.common.xcontent.json.JsonXContent;
 import org.elasticsearch.threadpool.ThreadPool;
-import org.hamcrest.*;
+import org.hamcrest.BaseMatcher;
+import org.hamcrest.Description;
+import org.hamcrest.Matcher;
+import org.hamcrest.TypeSafeDiagnosingMatcher;
+import org.mockito.Mockito;
 import org.mockito.invocation.InvocationOnMock;
 import org.mockito.stubbing.Answer;
-import org.powermock.api.mockito.PowerMockito;
 
 import javax.annotation.Nullable;
 import java.io.ByteArrayOutputStream;
+import java.io.File;
 import java.io.IOException;
 import java.io.PrintStream;
 import java.lang.reflect.Array;
+import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Paths;
 import java.util.*;
@@ -58,10 +66,7 @@ import java.util.concurrent.Executors;
 import java.util.concurrent.ThreadLocalRandom;
 import java.util.concurrent.TimeUnit;
 
-import static org.hamcrest.Matchers.*;
-import static org.hamcrest.Matchers.contains;
 import static org.mockito.Matchers.anyString;
-import static org.mockito.Mockito.any;
 import static org.mockito.Mockito.*;
 
 public class TestingHelpers {
@@ -86,41 +91,53 @@ public class TestingHelpers {
         for (Object[] row : rows) {
             boolean first = true;
             for (Object o : row) {
-                if (!first) {
-                    out.print("| ");
-                } else {
-                    first = false;
-                }
-                if (o == null) {
-                    out.print("NULL");
-                } else if (o instanceof BytesRef) {
-                    out.print(((BytesRef) o).utf8ToString());
-                } else if (o instanceof Object[]) {
-                    out.print(Arrays.deepToString((Object[]) o));
-                } else if (o.getClass().isArray()) {
-                    out.print("[");
-                    boolean arrayFirst = true;
-                    for (int i = 0, length = Array.getLength(o); i < length; i++) {
-                        if (!arrayFirst) {
-                            out.print(",v");
-                        } else {
-                            arrayFirst = false;
-                        }
-                        out.print(Array.get(o, i));
-
-                    }
-                    out.print("]");
-                } else if (o instanceof Map) {
-                    out.print("{");
-                    out.print(MAP_JOINER.join(Sorted.sortRecursive((Map<String, Object>)o, true)));
-                    out.print("}");
-                } else {
-                    out.print(o.toString());
-                }
+                first = printObject(out, first, o);
             }
             out.print("\n");
         }
         return os.toString();
+    }
+
+    private static boolean printObject(PrintStream out, boolean first, Object o) {
+        if (!first) {
+            out.print("| ");
+        } else {
+            first = false;
+        }
+        if (o == null) {
+            out.print("NULL");
+        } else if (o instanceof BytesRef) {
+            out.print(((BytesRef) o).utf8ToString());
+        } else if (o instanceof Object[]) {
+            out.print("[");
+            Object[] oArray = (Object[]) o;
+            for (int i = 0; i < oArray.length; i++) {
+                printObject(out, true, oArray[i]);
+                if (i < oArray.length - 1) {
+                    out.print(", ");
+                }
+            }
+            out.print("]");
+        } else if (o.getClass().isArray()) {
+            out.print("[");
+            boolean arrayFirst = true;
+            for (int i = 0, length = Array.getLength(o); i < length; i++) {
+                if (!arrayFirst) {
+                    out.print(",v");
+                } else {
+                    arrayFirst = false;
+                }
+                printObject(out, first, Array.get(o, i));
+            }
+            out.print("]");
+        } else if (o instanceof Map) {
+            out.print("{");
+            out.print(MAP_JOINER.join(Sorted.sortRecursive((Map<String, Object>) o, true)));
+            out.print("}");
+        } else {
+            out.print(o.toString());
+        }
+        return first;
     }
 
     private final static Joiner.MapJoiner MAP_JOINER = Joiner.on(", ").useForNull("null").withKeyValueSeparator("=");
@@ -129,37 +146,13 @@ public class TestingHelpers {
         return MAP_JOINER.join(Sorted.sortRecursive(map));
     }
 
-    /**
-     * @deprecated use {@link SqlExpressions} instead
-     */
-    @Deprecated
-    public static Function createFunction(String functionName, DataType returnType, Symbol... arguments) {
-        return createFunction(functionName, returnType, Arrays.asList(arguments), true, false);
-    }
-
-    /**
-     * @deprecated use {@link SqlExpressions} instead
-     */
-    @Deprecated
-    public static Function createFunction(String functionName, DataType returnType, List<Symbol> arguments) {
-        return createFunction(functionName, returnType, arguments, true, false);
-    }
-
-    /**
-     * @deprecated use {@link SqlExpressions} instead
-     */
-    @Deprecated
-    public static Function createFunction(String functionName,
-                                          DataType returnType,
-                                          List<Symbol> arguments,
-                                          boolean deterministic,
-                                          boolean comparisonReplacementPossible) {
-        List<DataType> dataTypes = Symbols.extractTypes(arguments);
-        return new Function(
-                new FunctionInfo(new FunctionIdent(functionName, dataTypes), returnType, FunctionInfo.Type.SCALAR,
-                        deterministic, comparisonReplacementPossible),
-                arguments
-        );
+    public static Functions getFunctions() {
+        return new ModulesBuilder()
+            .add(new AggregationImplModule())
+            .add(new PredicateModule())
+            .add(new TableFunctionModule())
+            .add(new ScalarFunctionModule())
+            .add(new OperatorModule()).createInjector().getInstance(Functions.class);
     }
 
     public static Reference createReference(String columnName, DataType dataType) {
@@ -171,11 +164,10 @@ public class TestingHelpers {
     }
 
     public static Reference createReference(String tableName, ColumnIdent columnIdent, DataType dataType) {
-        return new Reference(new ReferenceInfo(
-                new ReferenceIdent(new TableIdent(null, tableName), columnIdent),
-                RowGranularity.DOC,
-                dataType
-        ));
+        return new Reference(
+            new ReferenceIdent(new TableIdent(null, tableName), columnIdent),
+            RowGranularity.DOC,
+            dataType);
     }
 
     public static String readFile(String path) throws IOException {
@@ -183,50 +175,19 @@ public class TestingHelpers {
         return new BytesRef(encoded).utf8ToString();
     }
 
-    public static Matcher<Symbol> isLiteral(Object expectedValue) {
-        return isLiteral(expectedValue, null);
-    }
-
-    public static Matcher<Symbol> hasDataType(DataType type) {
-        return new FeatureMatcher<Symbol, DataType>(equalTo(type), "valueType", "valueType") {
-            @Override
-            protected DataType featureValueOf(Symbol actual) {
-                return actual.valueType();
-            }
-        };
-    }
-
-    private static Matcher<Symbol> hasValue(Object expectedValue) {
-        return new FeatureMatcher<Symbol, Object>(equalTo(expectedValue), "value", "value") {
-            @Override
-            protected Object featureValueOf(Symbol actual) {
-                return ((Input) actual).value();
-            }
-        };
-    }
-
-    public static Matcher<Symbol> isLiteral(Object expectedValue, @Nullable final DataType type) {
-        if (expectedValue instanceof String) {
-            expectedValue = new BytesRef(((String) expectedValue));
-        }
-        if (type == null) {
-            return Matchers.allOf(Matchers.instanceOf(Literal.class), hasValue(expectedValue));
-        }
-        return Matchers.allOf(Matchers.instanceOf(Literal.class), hasValue(expectedValue), hasDataType(type));
-    }
 
     private static final com.google.common.base.Function<Object, Object> bytesRefToString =
-            new com.google.common.base.Function<Object, Object>() {
+        new com.google.common.base.Function<Object, Object>() {
 
-                @Nullable
-                @Override
-                public Object apply(@Nullable Object input) {
-                    if (input instanceof BytesRef) {
-                        return ((BytesRef) input).utf8ToString();
-                    }
-                    return input;
+            @Nullable
+            @Override
+            public Object apply(@Nullable Object input) {
+                if (input instanceof BytesRef) {
+                    return ((BytesRef) input).utf8ToString();
                 }
-            };
+                return input;
+            }
+        };
 
     public static Matcher<Row> isNullRow() {
         return isRow((Object) null);
@@ -240,20 +201,20 @@ public class TestingHelpers {
         return new TypeSafeDiagnosingMatcher<Row>() {
             @Override
             protected boolean matchesSafely(Row item, Description mismatchDescription) {
-                if (item.size() != expected.size()) {
+                if (item.numColumns() != expected.size()) {
                     mismatchDescription.appendText("row size does not match: ")
-                            .appendValue(item.size()).appendText(" != ").appendValue(expected.size());
+                        .appendValue(item.numColumns()).appendText(" != ").appendValue(expected.size());
                     return false;
                 }
-                for (int i = 0; i < item.size(); i++) {
+                for (int i = 0; i < item.numColumns(); i++) {
                     Object actual = bytesRefToString.apply(item.get(i));
                     if (!Objects.equals(expected.get(i), actual)) {
                         mismatchDescription.appendText("value at pos ")
-                                .appendValue(i)
-                                .appendText(" does not match: ")
-                                .appendValue(expected.get(i))
-                                .appendText(" != ")
-                                .appendValue(actual);
+                            .appendValue(i)
+                            .appendText(" does not match: ")
+                            .appendValue(expected.get(i))
+                            .appendText(" != ")
+                            .appendValue(actual);
                         return false;
                     }
                 }
@@ -263,7 +224,7 @@ public class TestingHelpers {
             @Override
             public void describeTo(Description description) {
                 description.appendText("is Row with cells: ")
-                        .appendValue(expected);
+                    .appendValue(expected);
             }
         };
     }
@@ -278,7 +239,7 @@ public class TestingHelpers {
             @Override
             protected boolean matchesSafely(DocKeys.DocKey item, Description mismatchDescription) {
                 List objects = Lists.transform(
-                        Lists.transform(item.values(), ValueSymbolVisitor.VALUE.function), bytesRefToString);
+                    Lists.transform(item.values(), ValueSymbolVisitor.VALUE.function), bytesRefToString);
                 if (!expected.equals(objects)) {
                     mismatchDescription.appendText("is DocKey with values: ").appendValue(objects);
                     return false;
@@ -289,206 +250,7 @@ public class TestingHelpers {
             @Override
             public void describeTo(Description description) {
                 description.appendText("is DocKey with values: ")
-                        .appendValue(expected);
-            }
-        };
-    }
-
-
-
-    public static Matcher<Symbol> isInputColumn(final Integer index) {
-        return both(Matchers.<Symbol>instanceOf(InputColumn.class)).and(
-                new FeatureMatcher<Symbol, Integer>(equalTo(index), "index", "index") {
-                    @Override
-                    protected Integer featureValueOf(Symbol actual) {
-                        return ((InputColumn) actual).index();
-                    }
-                });
-    }
-
-    public static Matcher<Symbol> isField(final String expectedName) {
-        return isField(expectedName, null);
-    }
-
-    public static Matcher<Symbol> isField(final String expectedName, @Nullable final DataType dataType) {
-        return new TypeSafeDiagnosingMatcher<Symbol>() {
-
-            @Override
-            public boolean matchesSafely(Symbol item, Description desc) {
-                if (!(item instanceof Field)) {
-                    desc.appendText("not a Field: ").appendText(item.getClass().getName());
-                    return false;
-                }
-                String name = ((Field) item).path().outputName();
-                if (!name.equals(expectedName)) {
-                    desc.appendText("different path ").appendValue(name);
-                    return false;
-                }
-                if (dataType != null && !((Field) item).valueType().equals(dataType)) {
-                    desc.appendText("different type ").appendValue(dataType.toString());
-                }
-                return true;
-            }
-
-            @Override
-            public void describeTo(Description description) {
-                StringBuilder builder = new StringBuilder("a Field with path ").append(expectedName);
-                if (dataType != null) {
-                    builder.append(" and type").append(dataType.toString());
-                }
-                description.appendText(builder.toString());
-            }
-        };
-    }
-
-    public static Matcher<Symbol> isFetchRef(int docIdIdx, String ref) {
-        return isFetchRef(isInputColumn(docIdIdx), isReference(ref));
-    }
-
-    public static Matcher<Symbol> isFetchRef(Matcher<Symbol> docIdMatcher, Matcher<Symbol> refMatcher) {
-
-        FeatureMatcher<Symbol, Symbol> m1 = new FeatureMatcher<Symbol, Symbol>(
-                docIdMatcher, "docId", "docId"
-        ) {
-            @Override
-            protected Symbol featureValueOf(Symbol actual) {
-                return ((FetchReference) actual).docId();
-            }
-        };
-
-        FeatureMatcher<Symbol, Symbol> m2 = new FeatureMatcher<Symbol, Symbol>(
-                refMatcher, "ref", "ref"
-        ) {
-            @Override
-            protected Symbol featureValueOf(Symbol actual) {
-                return ((FetchReference) actual).ref();
-            }
-        };
-        return allOf(Matchers.<Symbol>instanceOf(FetchReference.class), m1, m2);
-
-    }
-
-    public static Matcher<ReferenceInfo> isReferenceInfo(final String expectedName) {
-        return new TypeSafeDiagnosingMatcher<ReferenceInfo>() {
-
-            @Override
-            public boolean matchesSafely(ReferenceInfo item, Description desc) {
-                String name = item.ident().columnIdent().outputName();
-                if (!name.equals(expectedName)) {
-                    desc.appendText("different name ").appendValue(name);
-                    return false;
-                }
-                return true;
-            }
-
-            @Override
-            public void describeTo(Description description) {
-                StringBuilder builder = new StringBuilder("a ReferenceInfo with name ").append(expectedName);
-                description.appendText(builder.toString());
-            }
-        };
-
-    }
-
-    public static Matcher<Symbol> isReference(String expectedName) {
-        return isReference(expectedName, null);
-    }
-
-    public static Matcher<Symbol> isReference(final String expectedName, @Nullable final DataType dataType) {
-        return new TypeSafeDiagnosingMatcher<Symbol>() {
-
-            @Override
-            public boolean matchesSafely(Symbol item, Description desc) {
-                if (!(item instanceof Reference)) {
-                    desc.appendText("not a Reference: ").appendText(item.getClass().getName());
-                    return false;
-                }
-                String name = ((Reference) item).info().ident().columnIdent().outputName();
-                if (!name.equals(Identifiers.quoteIfNeeded(expectedName))) {
-                    desc.appendText("different name ").appendValue(name);
-                    return false;
-                }
-                if (dataType != null && !((Reference) item).info().type().equals(dataType)) {
-                    desc.appendText("different type ").appendValue(dataType.toString());
-                }
-                return true;
-            }
-
-            @Override
-            public void describeTo(Description description) {
-                StringBuilder builder = new StringBuilder("a Reference with name ").append(expectedName);
-                if (dataType != null) {
-                    builder.append(" and type").append(dataType.toString());
-                }
-                description.appendText(builder.toString());
-            }
-        };
-    }
-
-    public static Matcher<Symbol> isFunction(final String name, Matcher<Symbol>... argMatchers) {
-        FeatureMatcher<Symbol, Collection<Symbol>> ma = new FeatureMatcher<Symbol, Collection<Symbol>>(
-                contains(argMatchers), "args", "args") {
-            @Override
-            protected Collection<Symbol> featureValueOf(Symbol actual) {
-                return ((Function) actual).arguments();
-            }
-        };
-        return both(isFunction(name)).and(ma);
-    }
-
-    public static Matcher<Symbol> isFunction(String name) {
-        FeatureMatcher<Symbol, String> mn = new FeatureMatcher<Symbol, String>(
-                equalTo(name), "name", "name") {
-            @Override
-            protected String featureValueOf(Symbol actual) {
-                return ((Function) actual).info().ident().name();
-            }
-        };
-        return both(Matchers.<Symbol>instanceOf(Function.class)).and(mn);
-    }
-
-    public static Matcher<Symbol> isFunction(final String name, @Nullable final List<DataType> argumentTypes) {
-        return new TypeSafeDiagnosingMatcher<Symbol>() {
-            @Override
-            public boolean matchesSafely(Symbol item, Description mismatchDescription) {
-                if (!(item instanceof Function)) {
-                    mismatchDescription.appendText("not a Function: ").appendValue(item.getClass().getName());
-                    return false;
-                }
-                FunctionIdent actualIdent = ((Function) item).info().ident();
-                if (!actualIdent.name().equals(name)) {
-                    mismatchDescription.appendText("wrong Function: ").appendValue(actualIdent.name());
-                    return false;
-                }
-                if (argumentTypes != null) {
-                    if (actualIdent.argumentTypes().size() != argumentTypes.size()) {
-                        mismatchDescription.appendText("wrong number of arguments: ").appendValue(actualIdent.argumentTypes().size());
-                        return false;
-                    }
-
-                    List<DataType> types = ((Function) item).info().ident().argumentTypes();
-                    for (int i = 0, typesSize = types.size(); i < typesSize; i++) {
-                        DataType type = types.get(i);
-                        DataType expected = argumentTypes.get(i);
-                        if (!expected.equals(type)) {
-                            mismatchDescription.appendText("argument ").appendValue(
-                                    i + 1).appendText(" has wrong type ").appendValue(type.toString());
-                            return false;
-                        }
-                    }
-                }
-                return true;
-            }
-
-            @Override
-            public void describeTo(Description description) {
-                description.appendText("is function ").appendText(name);
-                if (argumentTypes != null) {
-                    description.appendText(" with argument types: ");
-                    for (DataType type : argumentTypes) {
-                        description.appendText(type.toString()).appendText(" ");
-                    }
-                }
+                    .appendValue(expected);
             }
         };
     }
@@ -509,19 +271,8 @@ public class TestingHelpers {
         return column;
     }
 
-    /**
-     * @deprecated use {@link SqlExpressions} instead
-     */
-    @Deprecated
-    public static WhereClause whereClause(String opname, Symbol left, Symbol right) {
-        return new WhereClause(new Function(new FunctionInfo(
-                new FunctionIdent(opname, Arrays.asList(left.valueType(), right.valueType())), DataTypes.BOOLEAN),
-                Arrays.asList(left, right)
-        ));
-    }
-
     public static ThreadPool newMockedThreadPool() {
-        ThreadPool threadPool = PowerMockito.mock(ThreadPool.class);
+        ThreadPool threadPool = Mockito.mock(ThreadPool.class);
         final ExecutorService executorService = Executors.newSingleThreadExecutor();
 
         doAnswer(new Answer() {
@@ -548,7 +299,7 @@ public class TestingHelpers {
         return threadPool;
     }
 
-    public static ReferenceInfo refInfo(String fqColumnName, DataType dataType, RowGranularity rowGranularity, String... nested) {
+    public static Reference refInfo(String fqColumnName, DataType dataType, RowGranularity rowGranularity, String... nested) {
         String[] parts = fqColumnName.split("\\.");
         ReferenceIdent refIdent;
 
@@ -566,7 +317,7 @@ public class TestingHelpers {
             default:
                 throw new IllegalArgumentException("fqColumnName must contain <table>.<column> or <schema>.<table>.<column>");
         }
-        return new ReferenceInfo(refIdent, rowGranularity, dataType);
+        return new Reference(refIdent, rowGranularity, dataType);
     }
 
     public static <T> Matcher<T> isSQL(final String stmt) {
@@ -588,39 +339,6 @@ public class TestingHelpers {
         };
     }
 
-    private static class CauseMatcher extends TypeSafeMatcher<Throwable> {
-
-        private final Class<? extends Throwable> type;
-        private final String expectedMessage;
-
-        public CauseMatcher(Class<? extends Throwable> type, @Nullable String expectedMessage) {
-            this.type = type;
-            this.expectedMessage = expectedMessage;
-        }
-
-        @Override
-        protected boolean matchesSafely(Throwable item) {
-            return item.getClass().isAssignableFrom(type)
-                   && (null == expectedMessage || item.getMessage().contains(expectedMessage));
-        }
-
-        @Override
-        public void describeTo(Description description) {
-            description.appendText("expects type ").appendValue(type);
-            if (expectedMessage != null) {
-                description.appendText(" and a message ").appendValue(expectedMessage);
-            }
-        }
-    }
-
-    public static Matcher<Throwable> cause(Class<? extends Throwable> type) {
-        return cause(type, null);
-    }
-
-    public static Matcher<Throwable> cause(Class<? extends Throwable> type, String expectedMessage) {
-        return new CauseMatcher(type, expectedMessage);
-    }
-
     public static Object[][] range(int from, int to) {
         int size = to - from;
         Object[][] result = new Object[to - from][];
@@ -630,13 +348,13 @@ public class TestingHelpers {
         return result;
     }
 
-    public static <T, K extends Comparable> Matcher<Iterable<T>> isSortedBy(final com.google.common.base.Function<T,K> extractSortingKeyFunction) {
+    public static <T, K extends Comparable> Matcher<Iterable<? extends T>> isSortedBy(final com.google.common.base.Function<T, K> extractSortingKeyFunction) {
         return isSortedBy(extractSortingKeyFunction, false, null);
     }
 
-    public static <T, K extends Comparable> Matcher<Iterable<T>> isSortedBy(final com.google.common.base.Function<T,K> extractSortingKeyFunction,
-                                                                            final boolean descending,
-                                                                            @Nullable final Boolean nullsFirst) {
+    public static <T, K extends Comparable> Matcher<Iterable<? extends T>> isSortedBy(final com.google.common.base.Function<T, K> extractSortingKeyFunction,
+                                                                                      final boolean descending,
+                                                                                      @Nullable final Boolean nullsFirst) {
         Ordering<K> ordering = Ordering.natural();
         if (descending) {
             ordering = ordering.reverse();
@@ -648,9 +366,9 @@ public class TestingHelpers {
         }
         final Ordering<K> ord = ordering;
 
-        return new TypeSafeDiagnosingMatcher<Iterable<T>>() {
+        return new TypeSafeDiagnosingMatcher<Iterable<? extends T>>() {
             @Override
-            protected boolean matchesSafely(Iterable<T> item, Description mismatchDescription) {
+            protected boolean matchesSafely(Iterable<? extends T> item, Description mismatchDescription) {
                 K previous = null;
                 int i = 0;
                 for (T elem : item) {
@@ -658,12 +376,12 @@ public class TestingHelpers {
                     if (previous != null) {
                         if (ord.compare(previous, current) > 0) {
                             mismatchDescription
-                                    .appendText("element ").appendValue(current)
-                                    .appendText(" at position ").appendValue(i)
-                                    .appendText(" is ")
-                                    .appendText(descending ? "bigger" : "smaller")
-                                    .appendText(" than previous element ")
-                                    .appendValue(previous);
+                                .appendText("element ").appendValue(current)
+                                .appendText(" at position ").appendValue(i)
+                                .appendText(" is ")
+                                .appendText(descending ? "bigger" : "smaller")
+                                .appendText(" than previous element ")
+                                .appendValue(previous);
                             return false;
                         }
                     }
@@ -685,13 +403,13 @@ public class TestingHelpers {
         };
     }
 
-    public static Matcher<Iterable<Row>> hasSortedRows(final int sortingPos, final boolean reverse, @Nullable final Boolean nullsFirst) {
-        return TestingHelpers.<Row, Comparable>isSortedBy(new com.google.common.base.Function<Row, Comparable>() {
+    public static Matcher<Iterable<? extends Row>> hasSortedRows(final int sortingPos, final boolean reverse, @Nullable final Boolean nullsFirst) {
+        return TestingHelpers.isSortedBy(new com.google.common.base.Function<Row, Comparable>() {
             @Nullable
             @Override
             public Comparable apply(@Nullable Row input) {
                 assert input != null;
-                return (Comparable)input.get(sortingPos);
+                return (Comparable) input.get(sortingPos);
             }
         }, reverse, nullsFirst);
     }
@@ -702,16 +420,39 @@ public class TestingHelpers {
 
     public static Map<String, Object> jsonMap(String json) {
         try {
-            return JsonXContent.jsonXContent.createParser(json).mapAndClose();
+            return JsonXContent.jsonXContent.createParser(json).map();
         } catch (IOException e) {
             throw new RuntimeException(e);
         }
     }
 
-    public static BytesRef addOffset(BytesRef bytesRef) {
-        byte[] result = new byte[bytesRef.length + 2];
-        System.arraycopy(new byte[]{0, 1}, 0, result, 0, 2); // OFFSET
-        System.arraycopy(bytesRef.bytes, 0, result, 2, bytesRef.length);
-        return new BytesRef(result, 2, bytesRef.length);
+    /**
+     * Convert {@param s} into UTF8 encoded BytesRef with random offset and extra length
+     * <p>
+     * This should be preferred over `new BytesRef` in tests to make sure that implementations using BytesRef
+     * handle offset and length correctly (use {@link BytesRef#length} instead of {@link BytesRef#bytes#length}
+     */
+    public static BytesRef bytesRef(String s, Random random) {
+        byte[] strBytes = s.getBytes(StandardCharsets.UTF_8);
+        int extraLength = random.nextInt(100);
+        int offset = 0;
+        if (extraLength > 0) {
+            offset = random.nextInt(extraLength);
+        }
+        byte[] buffer = new byte[strBytes.length + extraLength];
+        random.nextBytes(buffer);
+        System.arraycopy(strBytes, 0, buffer, offset, strBytes.length);
+        return new BytesRef(buffer, offset, strBytes.length);
+    }
+
+    /**
+     * Converts file path separators of a string into canonical form
+     * e.g. Windows: "/test/" --> "\test\"
+     *      UNIX: "/test/"   --> "/test/"
+     * @param str The string that contains file path separator
+     * @return the resolved string
+     */
+    public static String resolveCanonicalString(String str) {
+        return str.replaceAll("/", java.util.regex.Matcher.quoteReplacement(File.separator));
     }
 }

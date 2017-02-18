@@ -21,42 +21,45 @@
 
 package io.crate.operation.fetch;
 
-import com.carrotsearch.hppc.IntObjectOpenHashMap;
+import com.carrotsearch.hppc.IntObjectHashMap;
 import com.carrotsearch.hppc.cursors.IntObjectCursor;
 import io.crate.action.job.SharedShardContext;
 import io.crate.action.job.SharedShardContexts;
-import io.crate.analyze.symbol.Reference;
-import io.crate.exceptions.TableUnknownException;
 import io.crate.jobs.AbstractExecutionSubContext;
 import io.crate.metadata.PartitionName;
+import io.crate.metadata.Reference;
 import io.crate.metadata.Routing;
 import io.crate.metadata.TableIdent;
 import io.crate.planner.node.fetch.FetchPhase;
+import org.elasticsearch.common.logging.ESLogger;
+import org.elasticsearch.common.logging.Loggers;
+import org.elasticsearch.index.IndexNotFoundException;
 import org.elasticsearch.index.IndexService;
 import org.elasticsearch.index.engine.Engine;
 import org.elasticsearch.index.shard.ShardId;
-import org.elasticsearch.indices.IndexMissingException;
 
 import javax.annotation.Nonnull;
-import javax.annotation.Nullable;
 import java.util.*;
+import java.util.concurrent.atomic.AtomicBoolean;
 
 public class FetchContext extends AbstractExecutionSubContext {
 
-    private final IntObjectOpenHashMap<Engine.Searcher> searchers = new IntObjectOpenHashMap<>();
-    private final IntObjectOpenHashMap<SharedShardContext> shardContexts = new IntObjectOpenHashMap<>();
+    private static final ESLogger LOGGER = Loggers.getLogger(FetchContext.class);
+    private final IntObjectHashMap<Engine.Searcher> searchers = new IntObjectHashMap<>();
+    private final IntObjectHashMap<SharedShardContext> shardContexts = new IntObjectHashMap<>();
     private final FetchPhase phase;
     private final String localNodeId;
     private final SharedShardContexts sharedShardContexts;
     private final TreeMap<Integer, TableIdent> tableIdents = new TreeMap<>();
     private final Iterable<? extends Routing> routingIterable;
     private final Map<TableIdent, Collection<Reference>> toFetch;
+    private final AtomicBoolean isKilled = new AtomicBoolean(false);
 
     public FetchContext(FetchPhase phase,
                         String localNodeId,
                         SharedShardContexts sharedShardContexts,
                         Iterable<? extends Routing> routingIterable) {
-        super(phase.executionPhaseId());
+        super(phase.phaseId(), LOGGER);
         this.phase = phase;
         this.localNodeId = localNodeId;
         this.sharedShardContexts = sharedShardContexts;
@@ -66,6 +69,10 @@ public class FetchContext extends AbstractExecutionSubContext {
 
     public Map<TableIdent, Collection<Reference>> toFetch() {
         return toFetch;
+    }
+
+    AtomicBoolean isKilled() {
+        return isKilled;
     }
 
     @Override
@@ -88,7 +95,9 @@ public class FetchContext extends AbstractExecutionSubContext {
             for (Map.Entry<String, List<Integer>> indexShardsEntry : indexShards.entrySet()) {
                 String index = indexShardsEntry.getKey();
                 Integer base = phase.bases().get(index);
-                assert base != null : "no readerId base found for " + index;
+                if (base == null) {
+                    continue;
+                }
                 TableIdent ident = index2TableIdent.get(index);
                 assert ident != null : "no tableIdent found for index " + index;
                 tableIdents.put(base, ident);
@@ -102,10 +111,10 @@ public class FetchContext extends AbstractExecutionSubContext {
                         shardContexts.put(readerId, shardContext);
                         if (tablesWithFetchRefs.contains(ident)) {
                             try {
-                                searchers.put(readerId, shardContext.searcher());
-                            } catch (IndexMissingException e) {
+                                searchers.put(readerId, shardContext.acquireSearcher());
+                            } catch (IndexNotFoundException e) {
                                 if (!PartitionName.isPartition(index)) {
-                                    throw new TableUnknownException(index, e);
+                                    throw e;
                                 }
                             }
                         }
@@ -132,15 +141,15 @@ public class FetchContext extends AbstractExecutionSubContext {
     }
 
     @Override
-    protected void innerClose(@Nullable Throwable t) {
-        for (IntObjectCursor<Engine.Searcher> cursor : searchers) {
-            cursor.value.close();
-        }
+    protected void innerKill(@Nonnull Throwable t) {
+        isKilled.set(true);
     }
 
     @Override
-    protected void innerKill(@Nullable Throwable t) {
-        innerClose(t);
+    public void cleanup() {
+        for (IntObjectCursor<Engine.Searcher> cursor : searchers) {
+            cursor.value.close();
+        }
     }
 
     @Override

@@ -21,52 +21,43 @@
 
 package io.crate.planner.consumer;
 
-import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableSet;
-import com.google.common.collect.Iterables;
 import com.google.common.collect.Lists;
-import io.crate.Constants;
 import io.crate.analyze.*;
 import io.crate.analyze.relations.*;
 import io.crate.analyze.symbol.*;
 import io.crate.exceptions.ValidationException;
+import io.crate.metadata.Functions;
 import io.crate.metadata.TableIdent;
 import io.crate.operation.projectors.TopN;
-import io.crate.planner.TableStatsService;
+import io.crate.planner.*;
 import io.crate.planner.distribution.DistributionInfo;
-import io.crate.planner.distribution.UpstreamPhase;
-import io.crate.planner.node.NoopPlannedAnalyzedRelation;
 import io.crate.planner.node.dql.MergePhase;
+import io.crate.planner.node.dql.join.JoinType;
 import io.crate.planner.node.dql.join.NestedLoop;
 import io.crate.planner.node.dql.join.NestedLoopPhase;
 import io.crate.planner.projection.FilterProjection;
 import io.crate.planner.projection.Projection;
-import io.crate.planner.projection.TopNProjection;
+import io.crate.planner.projection.builder.InputCreatingVisitor;
 import io.crate.planner.projection.builder.ProjectionBuilder;
 import io.crate.sql.tree.QualifiedName;
 import org.elasticsearch.cluster.ClusterService;
-import org.elasticsearch.common.inject.Inject;
-import org.elasticsearch.common.inject.Singleton;
 import org.elasticsearch.common.logging.ESLogger;
 import org.elasticsearch.common.logging.Loggers;
 
-import javax.annotation.Nullable;
 import java.util.*;
 
+class NestedLoopConsumer implements Consumer {
 
-@Singleton
-public class NestedLoopConsumer implements Consumer {
-
-    private final Visitor visitor;
     private final static ESLogger LOGGER = Loggers.getLogger(NestedLoopConsumer.class);
+    private final Visitor visitor;
 
-    @Inject
-    public NestedLoopConsumer(ClusterService clusterService, AnalysisMetaData analysisMetaData, TableStatsService tableStatsService) {
-        visitor = new Visitor(clusterService, analysisMetaData, tableStatsService);
+    NestedLoopConsumer(ClusterService clusterService, Functions functions, TableStats tableStats) {
+        visitor = new Visitor(clusterService, functions, tableStats);
     }
 
     @Override
-    public PlannedAnalyzedRelation consume(AnalyzedRelation rootRelation, ConsumerContext context) {
+    public Plan consume(AnalyzedRelation rootRelation, ConsumerContext context) {
         return visitor.process(rootRelation, context);
     }
 
@@ -75,7 +66,7 @@ public class NestedLoopConsumer implements Consumer {
         WhereClause where = parentQuerySpec.where();
         if (where != null && where.hasQuery()) {
             parentQuerySpec.where(new WhereClause(
-                    MappingSymbolVisitor.inPlace().process(where.query(), symbolMap)
+                MappingSymbolVisitor.inPlace().process(where.query(), symbolMap)
             ));
         }
         if (parentQuerySpec.orderBy().isPresent()) {
@@ -86,24 +77,21 @@ public class NestedLoopConsumer implements Consumer {
     private static class Visitor extends RelationPlanningVisitor {
 
         private final ClusterService clusterService;
-        private final AnalysisMetaData analysisMetaData;
-        private final TableStatsService tableStatsService;
+        private final Functions functions;
+        private final TableStats tableStats;
 
-        public Visitor(ClusterService clusterService, AnalysisMetaData analysisMetaData, TableStatsService tableStatsService) {
+        public Visitor(ClusterService clusterService, Functions functions, TableStats tableStats) {
             this.clusterService = clusterService;
-            this.analysisMetaData = analysisMetaData;
-            this.tableStatsService = tableStatsService;
+            this.functions = functions;
+            this.tableStats = tableStats;
         }
 
         @Override
-        public PlannedAnalyzedRelation visitTwoTableJoin(TwoTableJoin statement, ConsumerContext context) {
+        public Plan visitTwoTableJoin(TwoTableJoin statement, ConsumerContext context) {
             QuerySpec querySpec = statement.querySpec();
-            if (querySpec.where().noMatch()) {
-                return new NoopPlannedAnalyzedRelation(statement, context.plannerContext().jobId());
-            }
 
             List<RelationColumn> nlOutputs = new ArrayList<>();
-            Map<Symbol, Symbol> symbolMap = new HashMap<>();
+            final Map<Symbol, Symbol> symbolMap = new HashMap<>();
             QueriedRelation left;
             QueriedRelation right;
             try {
@@ -117,7 +105,7 @@ public class NestedLoopConsumer implements Consumer {
             }
 
             // for nested loops we are fine to remove pushed down orders
-            OrderBy orderByBeforeSplit = querySpec.orderBy().orNull();
+            OrderBy orderByBeforeSplit = querySpec.orderBy().orElse(null);
 
             // replace all the fields in the root query spec
             replaceFields(statement.querySpec(), symbolMap);
@@ -126,100 +114,137 @@ public class NestedLoopConsumer implements Consumer {
                 MappingSymbolVisitor.inPlace().processInplace(statement.remainingOrderBy().get().orderBySymbols(), symbolMap);
             }
 
+            JoinPair joinPair = statement.joinPair();
+            JoinType joinType = joinPair.joinType();
+            Symbol joinCondition = joinPair.condition();
+            if (joinCondition != null) {
+                // replace all fields of the join condition
+                MappingSymbolVisitor.inPlace().process(joinCondition, symbolMap);
+            }
+
             WhereClause where = querySpec.where();
             boolean filterNeeded = where.hasQuery() && !(where.query() instanceof Literal);
             boolean hasDocTables = left instanceof QueriedDocTable || right instanceof QueriedDocTable;
-            boolean isDistributed = hasDocTables && filterNeeded;
+            boolean isDistributed = hasDocTables && filterNeeded && !joinType.isOuter();
+            Limits limits = context.plannerContext().getLimits(querySpec);
 
-            if (filterNeeded || statement.remainingOrderBy().isPresent()) {
-                left.querySpec().limit(null);
-                right.querySpec().limit(null);
-                left.querySpec().offset(TopN.NO_OFFSET);
-                right.querySpec().offset(TopN.NO_OFFSET);
+            if (filterNeeded || joinCondition != null || statement.remainingOrderBy().isPresent()) {
+                left.querySpec().limit(Optional.empty());
+                right.querySpec().limit(Optional.empty());
+                left.querySpec().offset(Optional.empty());
+                right.querySpec().offset(Optional.empty());
             }
 
-            if (!filterNeeded && querySpec.limit().isPresent()) {
-                context.requiredPageSize(querySpec.limit().get() + querySpec.offset());
+            if (!filterNeeded && joinCondition == null && querySpec.limit().isPresent()) {
+                context.requiredPageSize(limits.limitAndOffset());
             }
 
             // this normalization is required to replace fields of the table relations
             if (left instanceof QueriedTableRelation) {
-                ((QueriedTableRelation) left).normalize(analysisMetaData);
+                ((QueriedTableRelation) left).normalize(
+                    functions, context.plannerContext().transactionContext());
             }
             if (right instanceof QueriedTableRelation) {
-                ((QueriedTableRelation) right).normalize(analysisMetaData);
+                ((QueriedTableRelation) right).normalize(
+                    functions, context.plannerContext().transactionContext());
             }
 
-            PlannedAnalyzedRelation leftPlan = context.plannerContext().planSubRelation(left, context);
-            PlannedAnalyzedRelation rightPlan = context.plannerContext().planSubRelation(right, context);
+            Plan leftPlan = context.plannerContext().planSubRelation(left, context);
+            Plan rightPlan = context.plannerContext().planSubRelation(right, context);
             context.requiredPageSize(null);
 
-            if (Iterables.any(Arrays.asList(leftPlan, rightPlan), PlannedAnalyzedRelation.IS_NOOP)) {
-                // one of the plans or both are noops
-                return new NoopPlannedAnalyzedRelation(statement, context.plannerContext().jobId());
-            }
 
+            ResultDescription leftResultDesc = leftPlan.resultDescription();
+            ResultDescription rightResultDesc = rightPlan.resultDescription();
+            isDistributed = isDistributed &&
+                            (!leftResultDesc.nodeIds().isEmpty() && !rightResultDesc.nodeIds().isEmpty());
             boolean broadcastLeftTable = false;
             if (isDistributed) {
                 broadcastLeftTable = isLeftSmallerThanRight(left, right);
                 if (broadcastLeftTable) {
-                    PlannedAnalyzedRelation tmpPlan = leftPlan;
+                    Plan tmpPlan = leftPlan;
                     leftPlan = rightPlan;
                     rightPlan = tmpPlan;
 
                     QueriedRelation tmpRelation = left;
                     left = right;
                     right = tmpRelation;
+                    joinType = joinType.invert();
+                    leftResultDesc = leftPlan.resultDescription();
+                    rightResultDesc = rightPlan.resultDescription();
                 }
             }
-            Set<String> localExecutionNodes = ImmutableSet.of(clusterService.localNode().id());
-            Collection<String> nlExecutionNodes = localExecutionNodes;
+            Collection<String> nlExecutionNodes = ImmutableSet.of(clusterService.localNode().getId());
 
             MergePhase leftMerge = null;
             MergePhase rightMerge = null;
             if (isDistributed) {
-                leftPlan.resultPhase().distributionInfo(DistributionInfo.DEFAULT_SAME_NODE);
-                nlExecutionNodes = leftPlan.resultPhase().executionNodes();
+                leftPlan.setDistributionInfo(DistributionInfo.DEFAULT_SAME_NODE);
+                nlExecutionNodes = leftResultDesc.nodeIds();
             } else {
-                leftMerge = mergePhase(
-                        context,
+                if (isMergePhaseNeeded(nlExecutionNodes, leftResultDesc.nodeIds(), false)) {
+                    leftMerge = new MergePhase(
+                        context.plannerContext().jobId(),
+                        context.plannerContext().nextExecutionPhaseId(),
+                        "nl-merge",
+                        leftResultDesc.nodeIds().size(),
                         nlExecutionNodes,
-                        leftPlan.resultPhase(),
-                        left.querySpec().orderBy().orNull(),
-                        left.querySpec().outputs(),
-                        false);
+                        leftResultDesc.streamOutputs(),
+                        Collections.emptyList(),
+                        DistributionInfo.DEFAULT_SAME_NODE,
+                        PositionalOrderBy.of(left.querySpec().orderBy().orElse(null), left.querySpec().outputs())
+                    );
+                }
             }
             if (nlExecutionNodes.size() == 1
-                && nlExecutionNodes.equals(rightPlan.resultPhase().executionNodes())) {
+                && nlExecutionNodes.equals(rightResultDesc.nodeIds())) {
                 // if the left and the right plan are executed on the same single node the mergePhase
                 // should be omitted. This is the case if the left and right table have only one shards which
                 // are on the same node
-                rightPlan.resultPhase().distributionInfo(DistributionInfo.DEFAULT_SAME_NODE);
+                rightPlan.setDistributionInfo(DistributionInfo.DEFAULT_SAME_NODE);
             } else {
-                rightMerge = mergePhase(
-                        context,
+                if (isMergePhaseNeeded(nlExecutionNodes, rightResultDesc.nodeIds(), isDistributed)) {
+                    rightMerge = new MergePhase(
+                        context.plannerContext().jobId(),
+                        context.plannerContext().nextExecutionPhaseId(),
+                        "nl-merge",
+                        rightResultDesc.nodeIds().size(),
                         nlExecutionNodes,
-                        rightPlan.resultPhase(),
-                        right.querySpec().orderBy().orNull(),
-                        right.querySpec().outputs(),
-                        isDistributed);
-                rightPlan.resultPhase().distributionInfo(DistributionInfo.DEFAULT_BROADCAST);
+                        rightResultDesc.streamOutputs(),
+                        Collections.emptyList(),
+                        DistributionInfo.DEFAULT_SAME_NODE,
+                        PositionalOrderBy.of(right.querySpec().orderBy().orElse(null), right.querySpec().outputs())
+                    );
+                }
+                rightPlan.setDistributionInfo(DistributionInfo.DEFAULT_BROADCAST);
             }
 
 
             if (broadcastLeftTable) {
-                PlannedAnalyzedRelation tmpPlan = leftPlan;
+                Plan tmpPlan = leftPlan;
                 leftPlan = rightPlan;
                 rightPlan = tmpPlan;
                 leftMerge = rightMerge;
                 rightMerge = null;
+                leftResultDesc = leftPlan.resultDescription();
+                rightResultDesc = rightPlan.resultDescription();
             }
             List<Projection> projections = new ArrayList<>();
 
             if (filterNeeded) {
-                FilterProjection filterProjection = ProjectionBuilder.filterProjection(nlOutputs, where.query());
-                projections.add(filterProjection);
+                InputCreatingVisitor.Context inputVisitorContext = new InputCreatingVisitor.Context(nlOutputs);
+                Symbol filterSymbol = InputCreatingVisitor.INSTANCE.process(where.query(), inputVisitorContext);
+                assert filterSymbol instanceof Function : "Only function symbols are allowed for filtering";
+                projections.add(new FilterProjection(filterSymbol));
             }
+            if (joinCondition != null) {
+                InputCreatingVisitor.Context inputVisitorContext = new InputCreatingVisitor.Context(nlOutputs);
+                joinCondition = InputCreatingVisitor.INSTANCE.process(joinCondition, inputVisitorContext);
+                assert joinCondition instanceof Function : "Only function symbols are valid join conditions";
+                boolean hasRelCol = SymbolVisitors.any(s -> s instanceof RelationColumn, joinCondition);
+                assert  !hasRelCol : "RelationColumns are not valid join condition arguments";
+            }
+
             List<Symbol> postNLOutputs = Lists.newArrayList(querySpec.outputs());
             if (orderByBeforeSplit != null && isDistributed) {
                 for (Symbol symbol : orderByBeforeSplit.orderBySymbols()) {
@@ -228,47 +253,48 @@ public class NestedLoopConsumer implements Consumer {
                     }
                 }
             }
-            // due to weird subplanning, context.isRoot() is false here, so apply this hack
-            boolean isRoot = context.rootRelation() instanceof MultiSourceSelect;
-            int topNLimit = querySpec.limit().or(
-                    isRoot ? Constants.DEFAULT_SELECT_LIMIT : TopN.NO_LIMIT
-            );
-            TopNProjection topN = ProjectionBuilder.topNProjection(
-                    nlOutputs,
-                    statement.remainingOrderBy().orNull(),
-                    isDistributed ? 0 : querySpec.offset(),
-                    isDistributed ? topNLimit + querySpec.offset() : topNLimit,
-                    postNLOutputs
+
+            OrderBy orderBy = statement.remainingOrderBy().orElse(null);
+            if (orderBy == null && joinType.isOuter()) {
+                orderBy = orderByBeforeSplit;
+            }
+
+            int limit = isDistributed ? limits.limitAndOffset() : limits.finalLimit();
+            Projection topN = ProjectionBuilder.topNOrEval(
+                nlOutputs,
+                orderBy,
+                isDistributed ? 0 : limits.offset(),
+                limit,
+                postNLOutputs
             );
             projections.add(topN);
 
             NestedLoopPhase nl = new NestedLoopPhase(
-                    context.plannerContext().jobId(),
-                    context.plannerContext().nextExecutionPhaseId(),
-                    isDistributed ? "distributed-nested-loop" : "nested-loop",
-                    projections,
-                    leftMerge,
-                    rightMerge,
-                    nlExecutionNodes
+                context.plannerContext().jobId(),
+                context.plannerContext().nextExecutionPhaseId(),
+                isDistributed ? "distributed-nested-loop" : "nested-loop",
+                projections,
+                leftMerge,
+                rightMerge,
+                nlExecutionNodes,
+                joinType,
+                joinCondition,
+                left.querySpec().outputs().size(),
+                right.querySpec().outputs().size()
             );
             if (isDistributed) {
-                nl.distributionInfo(DistributionInfo.DEFAULT_BROADCAST);
-            }
-            MergePhase localMergePhase = null;
-            // TODO: build local merge phases somewhere else for any subplan
-            if (isDistributed && context.isRoot()) {
-                localMergePhase = mergePhase(context, localExecutionNodes, nl, orderByBeforeSplit, postNLOutputs, true);
-                assert localMergePhase != null : "local merge phase must not be null";
-                TopNProjection finalTopN = ProjectionBuilder.topNProjection(
-                        postNLOutputs,
-                        orderByBeforeSplit,
-                        querySpec.offset(),
-                        topNLimit,
-                        querySpec.outputs()
+                return new NestedLoop(
+                    nl,
+                    leftPlan,
+                    rightPlan,
+                    limits.finalLimit(),
+                    limits.offset(),
+                    limit,
+                    PositionalOrderBy.of(orderByBeforeSplit, postNLOutputs)
                 );
-                localMergePhase.addProjection(finalTopN);
+            } else {
+                return new NestedLoop(nl, leftPlan, rightPlan, TopN.NO_LIMIT, 0, limit, null);
             }
-            return new NestedLoop(nl, leftPlan, rightPlan, localMergePhase);
         }
 
         private void addOutputsAndSymbolMap(Iterable<? extends Symbol> outputs,
@@ -286,91 +312,65 @@ public class NestedLoopConsumer implements Consumer {
         private boolean isLeftSmallerThanRight(QueriedRelation qrLeft, QueriedRelation qrRight) {
             if (qrLeft instanceof QueriedTableRelation && qrRight instanceof QueriedTableRelation) {
                 return isLeftSmallerThanRight(
-                        ((QueriedTableRelation) qrLeft).tableRelation().tableInfo().ident(),
-                        ((QueriedTableRelation) qrRight).tableRelation().tableInfo().ident()
+                    ((QueriedTableRelation) qrLeft).tableRelation().tableInfo().ident(),
+                    ((QueriedTableRelation) qrRight).tableRelation().tableInfo().ident()
                 );
             }
             return false;
         }
 
         private boolean isLeftSmallerThanRight(TableIdent leftIdent, TableIdent rightIdent) {
-            long leftNumDocs = tableStatsService.numDocs(leftIdent);
-            long rightNumDocs = tableStatsService.numDocs(rightIdent);
+            long leftNumDocs = tableStats.numDocs(leftIdent);
+            long rightNumDocs = tableStats.numDocs(rightIdent);
 
             if (leftNumDocs < rightNumDocs) {
                 LOGGER.debug("Right table is larger with {} docs (left has {}. Will change left plan to broadcast its result",
-                        rightNumDocs, leftNumDocs);
+                    rightNumDocs, leftNumDocs);
                 return true;
             }
             return false;
         }
 
-        // TODO: this is a duplicate, it coecists in QueryThenFetchConsumer
-        public static MergePhase mergePhase(ConsumerContext context,
-                                      Collection<String> executionNodes,
-                                      UpstreamPhase upstreamPhase,
-                                      @Nullable OrderBy orderBy,
-                                      List<Symbol> previousOutputs,
-                                      boolean isDistributed) {
-            assert !upstreamPhase.executionNodes().isEmpty() : "upstreamPhase must be executed somewhere";
-            if (!isDistributed && upstreamPhase.executionNodes().equals(executionNodes)) {
+        private static boolean isMergePhaseNeeded(Collection<String> executionNodes,
+                                                  Collection<String> upstreamPhaseExecutionNodes,
+                                                  boolean isDistributed) {
+            if (!isDistributed && upstreamPhaseExecutionNodes.equals(executionNodes)) {
                 // if the nested loop is on the same node we don't need a mergePhase to receive requests
                 // but can access the RowReceiver of the nestedLoop directly
-                return null;
+                return false;
             }
-
-            MergePhase mergePhase;
-            if (orderBy != null) {
-                mergePhase = MergePhase.sortedMerge(
-                        context.plannerContext().jobId(),
-                        context.plannerContext().nextExecutionPhaseId(),
-                        orderBy,
-                        previousOutputs,
-                        orderBy.orderBySymbols(),
-                        ImmutableList.<Projection>of(),
-                        upstreamPhase.executionNodes().size(),
-                        Symbols.extractTypes(previousOutputs)
-                );
-            } else {
-                mergePhase = MergePhase.localMerge(
-                        context.plannerContext().jobId(),
-                        context.plannerContext().nextExecutionPhaseId(),
-                        ImmutableList.<Projection>of(),
-                        upstreamPhase.executionNodes().size(),
-                        Symbols.extractTypes(previousOutputs)
-                );
-            }
-            mergePhase.executionNodes(executionNodes);
-            return mergePhase;
+            return true;
         }
     }
 
-    private static class SubRelationConverter extends AnalyzedRelationVisitor<MultiSourceSelect.Source, QueriedRelation> {
+    private static class SubRelationConverter extends AnalyzedRelationVisitor<RelationSource, QueriedRelation> {
 
         static final SubRelationConverter INSTANCE = new SubRelationConverter();
 
         @Override
-        public QueriedRelation visitTableRelation(TableRelation tableRelation,
-                                                       MultiSourceSelect.Source source) {
+        public QueriedRelation visitTableRelation(TableRelation tableRelation, RelationSource source) {
             return new QueriedTable(tableRelation, source.querySpec());
         }
 
         @Override
-        public QueriedRelation visitDocTableRelation(DocTableRelation tableRelation,
-                                                          MultiSourceSelect.Source source) {
+        public QueriedRelation visitDocTableRelation(DocTableRelation tableRelation, RelationSource source) {
             return new QueriedDocTable(tableRelation, source.querySpec());
         }
 
         @Override
-        public QueriedRelation visitTwoTableJoin(TwoTableJoin twoTableJoin, MultiSourceSelect.Source context) {
+        public QueriedRelation visitTwoTableJoin(TwoTableJoin twoTableJoin, RelationSource context) {
             return twoTableJoin;
         }
 
         @Override
-        protected QueriedTableRelation visitAnalyzedRelation(AnalyzedRelation relation,
-                                                             MultiSourceSelect.Source source) {
-            throw new ValidationException("CROSS JOIN with sub queries is not supported");
+        public QueriedRelation visitTableFunctionRelation(TableFunctionRelation tableFunctionRelation,
+                                                          RelationSource context) {
+            return new QueriedTable(tableFunctionRelation, context.querySpec());
+        }
+
+        @Override
+        protected QueriedTableRelation visitAnalyzedRelation(AnalyzedRelation relation, RelationSource source) {
+            throw new ValidationException("JOIN with sub queries is not supported");
         }
     }
-
 }

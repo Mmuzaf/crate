@@ -21,9 +21,12 @@
 
 package io.crate.planner.projection;
 
+import com.google.common.base.Function;
 import com.google.common.collect.ImmutableList;
 import io.crate.analyze.symbol.Aggregation;
 import io.crate.analyze.symbol.Symbol;
+import io.crate.analyze.symbol.Symbols;
+import io.crate.metadata.RowGranularity;
 import org.elasticsearch.common.io.stream.StreamInput;
 import org.elasticsearch.common.io.stream.StreamOutput;
 
@@ -36,30 +39,35 @@ import java.util.List;
  */
 public class AggregationProjection extends Projection {
 
-    List<Aggregation> aggregations = ImmutableList.of();
+    private RowGranularity contextGranularity;
+    private List<Aggregation> aggregations = ImmutableList.of();
 
-    public static final ProjectionFactory<AggregationProjection> FACTORY = new ProjectionFactory<AggregationProjection>() {
-        @Override
-        public AggregationProjection newInstance() {
-            return new AggregationProjection();
+    public AggregationProjection(StreamInput in) throws IOException {
+        int size = in.readVInt();
+        aggregations = new ArrayList<>(size);
+        for (int i = 0; i < size; i++) {
+            aggregations.add((Aggregation) Symbols.fromStream(in));
         }
-    };
-
-    public AggregationProjection() {
+        contextGranularity = RowGranularity.fromStream(in);
     }
 
-    public AggregationProjection(List<Aggregation> aggregations) {
-        assert aggregations != null;
+    public AggregationProjection(List<Aggregation> aggregations, RowGranularity contextGranularity) {
+        this.contextGranularity = contextGranularity;
+        assert aggregations != null : "aggregations must not be null";
         this.aggregations = aggregations;
+    }
+
+    @Override
+    public RowGranularity requiredGranularity() {
+        return contextGranularity;
+    }
+
+    @Override
+    public void replaceSymbols(Function<Symbol, Symbol> replaceFunction) {
     }
 
     public List<Aggregation> aggregations() {
         return aggregations;
-    }
-
-    public void aggregations(List<Aggregation> aggregations) {
-        assert aggregations != null;
-        this.aggregations = aggregations;
     }
 
     @Override
@@ -78,20 +86,9 @@ public class AggregationProjection extends Projection {
     }
 
     @Override
-    public void readFrom(StreamInput in) throws IOException {
-        int size = in.readVInt();
-        aggregations = new ArrayList<>(size);
-        for (int i = 0; i < size; i++) {
-            aggregations.add((Aggregation) Symbol.fromStream(in));
-        }
-    }
-
-    @Override
     public void writeTo(StreamOutput out) throws IOException {
-        out.writeVInt(aggregations.size());
-        for (Symbol symbol : aggregations) {
-            Symbol.toStream(symbol, out);
-        }
+        Symbols.toStream(aggregations, out);
+        RowGranularity.toStream(contextGranularity, out);
     }
 
     @Override

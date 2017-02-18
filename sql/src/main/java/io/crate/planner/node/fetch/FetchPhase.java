@@ -23,7 +23,7 @@ package io.crate.planner.node.fetch;
 
 import com.google.common.collect.HashMultimap;
 import com.google.common.collect.Multimap;
-import io.crate.analyze.symbol.Reference;
+import io.crate.metadata.Reference;
 import io.crate.metadata.TableIdent;
 import io.crate.planner.node.ExecutionPhase;
 import io.crate.planner.node.ExecutionPhaseVisitor;
@@ -49,7 +49,8 @@ public class FetchPhase implements ExecutionPhase {
     private int executionPhaseId;
     private Set<String> executionNodes;
 
-    private FetchPhase() {}
+    private FetchPhase() {
+    }
 
     public FetchPhase(int executionPhaseId,
                       Set<String> executionNodes,
@@ -78,12 +79,12 @@ public class FetchPhase implements ExecutionPhase {
     }
 
     @Override
-    public int executionPhaseId() {
+    public int phaseId() {
         return executionPhaseId;
     }
 
     @Override
-    public Set<String> executionNodes() {
+    public Set<String> nodeIds() {
         return executionNodes;
     }
 
@@ -117,7 +118,7 @@ public class FetchPhase implements ExecutionPhase {
         n = in.readVInt();
         tableIndices = HashMultimap.create(n, 1);
         for (int i = 0; i < n; i++) {
-            TableIdent ti = TableIdent.fromStream(in);
+            TableIdent ti = new TableIdent(in);
             int nn = in.readVInt();
             for (int j = 0; j < nn; j++) {
                 tableIndices.put(ti, in.readString());
@@ -142,7 +143,7 @@ public class FetchPhase implements ExecutionPhase {
 
         out.writeVInt(fetchRefs.size());
         for (Reference ref : fetchRefs) {
-            ref.writeTo(out);
+            Reference.toStream(ref, out);
         }
         Map<TableIdent, Collection<String>> map = tableIndices.asMap();
         out.writeVInt(map.size());

@@ -32,6 +32,7 @@ import io.crate.geo.GeoJSONUtils;
 import io.crate.metadata.FunctionIdent;
 import io.crate.metadata.FunctionInfo;
 import io.crate.metadata.Scalar;
+import io.crate.metadata.TransactionContext;
 import io.crate.operation.Input;
 import io.crate.operation.scalar.ScalarFunctionModule;
 import io.crate.types.DataType;
@@ -46,17 +47,17 @@ public class IntersectsFunction extends Scalar<Boolean, Object> {
 
     private static FunctionInfo info(DataType type1, DataType type2) {
         return new FunctionInfo(
-                new FunctionIdent(NAME, ImmutableList.of(type1, type2)),
-                DataTypes.BOOLEAN
+            new FunctionIdent(NAME, ImmutableList.of(type1, type2)),
+            DataTypes.BOOLEAN
         );
     }
 
     private static final FunctionInfo SHAPE_INFO = info(DataTypes.GEO_SHAPE, DataTypes.GEO_SHAPE);
 
     private static final Set<DataType> SUPPORTED_TYPES = ImmutableSet.<DataType>of(
-            DataTypes.STRING,
-            DataTypes.OBJECT,
-            DataTypes.GEO_SHAPE
+        DataTypes.STRING,
+        DataTypes.OBJECT,
+        DataTypes.GEO_SHAPE
     );
 
     public static void register(ScalarFunctionModule module) {
@@ -95,32 +96,28 @@ public class IntersectsFunction extends Scalar<Boolean, Object> {
     }
 
     @Override
-    public Symbol normalizeSymbol(Function symbol) {
+    public Symbol normalizeSymbol(Function symbol, TransactionContext transactionContext) {
         Symbol left = symbol.arguments().get(0);
         Symbol right = symbol.arguments().get(1);
         int numLiterals = 0;
         boolean literalConverted = false;
 
-        if (containsNullLiteral(symbol.arguments())) {
-            return Literal.NULL;
-        }
-
         if (left.symbolType().isValueSymbol()) {
             numLiterals++;
-            Symbol converted = convertTo(DataTypes.GEO_SHAPE, (Literal)left);
+            Symbol converted = convertTo(DataTypes.GEO_SHAPE, (Literal) left);
             literalConverted = converted != right;
             left = converted;
         }
 
         if (right.symbolType().isValueSymbol()) {
             numLiterals++;
-            Symbol converted = convertTo(DataTypes.GEO_SHAPE, (Literal)right);
+            Symbol converted = convertTo(DataTypes.GEO_SHAPE, (Literal) right);
             literalConverted = literalConverted || converted != right;
             right = converted;
         }
 
         if (numLiterals == 2) {
-            return Literal.newLiteral(evaluate((Input)left, (Input)right));
+            return Literal.of(evaluate((Input) left, (Input) right));
         }
 
         if (literalConverted) {

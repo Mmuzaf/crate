@@ -4,7 +4,10 @@ import com.google.common.base.Preconditions;
 import com.google.common.collect.FluentIterable;
 import io.crate.exceptions.ConversionException;
 import io.crate.operation.Input;
-import io.crate.types.*;
+import io.crate.types.ArrayType;
+import io.crate.types.CollectionType;
+import io.crate.types.DataType;
+import io.crate.types.DataTypes;
 import org.apache.lucene.util.BytesRef;
 import org.elasticsearch.common.io.stream.StreamInput;
 import org.elasticsearch.common.io.stream.StreamOutput;
@@ -14,46 +17,16 @@ import java.io.IOException;
 import java.util.*;
 
 
-public class Literal<ReturnType>
-        extends Symbol
-        implements Input<ReturnType>, Comparable<Literal> {
+public class Literal<ReturnType> extends Symbol implements Input<ReturnType>, Comparable<Literal> {
 
-    protected Object value;
-    protected DataType type;
+    private final Object value;
+    private final DataType type;
 
     public final static Literal<Void> NULL = new Literal<>(DataTypes.UNDEFINED, null);
     public final static Literal<Boolean> BOOLEAN_TRUE = new Literal<>(DataTypes.BOOLEAN, true);
     public final static Literal<Boolean> BOOLEAN_FALSE = new Literal<>(DataTypes.BOOLEAN, false);
-
-    public static final SymbolFactory<Literal> FACTORY = new SymbolFactory<Literal>() {
-        @Override
-        public Literal newInstance() {
-            return new Literal();
-        }
-    };
-
-    public static Literal implodeCollection(DataType itemType, Set<Literal> literals) {
-        Set<Object> set = new HashSet<>(literals.size(), 1.0F);
-        for (Literal literal : literals) {
-            assert literal.valueType() == itemType : typeMismatchMsg(itemType, literal);
-            set.add(literal.value());
-        }
-        return new Literal<>(new SetType(itemType), Collections.unmodifiableSet(set));
-    }
-
-    private static String typeMismatchMsg(DataType itemType, Literal literal) {
-        return String.format(Locale.ENGLISH, "Literal type: %s does not match item type: %s", literal.valueType(), itemType);
-    }
-
-    public static Literal implodeCollection(DataType itemType, List<Literal> literals) {
-       Object[] values = new Object[literals.size()];
-        for (int i = 0; i<literals.size(); i++) {
-            assert literals.get(i).valueType().equals(itemType) || literals.get(i).valueType() == DataTypes.UNDEFINED:
-                    typeMismatchMsg(itemType, literals.get(i));
-            values[i] = literals.get(i).value();
-        }
-        return new Literal<>(new ArrayType(itemType), values);
-    }
+    public final static Literal<Integer> ZERO = Literal.of(0);
+    public static final Literal<Map<String, Object>> EMPTY_OBJECT = Literal.of(Collections.<String, Object>emptyMap());
 
     public static Collection<Literal> explodeCollection(Literal collectionLiteral) {
         Preconditions.checkArgument(DataTypes.isCollectionType(collectionLiteral.valueType()));
@@ -61,24 +34,26 @@ public class Literal<ReturnType>
         int size;
         Object literalValue = collectionLiteral.value();
         if (literalValue instanceof Collection) {
-            values = (Iterable)literalValue;
-            size = ((Collection)literalValue).size();
+            values = (Iterable) literalValue;
+            size = ((Collection) literalValue).size();
         } else {
-            values = FluentIterable.of((Object[])literalValue);
-            size = ((Object[])literalValue).length;
+            values = FluentIterable.of((Object[]) literalValue);
+            size = ((Object[]) literalValue).length;
         }
 
         List<Literal> literals = new ArrayList<>(size);
         for (Object value : values) {
             literals.add(new Literal<>(
-                    ((CollectionType)collectionLiteral.valueType()).innerType(),
-                    value
+                ((CollectionType) collectionLiteral.valueType()).innerType(),
+                value
             ));
         }
         return literals;
     }
 
-    private Literal() {
+    public Literal(StreamInput in) throws IOException {
+        type = DataTypes.fromStream(in);
+        value = type.streamer().readValueFrom(in);
     }
 
     private Literal(DataType type, ReturnType value) {
@@ -99,7 +74,7 @@ public class Literal<ReturnType>
             while (innerType instanceof ArrayType && value.getClass().isArray()) {
                 type = innerType;
                 innerType = ((ArrayType) innerType).innerType();
-                value = ((Object[])value)[0];
+                value = ((Object[]) value)[0];
             }
             if (innerType.equals(DataTypes.STRING)) {
                 for (Object o : ((Object[]) value)) {
@@ -109,7 +84,7 @@ public class Literal<ReturnType>
                 }
                 return true;
             } else {
-                return Arrays.equals((Object[]) value, ((ArrayType)type).value(value));
+                return Arrays.equals((Object[]) value, ((ArrayType) type).value(value));
             }
         }
         // types like GeoPoint are represented as arrays
@@ -128,7 +103,7 @@ public class Literal<ReturnType>
     @Override
     @SuppressWarnings("unchecked")
     public ReturnType value() {
-        return (ReturnType)value;
+        return (ReturnType) value;
     }
 
     @Override
@@ -166,17 +141,7 @@ public class Literal<ReturnType>
 
     @Override
     public String toString() {
-        return "Literal{" +
-                "value=" + BytesRefs.toString(value) +
-                ", type=" + type +
-                '}';
-    }
-
-    @Override
-    @SuppressWarnings("unchecked")
-    public void readFrom(StreamInput in) throws IOException {
-        type = DataTypes.fromStream(in);
-        value = type.streamer().readValueFrom(in);
+        return "Literal{" + BytesRefs.toString(value) + ", type=" + type + '}';
     }
 
     @Override
@@ -185,49 +150,53 @@ public class Literal<ReturnType>
         type.streamer().writeValueTo(out, value);
     }
 
-    public static Literal<Map<String, Object>> newLiteral(Map<String, Object> value) {
+    public static Literal<Map<String, Object>> of(Map<String, Object> value) {
         return new Literal<>(DataTypes.OBJECT, value);
     }
 
-    public static Literal<Object[]> newLiteral(Object[] value, DataType dataType) {
+    public static Literal<Object[]> of(Object[] value, DataType dataType) {
         return new Literal<>(dataType, value);
     }
 
-    public static Literal<Long> newLiteral(Long value) {
+    public static Literal<Set> of(Set value, DataType dataType) {
+        return new Literal<>(dataType, value);
+    }
+
+    public static Literal<Long> of(Long value) {
         return new Literal<>(DataTypes.LONG, value);
     }
 
-    public static Literal<Object> newLiteral(DataType type, Object value) {
+    public static Literal<Object> of(DataType type, Object value) {
         return new Literal<>(type, value);
     }
 
-    public static Literal<Integer> newLiteral(Integer value) {
+    public static Literal<Integer> of(Integer value) {
         return new Literal<>(DataTypes.INTEGER, value);
     }
 
-    public static Literal<BytesRef> newLiteral(String value) {
+    public static Literal<BytesRef> of(String value) {
         if (value == null) {
             return new Literal<>(DataTypes.STRING, null);
         }
         return new Literal<>(DataTypes.STRING, new BytesRef(value));
     }
 
-    public static Literal<BytesRef> newLiteral(BytesRef value) {
+    public static Literal<BytesRef> of(BytesRef value) {
         return new Literal<>(DataTypes.STRING, value);
     }
 
-    public static Literal<Boolean> newLiteral(Boolean value) {
+    public static Literal<Boolean> of(Boolean value) {
         if (value == null) {
             return new Literal<>(DataTypes.BOOLEAN, null);
         }
         return value ? BOOLEAN_TRUE : BOOLEAN_FALSE;
     }
 
-    public static Literal<Double> newLiteral(Double value) {
+    public static Literal<Double> of(Double value) {
         return new Literal<>(DataTypes.DOUBLE, value);
     }
 
-    public static Literal<Float> newLiteral(Float value) {
+    public static Literal<Float> of(Float value) {
         return new Literal<>(DataTypes.FLOAT, value);
     }
 
@@ -244,7 +213,7 @@ public class Literal<ReturnType>
      * in which case the symbol will be returned as is.
      *
      * @param symbol that is expected to be a literal
-     * @param type type that the literal should have
+     * @param type   type that the literal should have
      * @return converted literal
      * @throws ConversionException if symbol cannot be converted to the given type
      */
@@ -255,7 +224,7 @@ public class Literal<ReturnType>
             return literal;
         }
         try {
-            return newLiteral(type, type.value(literal.value()));
+            return of(type, type.value(literal.value()));
         } catch (IllegalArgumentException | ClassCastException e) {
             throw new ConversionException(symbol, type);
         }

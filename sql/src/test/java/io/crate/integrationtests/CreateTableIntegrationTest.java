@@ -21,6 +21,7 @@
 
 package io.crate.integrationtests;
 
+import io.crate.testing.UseJdbc;
 import org.junit.Test;
 
 import java.util.concurrent.ExecutorService;
@@ -30,6 +31,7 @@ import java.util.concurrent.atomic.AtomicReference;
 
 import static org.hamcrest.Matchers.is;
 
+@UseJdbc
 public class CreateTableIntegrationTest extends SQLTransportIntegrationTest {
 
     @Test
@@ -40,8 +42,8 @@ public class CreateTableIntegrationTest extends SQLTransportIntegrationTest {
     @Test
     public void testCreatePartitionedTableIfNotExistsConcurrently() throws Throwable {
         executeCreateTableThreaded("create table if not exists t " +
-                "(name string, p string) partitioned by (p) " +
-                "with (number_of_replicas = 0)");
+                                   "(name string, p string) partitioned by (p) " +
+                                   "with (number_of_replicas = 0)");
     }
 
     private void executeCreateTableThreaded(final String statement) throws Throwable {

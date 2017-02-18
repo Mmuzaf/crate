@@ -21,19 +21,14 @@
 
 package io.crate.operation;
 
-import com.google.common.collect.Iterables;
-import com.google.common.util.concurrent.SettableFuture;
-import io.crate.core.collections.Row;
-import io.crate.executor.RowCountResult;
-import io.crate.executor.TaskResult;
-import io.crate.jobs.ExecutionState;
-import io.crate.operation.projectors.Requirement;
-import io.crate.operation.projectors.Requirements;
-import io.crate.operation.projectors.RowReceiver;
+import io.crate.data.Row;
+import io.crate.operation.projectors.*;
 
+import javax.annotation.Nonnull;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Set;
+import java.util.concurrent.CompletableFuture;
 
 /**
  * RowDownstream that will set a TaskResultFuture once the result is ready.
@@ -41,39 +36,47 @@ import java.util.Set;
  */
 public class RowCountResultRowDownstream implements RowReceiver {
 
-    private final SettableFuture<TaskResult> result;
+    private final CompletableFuture<Long> result;
     private final List<Object[]> rows = new ArrayList<>();
+    private RowReceiver.Result nextRowResult = Result.CONTINUE;
 
-    public RowCountResultRowDownstream(SettableFuture<TaskResult> result) {
+    public RowCountResultRowDownstream(CompletableFuture<Long> result) {
         this.result = result;
     }
 
     @Override
-    public boolean setNextRow(Row row) {
+    public CompletableFuture<?> completionFuture() {
+        return result;
+    }
+
+    @Override
+    public RowReceiver.Result setNextRow(Row row) {
         rows.add(row.materialize());
-        return true;
+        return nextRowResult;
     }
 
     @Override
-    public void finish() {
-        result.set(new RowCountResult(((Number) Iterables.getOnlyElement(rows)[0]).longValue()));
+    public void pauseProcessed(ResumeHandle resumeable) {
     }
 
     @Override
-    public void fail(Throwable throwable) {
-        result.setException(throwable);
+    public void finish(RepeatHandle repeatHandle) {
+        result.complete((Long) rows.iterator().next()[0]);
     }
 
     @Override
-    public void prepare(ExecutionState executionState) {
+    public void fail(@Nonnull Throwable t) {
+        nextRowResult = Result.STOP;
+        result.completeExceptionally(t);
+    }
+
+    @Override
+    public void kill(Throwable throwable) {
+        fail(throwable);
     }
 
     @Override
     public Set<Requirement> requirements() {
         return Requirements.NO_REQUIREMENTS;
-    }
-
-    @Override
-    public void setUpstream(RowUpstream rowUpstream) {
     }
 }

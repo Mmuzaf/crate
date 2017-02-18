@@ -22,42 +22,23 @@
 
 package io.crate.metadata.information;
 
-import com.google.common.base.Function;
-import io.crate.metadata.ReferenceInfo;
+import io.crate.metadata.Reference;
 import io.crate.metadata.table.TableInfo;
 import io.crate.test.integration.CrateUnitTest;
-import io.crate.testing.MockedClusterServiceModule;
 import io.crate.testing.TestingHelpers;
-import org.elasticsearch.cluster.ClusterService;
-import org.elasticsearch.common.inject.Injector;
-import org.elasticsearch.common.inject.ModulesBuilder;
+import org.elasticsearch.test.cluster.NoopClusterService;
 import org.junit.Before;
 import org.junit.Test;
 
-import javax.annotation.Nullable;
 import java.util.Locale;
 
 public class InformationTableInfoTest extends CrateUnitTest {
-
-    private static final Function<ReferenceInfo, Comparable> EXTRACT_COLUMN_IDENT = new Function<ReferenceInfo, Comparable>() {
-
-        @Nullable
-        @Override
-        public Comparable apply(@Nullable ReferenceInfo input) {
-            assert input != null;
-            return input.ident().columnIdent().fqn();
-        }
-    };
 
     private InformationSchemaInfo informationSchemaInfo;
 
     @Before
     public void prepare() throws Exception {
-        Injector injector = new ModulesBuilder()
-                .add(new MockedClusterServiceModule())
-                .createInjector();
-        ClusterService clusterService = injector.getInstance(ClusterService.class);
-        informationSchemaInfo = new InformationSchemaInfo(clusterService);
+        informationSchemaInfo = new InformationSchemaInfo(new NoopClusterService());
     }
 
     @Test
@@ -68,7 +49,13 @@ public class InformationTableInfoTest extends CrateUnitTest {
     }
 
     private void assertSortedColumns(TableInfo tableInfo) {
-        assertThat(String.format(Locale.ENGLISH, "columns from iterator of table %s not in alphabetical order", tableInfo.ident().fqn()), tableInfo, TestingHelpers.isSortedBy(EXTRACT_COLUMN_IDENT));
-        assertThat(String.format(Locale.ENGLISH, "columns of table %s not in alphabetical order", tableInfo.ident().fqn()), tableInfo.columns(), TestingHelpers.isSortedBy(EXTRACT_COLUMN_IDENT));
+        assertThat(
+            String.format(Locale.ENGLISH, "columns from iterator of table %s not in alphabetical order", tableInfo.ident().fqn()),
+            tableInfo,
+            TestingHelpers.isSortedBy(Reference.TO_COLUMN_IDENT));
+        assertThat(
+            String.format(Locale.ENGLISH, "columns of table %s not in alphabetical order", tableInfo.ident().fqn()),
+            tableInfo.columns(),
+            TestingHelpers.isSortedBy(Reference.TO_COLUMN_IDENT));
     }
 }

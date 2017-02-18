@@ -26,37 +26,30 @@ import io.crate.analyze.symbol.InputColumn;
 import io.crate.analyze.symbol.Literal;
 import io.crate.analyze.symbol.Symbol;
 import io.crate.metadata.ColumnIdent;
-import io.crate.metadata.RowGranularity;
-import io.crate.operation.operator.AndOperator;
 import io.crate.test.integration.CrateUnitTest;
-import io.crate.testing.TestingHelpers;
-import io.crate.types.DataTypes;
 import org.elasticsearch.common.collect.MapBuilder;
-import org.elasticsearch.common.io.stream.BytesStreamInput;
 import org.elasticsearch.common.io.stream.BytesStreamOutput;
+import org.elasticsearch.common.io.stream.StreamInput;
 import org.junit.Test;
-
-import java.util.HashMap;
 
 public class WriterProjectionTest extends CrateUnitTest {
 
     @Test
     public void testStreaming() throws Exception {
         WriterProjection p = new WriterProjection(
-                ImmutableList.<Symbol>of(new InputColumn(1)),
-                Literal.newLiteral("/foo.json"),
-                false,
-                WriterProjection.CompressionType.GZIP,
-                MapBuilder.<ColumnIdent, Symbol>newMapBuilder().put(
-                        new ColumnIdent("partitionColumn"), Literal.newLiteral(1)).map(),
-                ImmutableList.of("foo"),
-                WriterProjection.OutputFormat.JSON_OBJECT
+            ImmutableList.<Symbol>of(new InputColumn(1)),
+            Literal.of("/foo.json"),
+            WriterProjection.CompressionType.GZIP,
+            MapBuilder.<ColumnIdent, Symbol>newMapBuilder().put(
+                new ColumnIdent("partitionColumn"), Literal.of(1)).map(),
+            ImmutableList.of("foo"),
+            WriterProjection.OutputFormat.JSON_OBJECT
         );
 
         BytesStreamOutput out = new BytesStreamOutput();
         Projection.toStream(p, out);
 
-        BytesStreamInput in = new BytesStreamInput(out.bytes());
+        StreamInput in = StreamInput.wrap(out.bytes());
         WriterProjection p2 = (WriterProjection) Projection.fromStream(in);
 
         assertEquals(p, p2);

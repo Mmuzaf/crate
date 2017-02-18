@@ -24,14 +24,10 @@ package io.crate.lucene.match;
 import org.apache.lucene.analysis.Analyzer;
 import org.apache.lucene.index.Term;
 import org.apache.lucene.queries.BlendedTermQuery;
-import org.apache.lucene.search.BooleanClause;
-import org.apache.lucene.search.BooleanQuery;
-import org.apache.lucene.search.DisjunctionMaxQuery;
-import org.apache.lucene.search.Query;
+import org.apache.lucene.search.*;
 import org.apache.lucene.util.BytesRef;
 import org.elasticsearch.common.collect.Tuple;
-import org.elasticsearch.index.cache.IndexCache;
-import org.elasticsearch.index.mapper.FieldMapper;
+import org.elasticsearch.index.mapper.MappedFieldType;
 import org.elasticsearch.index.mapper.MapperService;
 
 import javax.annotation.Nullable;
@@ -46,10 +42,9 @@ public class MultiMatchQueryBuilder extends MatchQueryBuilder {
     private GroupQueryBuilder builder = null;
 
     public MultiMatchQueryBuilder(MapperService mapperService,
-                                  IndexCache indexCache,
                                   @Nullable BytesRef matchType,
                                   @Nullable Map options) throws IOException {
-        super(mapperService, indexCache, matchType, options);
+        super(mapperService, matchType, options);
     }
 
     @Override
@@ -73,17 +68,17 @@ public class MultiMatchQueryBuilder extends MatchQueryBuilder {
         builder = null;
         Float boost = options.boost();
         if (boost != null) {
-            query.setBoost(boost);
+            return new BoostQuery(query, boost);
         }
         return query;
     }
 
     @Override
-    protected Query blendTermQuery(Term term, FieldMapper mapper) {
+    protected Query blendTermQuery(Term term, MappedFieldType fieldType) {
         if (builder == null) {
-            super.blendTermQuery(term, mapper);
+            super.blendTermQuery(term, fieldType);
         }
-        return builder.blendTerm(term, mapper);
+        return builder.blendTerm(term, fieldType);
     }
 
     @Override
@@ -92,21 +87,21 @@ public class MultiMatchQueryBuilder extends MatchQueryBuilder {
     }
 
     private class GroupQueryBuilder {
-        protected final boolean groupDismax;
+        private final boolean groupDismax;
         protected final float tieBreaker;
 
-        public GroupQueryBuilder(float tieBreaker) {
+        protected GroupQueryBuilder(float tieBreaker) {
             this(tieBreaker != 1.0f, tieBreaker);
         }
 
-        private GroupQueryBuilder(boolean groupDismax, float tieBreaker) {
+        protected GroupQueryBuilder(boolean groupDismax, float tieBreaker) {
             this.groupDismax = groupDismax;
             this.tieBreaker = tieBreaker;
         }
 
-        public List<Query> buildGroupedQueries(org.elasticsearch.index.query.MultiMatchQueryBuilder.Type type,
-                                               Map<String, Object> fieldNames,
-                                               BytesRef queryString) throws IOException {
+        protected List<Query> buildGroupedQueries(org.elasticsearch.index.query.MultiMatchQueryBuilder.Type type,
+                                                  Map<String, Object> fieldNames,
+                                                  BytesRef queryString) throws IOException {
             List<Query> queries = new ArrayList<>();
             for (Map.Entry<String, Object> entry : fieldNames.entrySet()) {
                 Query query = singleQueryAndApply(
@@ -118,7 +113,7 @@ public class MultiMatchQueryBuilder extends MatchQueryBuilder {
             return queries;
         }
 
-        public Query combineGrouped(List<Query> queries) {
+        protected Query combineGrouped(List<Query> queries) {
             if (queries == null || queries.isEmpty()) {
                 return null;
             }
@@ -128,71 +123,70 @@ public class MultiMatchQueryBuilder extends MatchQueryBuilder {
             if (groupDismax) {
                 return new DisjunctionMaxQuery(queries, tieBreaker);
             } else {
-                final BooleanQuery booleanQuery = new BooleanQuery();
+                BooleanQuery.Builder booleanQuery = new BooleanQuery.Builder();
                 for (Query query : queries) {
                     booleanQuery.add(query, BooleanClause.Occur.SHOULD);
                 }
-                return booleanQuery;
+                return booleanQuery.build();
             }
         }
 
-        public Query blendTerm(Term term, FieldMapper mapper) {
-            return MultiMatchQueryBuilder.super.blendTermQuery(term, mapper);
+        protected Query blendTerm(Term term, MappedFieldType fieldType) {
+            return MultiMatchQueryBuilder.super.blendTermQuery(term, fieldType);
         }
 
-        public boolean forceAnalyzeQueryString() {
+        protected boolean forceAnalyzeQueryString() {
             return false;
         }
     }
 
     private class CrossFieldsQueryBuilder extends GroupQueryBuilder {
-        private FieldAndMapper[] blendedFields;
+        private FieldAndFieldType[] blendedFields;
 
-        public CrossFieldsQueryBuilder(float tieBreaker) {
+        private CrossFieldsQueryBuilder(float tieBreaker) {
             super(false, tieBreaker);
         }
 
         @Override
-        public List<Query> buildGroupedQueries(org.elasticsearch.index.query.MultiMatchQueryBuilder.Type type,
-                                               Map<String, Object> fieldNames,
-                                               BytesRef queryString) throws IOException {
-            Map<Analyzer, List<FieldAndMapper>> groups = new HashMap<>();
+        protected List<Query> buildGroupedQueries(org.elasticsearch.index.query.MultiMatchQueryBuilder.Type type,
+                                                  Map<String, Object> fieldNames,
+                                                  BytesRef queryString) throws IOException {
+            Map<Analyzer, List<FieldAndFieldType>> groups = new HashMap<>();
             List<Tuple<String, Float>> missing = new ArrayList<>();
             for (Map.Entry<String, Object> entry : fieldNames.entrySet()) {
                 String name = entry.getKey();
-                MapperService.SmartNameFieldMappers smartNameFieldMappers = mapperService.smartName(name);
-                if (smartNameFieldMappers != null && smartNameFieldMappers.hasMapper()) {
-                    Analyzer actualAnalyzer = getAnalyzer(smartNameFieldMappers.mapper(), smartNameFieldMappers);
-                    name = smartNameFieldMappers.mapper().names().indexName();
+                MappedFieldType fieldType = mapperService.smartNameFieldType(name);
+                if (fieldType != null) {
+                    Analyzer actualAnalyzer = getAnalyzer(fieldType);
+                    name = fieldType.names().indexName();
                     if (!groups.containsKey(actualAnalyzer)) {
-                        groups.put(actualAnalyzer, new ArrayList<FieldAndMapper>());
+                        groups.put(actualAnalyzer, new ArrayList<FieldAndFieldType>());
                     }
                     Float boost = floatOrNull(entry.getValue());
                     boost = boost == null ? Float.valueOf(1.0f) : boost;
-                    groups.get(actualAnalyzer).add(new FieldAndMapper(name, smartNameFieldMappers.mapper(), boost));
+                    groups.get(actualAnalyzer).add(new FieldAndFieldType(name, fieldType, boost));
                 } else {
                     missing.add(new Tuple<>(name, floatOrNull(entry.getValue())));
                 }
             }
             List<Query> queries = new ArrayList<>();
             for (Tuple<String, Float> tuple : missing) {
-                Query q = singleQueryAndApply(
-                    type.matchQueryType(), tuple.v1(), queryString, tuple.v2());
+                Query q = singleQueryAndApply(type.matchQueryType(), tuple.v1(), queryString, tuple.v2());
                 if (q != null) {
                     queries.add(q);
                 }
             }
-            for (List<FieldAndMapper> group : groups.values()) {
+            for (List<FieldAndFieldType> group : groups.values()) {
                 if (group.size() > 1) {
-                    blendedFields = new FieldAndMapper[group.size()];
+                    blendedFields = new FieldAndFieldType[group.size()];
                     int i = 0;
-                    for (FieldAndMapper fieldAndMapper : group) {
-                        blendedFields[i++] = fieldAndMapper;
+                    for (FieldAndFieldType fieldAndFieldType : group) {
+                        blendedFields[i++] = fieldAndFieldType;
                     }
                 } else {
                     blendedFields = null;
                 }
-                final FieldAndMapper fieldAndMapper= group.get(0);
+                final FieldAndFieldType fieldAndMapper = group.get(0);
                 Query q = singleQueryAndApply(
                     type.matchQueryType(), fieldAndMapper.field, queryString, fieldAndMapper.boost);
                 if (q != null) {
@@ -202,13 +196,15 @@ public class MultiMatchQueryBuilder extends MatchQueryBuilder {
             return queries;
         }
 
-        public boolean forceAnalyzeQueryString() {
+        @Override
+        protected boolean forceAnalyzeQueryString() {
             return blendedFields != null;
         }
 
-        public Query blendTerm(Term term, FieldMapper mapper) {
+        @Override
+        protected Query blendTerm(Term term, MappedFieldType fieldType) {
             if (blendedFields == null) {
-                return super.blendTerm(term, mapper);
+                return super.blendTerm(term, fieldType);
             }
             final Term[] terms = new Term[blendedFields.length];
             float[] blendedBoost = new float[blendedFields.length];
@@ -228,20 +224,20 @@ public class MultiMatchQueryBuilder extends MatchQueryBuilder {
         }
     }
 
-    private static class FieldAndMapper {
-        private final String field;
-        private final FieldMapper mapper;
-        private final float boost;
+    private static final class FieldAndFieldType {
+        final String field;
+        final MappedFieldType fieldType;
+        final float boost;
 
-        private FieldAndMapper(String field, FieldMapper mapper, float boost) {
+        private FieldAndFieldType(String field, MappedFieldType fieldType, float boost) {
             this.field = field;
-            this.mapper = mapper;
+            this.fieldType = fieldType;
             this.boost = boost;
         }
 
-        public Term newTerm(String value) {
+        private Term newTerm(String value) {
             try {
-                final BytesRef bytesRef = mapper.indexedValueForSearch(value);
+                final BytesRef bytesRef = fieldType.indexedValueForSearch(value);
                 return new Term(field, bytesRef);
             } catch (Exception ex) {
                 // we can't parse it just use the incoming value -- it will
@@ -250,5 +246,4 @@ public class MultiMatchQueryBuilder extends MatchQueryBuilder {
             return new Term(field, value);
         }
     }
-
 }

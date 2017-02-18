@@ -22,10 +22,7 @@
 package io.crate.operation.reference.file;
 
 import io.crate.metadata.ColumnIdent;
-import io.crate.metadata.doc.DocSysColumns;
-import io.crate.operation.collect.files.CollectorContext;
 import io.crate.operation.collect.files.LineCollectorExpression;
-import org.apache.lucene.util.BytesRef;
 
 public class ColumnExtractingLineExpression extends LineCollectorExpression<Object> {
 
@@ -38,15 +35,11 @@ public class ColumnExtractingLineExpression extends LineCollectorExpression<Obje
 
     @Override
     public Object value() {
-        Object value = context.get(columnIdent);
-        if (!columnIdent.equals(DocSysColumns.RAW) && value instanceof String)  {
-            return new BytesRef((String) value);
-        }
-        return value;
+        return context.get(columnIdent);
     }
 
     @Override
-    public void startCollect(CollectorContext context) {
-        this.context = context.lineContext();
+    public void startCollect(LineContext context) {
+        this.context = context;
     }
 }

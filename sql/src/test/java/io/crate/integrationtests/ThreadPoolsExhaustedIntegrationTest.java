@@ -21,30 +21,56 @@
 
 package io.crate.integrationtests;
 
-import io.crate.action.sql.SQLAction;
-import io.crate.action.sql.SQLRequest;
-import io.crate.action.sql.SQLResponse;
+import io.crate.testing.SQLBulkResponse;
+import io.crate.testing.SQLResponse;
+import io.crate.testing.SQLTransportExecutor;
+import io.crate.testing.UseJdbc;
 import org.elasticsearch.action.ActionFuture;
-import org.elasticsearch.common.settings.ImmutableSettings;
 import org.elasticsearch.common.settings.Settings;
-import org.elasticsearch.test.ElasticsearchIntegrationTest;
+import org.elasticsearch.test.ESIntegTestCase;
 import org.hamcrest.Matchers;
 import org.junit.Test;
 
 import java.util.ArrayList;
 import java.util.List;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.TimeoutException;
 
-@ElasticsearchIntegrationTest.ClusterScope(maxNumDataNodes = 2)
+import static org.hamcrest.Matchers.is;
+
+@ESIntegTestCase.ClusterScope(maxNumDataNodes = 2)
+@UseJdbc
 public class ThreadPoolsExhaustedIntegrationTest extends SQLTransportIntegrationTest {
 
     @Override
     protected Settings nodeSettings(int nodeOrdinal) {
-        return ImmutableSettings.settingsBuilder()
-                .put(super.nodeSettings(nodeOrdinal))
-                .put("threadpool.search.size", 2)
-                .put("threadpool.search.queue_size", 2)
-                .build();
+        return Settings.settingsBuilder()
+            .put(super.nodeSettings(nodeOrdinal))
+            .put("threadpool.search.size", 2)
+            .put("threadpool.search.queue_size", 2)
+            .put("threadpool.bulk.size", 2)
+            .put("threadpool.bulk.queue_size", 2)
+            .build();
+    }
+
+    @Test
+    public void testFailingUpdateBulkOperation() throws Exception {
+        execute("create table t (x int) with (number_of_replicas = 0)");
+        ensureYellow();
+        bulkInsert(2);
+        // fails because of too small bulk size / queue_size
+        SQLBulkResponse resp = execute("update t set x = ? where x = ?", new Object[][]{
+            new Object[]{1, 1},
+            new Object[]{2, 2},
+            new Object[]{3, 3},
+            new Object[]{4, 4},
+            new Object[]{5, 5},
+            new Object[]{6, 6},
+        });
+        assertThat(resp.results().length, is(6));
+        for (SQLBulkResponse.Result result : resp.results()) {
+            assertThat(result.rowCount(), is(-2L));
+        }
     }
 
     @Test
@@ -55,24 +81,20 @@ public class ThreadPoolsExhaustedIntegrationTest extends SQLTransportIntegration
 
         List<ActionFuture<SQLResponse>> futures = new ArrayList<>();
         for (int i = 0; i < 1000; i++) {
-            ActionFuture<SQLResponse> future = client().execute(
-                    SQLAction.INSTANCE, new SQLRequest("select * from t limit ?", new Object[] { 10 }));
+            ActionFuture<SQLResponse> future = sqlExecutor.execute(
+                "select * from t limit ?", new Object[]{10});
             futures.add(future);
         }
 
         for (ActionFuture<SQLResponse> future : futures) {
             try {
-                future.get(500, TimeUnit.MILLISECONDS);
+                future.get(SQLTransportExecutor.REQUEST_TIMEOUT.getMillis(), TimeUnit.MILLISECONDS);
+            } catch (TimeoutException e) {
+                fail("query run into a timeout");
             } catch (Exception e) {
                 assertThat(e.getMessage(), Matchers.containsString("rejected execution"));
             }
         }
-
-        /**
-         * if there is a rejection exception somewhere the query execution is aborted *before*
-         * all contexts are created. We'll leave it up to the context reaper to remove dangling contexts
-         */
-        runJobContextReapers();
     }
 
     private void bulkInsert(int docCount) {
@@ -80,6 +102,9 @@ public class ThreadPoolsExhaustedIntegrationTest extends SQLTransportIntegration
         for (int i = 0; i < docCount; i++) {
             bulkArgs[i][0] = i;
         }
-        execute("insert into t (x) values (?)", bulkArgs);
+        SQLBulkResponse response = execute("insert into t (x) values (?)", bulkArgs);
+        for (SQLBulkResponse.Result result : response.results()) {
+            assertThat(result.rowCount(), is(1L));
+        }
     }
 }

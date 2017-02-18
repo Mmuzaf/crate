@@ -21,15 +21,17 @@
 
 package io.crate.metadata;
 
+import io.crate.operation.reference.ReferenceResolver;
+
 import java.util.HashMap;
 import java.util.Map;
 
-public abstract class AbstractReferenceResolver implements NestedReferenceResolver {
+public abstract class AbstractReferenceResolver implements ReferenceResolver<ReferenceImplementation<?>> {
 
     protected final Map<ReferenceIdent, ReferenceImplementation> implementations = new HashMap<>();
 
     @Override
-    public ReferenceImplementation getImplementation(ReferenceInfo refInfo) {
+    public ReferenceImplementation getImplementation(Reference refInfo) {
         ReferenceIdent ident = refInfo.ident();
         if (ident.isColumn()) {
             return implementations.get(ident);

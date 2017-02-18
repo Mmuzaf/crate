@@ -26,42 +26,40 @@ import com.google.common.util.concurrent.SettableFuture;
 import org.elasticsearch.cluster.*;
 import org.elasticsearch.cluster.block.ClusterBlocks;
 import org.elasticsearch.cluster.metadata.MetaData;
-import org.elasticsearch.common.Priority;
+import org.elasticsearch.common.component.AbstractLifecycleComponent;
 import org.elasticsearch.common.inject.Inject;
-import org.elasticsearch.common.logging.ESLogger;
-import org.elasticsearch.common.logging.Loggers;
-import org.elasticsearch.common.settings.ImmutableSettings;
+import org.elasticsearch.common.inject.Singleton;
+import org.elasticsearch.common.settings.Settings;
 
 import static org.elasticsearch.cluster.ClusterState.builder;
 
-public class ClusterIdService implements ClusterStateListener {
+@Singleton
+public class ClusterIdService extends AbstractLifecycleComponent<ClusterIdService> implements ClusterStateListener {
+
+    private static final String CLUSTER_ID_SETTINGS_KEY = "cluster_id";
 
     private final ClusterService clusterService;
-    private static final ESLogger logger = Loggers.getLogger(ClusterIdService.class);
-    private ClusterId clusterId = null;
     private final SettableFuture<ClusterId> clusterIdFuture = SettableFuture.create();
+    private ClusterId clusterId = null;
 
-    public static final String clusterIdSettingsKey = "cluster_id";
 
     @Inject
-    public ClusterIdService(ClusterService clusterService) {
+    public ClusterIdService(Settings settings, ClusterService clusterService) {
+        super(settings);
         this.clusterService = clusterService;
-
-        // Add to listen for state changes
-        this.clusterService.add(this);
     }
 
     @Override
     public void clusterChanged(ClusterChangedEvent event) {
         if (logger.isTraceEnabled()) {
             logger.trace("[{}] Receiving new cluster state, reason {}",
-                    clusterService.state().nodes().localNodeId(), event.source());
+                clusterService.state().nodes().getLocalNodeId(), event.source());
         }
         if (event.source().equals("local-gateway-elected-state")) {
             // State recovered, read cluster_id
             boolean success = applyClusterIdFromSettings();
 
-            if (event.localNodeMaster() && success == false) {
+            if (event.localNodeMaster() && !success) {
                 // None found, generate cluster_id and broadcast it to all nodes
                 generateClusterId();
                 saveClusterIdToSettings();
@@ -84,14 +82,14 @@ public class ClusterIdService implements ClusterStateListener {
 
             if (logger.isDebugEnabled()) {
                 logger.debug("[{}] Generated ClusterId {}",
-                        clusterService.state().nodes().localNodeId(), clusterId.value());
+                    clusterService.state().nodes().getLocalNodeId(), clusterId.value());
             }
             clusterIdFuture.set(clusterId);
         }
     }
 
     private String readClusterIdFromSettings() {
-        return clusterService.state().metaData().transientSettings().get(clusterIdSettingsKey);
+        return clusterService.state().metaData().transientSettings().get(CLUSTER_ID_SETTINGS_KEY);
     }
 
     private boolean applyClusterIdFromSettings() {
@@ -105,7 +103,7 @@ public class ClusterIdService implements ClusterStateListener {
 
             if (logger.isDebugEnabled()) {
                 logger.debug("[{}] Read ClusterId from settings {}",
-                    clusterService.state().nodes().localNodeId(), clusterId.value());
+                    clusterService.state().nodes().getLocalNodeId(), clusterId.value());
             }
             clusterIdFuture.set(clusterId);
         }
@@ -118,27 +116,21 @@ public class ClusterIdService implements ClusterStateListener {
         if (logger.isTraceEnabled()) {
             logger.trace("Announcing new cluster_id to all nodes");
         }
-        clusterService.submitStateUpdateTask("new_cluster_id", Priority.URGENT, new ClusterStateUpdateTask() {
-
+        clusterService.submitStateUpdateTask("new_cluster_id", new ClusterStateUpdateTask() {
             @Override
-            public void onFailure(String source, Throwable t) {
-                logger.error("failed to perform [{}]", t, source);
-            }
-
-            @Override
-            public ClusterState execute(final ClusterState currentState) {
-                ImmutableSettings.Builder transientSettings = ImmutableSettings.settingsBuilder();
+            public ClusterState execute(ClusterState currentState) throws Exception {
+                Settings.Builder transientSettings = Settings.settingsBuilder();
                 transientSettings.put(currentState.metaData().transientSettings());
-                transientSettings.put(clusterIdSettingsKey, clusterId.value().toString());
+                transientSettings.put(CLUSTER_ID_SETTINGS_KEY, clusterId.value().toString());
 
                 MetaData.Builder metaData = MetaData.builder(currentState.metaData())
-                        .persistentSettings(currentState.metaData().persistentSettings())
-                        .transientSettings(transientSettings.build());
+                    .persistentSettings(currentState.metaData().persistentSettings())
+                    .transientSettings(transientSettings.build());
 
                 ClusterBlocks.Builder blocks = ClusterBlocks.builder().blocks(currentState.blocks());
                 boolean updatedReadOnly =
-                        metaData.persistentSettings().getAsBoolean(MetaData.SETTING_READ_ONLY, false)
-                        || metaData.transientSettings().getAsBoolean(MetaData.SETTING_READ_ONLY, false);
+                    metaData.persistentSettings().getAsBoolean(MetaData.SETTING_READ_ONLY, false)
+                    || metaData.transientSettings().getAsBoolean(MetaData.SETTING_READ_ONLY, false);
                 if (updatedReadOnly) {
                     blocks.addGlobalBlock(MetaData.CLUSTER_READ_ONLY_BLOCK);
                 } else {
@@ -148,8 +140,25 @@ public class ClusterIdService implements ClusterStateListener {
                 return builder(currentState).metaData(metaData).blocks(blocks).build();
             }
 
+            @Override
+            public void onFailure(String source, Throwable t) {
+                logger.error("failed to perform [{}]", t, source);
+            }
         });
-
     }
 
+    @Override
+    protected void doStart() {
+        // add listener here to avoid guice proxy errors if the ClusterService could not be build
+        clusterService.add(this);
+    }
+
+    @Override
+    protected void doStop() {
+        clusterService.remove(this);
+    }
+
+    @Override
+    protected void doClose() {
+    }
 }

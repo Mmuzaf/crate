@@ -22,13 +22,14 @@
 
 package io.crate.executor.transport;
 
+import io.crate.exceptions.JobKilledException;
 import org.elasticsearch.ExceptionsHelper;
 import org.elasticsearch.action.support.ActionFilters;
 import org.elasticsearch.action.support.TransportActions;
 import org.elasticsearch.cluster.ClusterService;
-import org.elasticsearch.cluster.ClusterState;
+import org.elasticsearch.cluster.action.index.MappingUpdatedAction;
 import org.elasticsearch.cluster.action.shard.ShardStateAction;
-import org.elasticsearch.cluster.routing.ShardIterator;
+import org.elasticsearch.cluster.metadata.IndexNameExpressionResolver;
 import org.elasticsearch.common.inject.Inject;
 import org.elasticsearch.common.inject.Singleton;
 import org.elasticsearch.common.settings.Settings;
@@ -41,7 +42,6 @@ import org.elasticsearch.indices.IndicesService;
 import org.elasticsearch.threadpool.ThreadPool;
 import org.elasticsearch.transport.TransportService;
 
-import java.util.concurrent.CancellationException;
 import java.util.concurrent.atomic.AtomicBoolean;
 
 @Singleton
@@ -52,22 +52,15 @@ public class TransportShardDeleteAction extends TransportShardAction<ShardDelete
     @Inject
     public TransportShardDeleteAction(Settings settings,
                                       TransportService transportService,
+                                      MappingUpdatedAction mappingUpdatedAction,
+                                      IndexNameExpressionResolver indexNameExpressionResolver,
                                       ClusterService clusterService,
                                       IndicesService indicesService,
                                       ThreadPool threadPool,
                                       ShardStateAction shardStateAction,
                                       ActionFilters actionFilters) {
-        super(settings, ACTION_NAME, transportService, clusterService, indicesService, threadPool, shardStateAction, actionFilters);
-    }
-
-    @Override
-    protected ShardDeleteRequest newRequestInstance() {
-        return new ShardDeleteRequest();
-    }
-
-    @Override
-    protected ShardDeleteRequest newReplicaRequestInstance() {
-        return new ShardDeleteRequest();
+        super(settings, ACTION_NAME, transportService, mappingUpdatedAction, indexNameExpressionResolver,
+            clusterService, indicesService, threadPool, shardStateAction, actionFilters, ShardDeleteRequest.class);
     }
 
     @Override
@@ -76,20 +69,20 @@ public class TransportShardDeleteAction extends TransportShardAction<ShardDelete
     }
 
     @Override
-    protected ShardIterator shards(ClusterState clusterState, InternalRequest request) {
-        return clusterState.routingTable().index(request.concreteIndex()).shard(request.request().shardId()).shardsIt();
-    }
-
-    @Override
-    protected ShardResponse processRequestItems(ShardId shardId, ShardDeleteRequest request, AtomicBoolean killed) {
+    protected ShardResponse processRequestItems(ShardId shardId, ShardDeleteRequest request, AtomicBoolean killed) throws InterruptedException {
         ShardResponse shardResponse = new ShardResponse();
         IndexService indexService = indicesService.indexServiceSafe(request.index());
-        IndexShard indexShard = indexService.shardSafe(request.shardId());
+        IndexShard indexShard = indexService.shardSafe(shardId.id());
         for (int i = 0; i < request.itemIndices().size(); i++) {
             int location = request.itemIndices().get(i);
             ShardDeleteRequest.Item item = request.items().get(i);
             if (killed.get()) {
-                throw new CancellationException();
+                // set failure on response, mark current item and skip all next items.
+                // this way replica operation will be executed, but only items already processed here
+                // will be processed on the replica
+                request.skipFromLocation(location);
+                shardResponse.failure(new InterruptedException(JobKilledException.MESSAGE));
+                break;
             }
             try {
                 boolean found = shardDeleteOperationOnPrimary(request, item, indexShard);
@@ -98,12 +91,12 @@ public class TransportShardDeleteAction extends TransportShardAction<ShardDelete
                     shardResponse.add(location);
                 } else {
                     logger.debug("{} failed to execute delete for [{}]/[{}], doc not found",
-                            request.shardId(), request.type(), item.id());
+                        request.shardId(), request.type(), item.id());
                     shardResponse.add(location,
-                            new ShardResponse.Failure(
-                                    item.id(),
-                                    "Document not found while deleting",
-                                    false));
+                        new ShardResponse.Failure(
+                            item.id(),
+                            "Document not found while deleting",
+                            false));
 
                 }
             } catch (Throwable t) {
@@ -111,12 +104,12 @@ public class TransportShardDeleteAction extends TransportShardAction<ShardDelete
                     throw t;
                 } else {
                     logger.debug("{} failed to execute delete for [{}]/[{}]",
-                            t, request.shardId(), request.type(), item.id());
+                        t, request.shardId(), request.type(), item.id());
                     shardResponse.add(location,
-                            new ShardResponse.Failure(
-                                    item.id(),
-                                    ExceptionsHelper.detailedMessage(t),
-                                    (t instanceof VersionConflictEngineException)));
+                        new ShardResponse.Failure(
+                            item.id(),
+                            ExceptionsHelper.detailedMessage(t),
+                            (t instanceof VersionConflictEngineException)));
                 }
             }
         }
@@ -125,15 +118,19 @@ public class TransportShardDeleteAction extends TransportShardAction<ShardDelete
     }
 
     @Override
-    protected void processRequestItemsOnReplica(ShardId shardId, ShardDeleteRequest request, AtomicBoolean killed) {
+    protected void processRequestItemsOnReplica(ShardId shardId, ShardDeleteRequest request) {
         IndexService indexService = indicesService.indexServiceSafe(request.index());
-        IndexShard indexShard = indexService.shardSafe(request.shardId());
-        for (ShardDeleteRequest.Item item : request.items()) {
-            if (killed.get()) {
-                throw new CancellationException();
+        IndexShard indexShard = indexService.shardSafe(shardId.id());
+        for (int i = 0; i < request.itemIndices().size(); i++) {
+            int location = request.itemIndices().get(i);
+            if (request.skipFromLocation() == location) {
+                // skipping this and all next items, the primary did not processed them (mostly due to a kill request)
+                break;
             }
+
+            ShardDeleteRequest.Item item = request.items().get(i);
             try {
-                Engine.Delete delete = indexShard.prepareDelete(request.type(), item.id(), item.version(), item.versionType(), Engine.Operation.Origin.REPLICA);
+                Engine.Delete delete = indexShard.prepareDeleteOnReplica(request.type(), item.id(), item.version(), item.versionType());
                 indexShard.delete(delete);
                 logger.trace("{} REPLICA: successfully deleted [{}]/[{}]", request.shardId(), request.type(), item.id());
             } catch (Throwable e) {
@@ -148,13 +145,13 @@ public class TransportShardDeleteAction extends TransportShardAction<ShardDelete
     }
 
     private boolean shardDeleteOperationOnPrimary(ShardDeleteRequest request, ShardDeleteRequest.Item item, IndexShard indexShard) {
-        Engine.Delete delete = indexShard.prepareDelete(request.type(), item.id(), item.version(), item.versionType(), Engine.Operation.Origin.PRIMARY);
+        Engine.Delete delete = indexShard.prepareDeleteOnPrimary(request.type(), item.id(), item.version(), item.versionType());
         indexShard.delete(delete);
         // update the request with the version so it will go to the replicas
         item.versionType(delete.versionType().versionTypeForReplicationAndRecovery());
         item.version(delete.version());
 
-        assert item.versionType().validateVersionForWrites(item.version());
+        assert item.versionType().validateVersionForWrites(item.version()) : "item.version() must be valid";
 
         return delete.found();
     }

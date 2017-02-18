@@ -46,8 +46,8 @@ public class AbstractReferenceResolverTest {
     @Test
     public void testGetImplementation() throws Exception {
         RefResolver refResolver = new RefResolver();
-        ReferenceImplementation implementation = refResolver.getImplementation(new ReferenceInfo(
-                new ReferenceIdent(USERS_TI, new ColumnIdent("obj", Arrays.asList("x", "z"))), RowGranularity.DOC, DataTypes.STRING));
+        ReferenceImplementation implementation = refResolver.getImplementation(new Reference(
+            new ReferenceIdent(USERS_TI, new ColumnIdent("obj", Arrays.asList("x", "z"))), RowGranularity.DOC, DataTypes.STRING));
 
         assertThat(implementation, Matchers.nullValue());
     }

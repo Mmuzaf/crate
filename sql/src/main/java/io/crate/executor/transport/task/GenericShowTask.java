@@ -21,24 +21,23 @@
 
 package io.crate.executor.transport.task;
 
-import com.google.common.collect.ImmutableList;
-import com.google.common.util.concurrent.ListenableFuture;
-import com.google.common.util.concurrent.SettableFuture;
 import io.crate.action.sql.ShowStatementDispatcher;
 import io.crate.analyze.AbstractShowAnalyzedStatement;
+import io.crate.data.Row;
+import io.crate.data.Row1;
 import io.crate.executor.Task;
-import io.crate.executor.TaskResult;
+import io.crate.operation.projectors.RepeatHandle;
+import io.crate.operation.projectors.RowReceiver;
 
 import java.util.List;
 import java.util.UUID;
+import java.util.concurrent.CompletableFuture;
 
 public class GenericShowTask implements Task {
 
     private final UUID jobId;
     private final ShowStatementDispatcher showStatementDispatcher;
     private final AbstractShowAnalyzedStatement statement;
-    private final SettableFuture<TaskResult> result = SettableFuture.create();
-    private final List<ListenableFuture<TaskResult>> results = ImmutableList.<ListenableFuture<TaskResult>>of(result);
 
     public GenericShowTask(UUID jobId, ShowStatementDispatcher showStatementDispatcher, AbstractShowAnalyzedStatement statement) {
         this.jobId = jobId;
@@ -47,21 +46,17 @@ public class GenericShowTask implements Task {
     }
 
     @Override
-    public void start() {
+    public void execute(RowReceiver rowReceiver, Row parameters) {
         try {
-            result.set(showStatementDispatcher.process(statement, jobId));
-        } catch (Throwable e) {
-            result.setException(e);
+            rowReceiver.setNextRow(new Row1(showStatementDispatcher.process(statement, jobId)));
+            rowReceiver.finish(RepeatHandle.UNSUPPORTED);
+        } catch (Throwable t) {
+            rowReceiver.fail(t);
         }
     }
 
     @Override
-    public List<? extends ListenableFuture<TaskResult>> result() {
-        return results;
-    }
-
-    @Override
-    public void upstreamResult(List<? extends ListenableFuture<TaskResult>> result) {
-        throw new UnsupportedOperationException("GenericShowTask doesn't support upstreamResults");
+    public List<CompletableFuture<Long>> executeBulk() {
+        throw new UnsupportedOperationException("show task cannot be executed as bulk operation");
     }
 }

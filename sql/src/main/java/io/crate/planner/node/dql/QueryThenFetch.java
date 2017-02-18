@@ -23,36 +23,28 @@
 package io.crate.planner.node.dql;
 
 import io.crate.planner.Plan;
-import io.crate.planner.PlanAndPlannedAnalyzedRelation;
 import io.crate.planner.PlanVisitor;
-import io.crate.planner.distribution.UpstreamPhase;
+import io.crate.planner.PositionalOrderBy;
+import io.crate.planner.ResultDescription;
+import io.crate.planner.distribution.DistributionInfo;
 import io.crate.planner.node.fetch.FetchPhase;
 import io.crate.planner.projection.Projection;
 
 import javax.annotation.Nullable;
 import java.util.UUID;
 
-public class QueryThenFetch extends PlanAndPlannedAnalyzedRelation {
+public class QueryThenFetch implements Plan {
 
     private final FetchPhase fetchPhase;
     private final Plan subPlan;
-    private final MergePhase localMerge;
-    private final UUID id;
 
-    public QueryThenFetch(Plan subPlan, FetchPhase fetchPhase, @Nullable MergePhase localMerge, UUID id) {
+    public QueryThenFetch(Plan subPlan, FetchPhase fetchPhase) {
         this.subPlan = subPlan;
         this.fetchPhase = fetchPhase;
-        this.localMerge = localMerge;
-        this.id = id;
     }
 
     public FetchPhase fetchPhase() {
         return fetchPhase;
-    }
-
-    @Nullable
-    public MergePhase localMerge() {
-        return localMerge;
     }
 
     public Plan subPlan() {
@@ -66,22 +58,25 @@ public class QueryThenFetch extends PlanAndPlannedAnalyzedRelation {
 
     @Override
     public UUID jobId() {
-        return id;
+        return subPlan.jobId();
     }
 
     @Override
-    public void addProjection(Projection projection) {
-        throw new UnsupportedOperationException("Adding projections to QTF is not possible");
+    public void addProjection(Projection projection,
+                              @Nullable Integer newLimit,
+                              @Nullable Integer newOffset,
+                              @Nullable Integer newNumOutputs,
+                              @Nullable PositionalOrderBy newOrderBy) {
+        subPlan.addProjection(projection, newLimit, newOffset, newNumOutputs, newOrderBy);
     }
 
     @Override
-    public boolean resultIsDistributed() {
-        return false;
+    public ResultDescription resultDescription() {
+        return subPlan.resultDescription();
     }
 
     @Override
-    public UpstreamPhase resultPhase() {
-        assert localMerge != null;
-        return localMerge;
+    public void setDistributionInfo(DistributionInfo distributionInfo) {
+        subPlan.setDistributionInfo(distributionInfo);
     }
 }

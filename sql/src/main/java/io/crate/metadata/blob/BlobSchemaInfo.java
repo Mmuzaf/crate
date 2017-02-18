@@ -27,57 +27,47 @@ import com.google.common.cache.CacheLoader;
 import com.google.common.cache.LoadingCache;
 import com.google.common.collect.FluentIterable;
 import com.google.common.util.concurrent.UncheckedExecutionException;
-import io.crate.blob.BlobEnvironment;
-import io.crate.blob.v2.BlobIndices;
-import io.crate.exceptions.TableUnknownException;
+import io.crate.blob.v2.BlobIndex;
+import io.crate.exceptions.ResourceUnknownException;
 import io.crate.exceptions.UnhandledServerException;
-import io.crate.metadata.Functions;
 import io.crate.metadata.TableIdent;
 import io.crate.metadata.table.SchemaInfo;
 import io.crate.metadata.table.TableInfo;
 import org.elasticsearch.cluster.ClusterChangedEvent;
 import org.elasticsearch.cluster.ClusterService;
-import org.elasticsearch.cluster.ClusterStateListener;
 import org.elasticsearch.common.inject.Inject;
-import org.elasticsearch.env.Environment;
 
+import javax.annotation.Nonnull;
 import javax.annotation.Nullable;
 import java.util.Arrays;
 import java.util.Iterator;
 import java.util.concurrent.ExecutionException;
 
-public class BlobSchemaInfo implements SchemaInfo, ClusterStateListener {
+public class BlobSchemaInfo implements SchemaInfo {
 
     public static final String NAME = "blob";
 
     private final ClusterService clusterService;
-    private final BlobEnvironment blobEnvironment;
-    private final Environment environment;
-    private final Functions functions;
+    private final BlobTableInfoFactory blobTableInfoFactory;
 
     private final LoadingCache<String, BlobTableInfo> cache = CacheBuilder.newBuilder()
-            .maximumSize(10000)
-            .build(
-                    new CacheLoader<String, BlobTableInfo>() {
-                        @Override
-                        public BlobTableInfo load(String key) throws Exception {
-                            return innerGetTableInfo(key);
-                        }
-                    }
-            );
+        .maximumSize(10000)
+        .build(
+            new CacheLoader<String, BlobTableInfo>() {
+                @Override
+                public BlobTableInfo load(@Nonnull String key) throws Exception {
+                    return innerGetTableInfo(key);
+                }
+            }
+        );
 
     private final Function<String, TableInfo> tableInfoFunction;
 
     @Inject
     public BlobSchemaInfo(ClusterService clusterService,
-                          BlobEnvironment blobEnvironment,
-                          Environment environment,
-                          Functions functions) {
+                          BlobTableInfoFactory blobTableInfoFactory) {
         this.clusterService = clusterService;
-        this.blobEnvironment = blobEnvironment;
-        this.environment = environment;
-        this.functions = functions;
-        clusterService.add(this);
+        this.blobTableInfoFactory = blobTableInfoFactory;
         tableInfoFunction = new Function<String, TableInfo>() {
             @Nullable
             @Override
@@ -88,9 +78,7 @@ public class BlobSchemaInfo implements SchemaInfo, ClusterStateListener {
     }
 
     private BlobTableInfo innerGetTableInfo(String name) {
-        BlobTableInfoBuilder builder = new BlobTableInfoBuilder(
-                new TableIdent(NAME, name), clusterService, blobEnvironment, environment, functions);
-        return builder.build();
+        return blobTableInfoFactory.create(new TableIdent(NAME, name), clusterService);
     }
 
     @Override
@@ -100,12 +88,11 @@ public class BlobSchemaInfo implements SchemaInfo, ClusterStateListener {
         } catch (ExecutionException e) {
             throw new UnhandledServerException("Failed to get TableInfo", e.getCause());
         } catch (UncheckedExecutionException e) {
-            if (e.getCause() instanceof TableUnknownException) {
+            if (e.getCause() instanceof ResourceUnknownException) {
                 return null;
             }
             throw e;
         }
-
     }
 
     @Override
@@ -114,17 +101,12 @@ public class BlobSchemaInfo implements SchemaInfo, ClusterStateListener {
     }
 
     @Override
-    public boolean systemSchema() {
-        return true;
-    }
-
-    @Override
     public void invalidateTableCache(String tableName) {
         cache.invalidate(tableName);
     }
 
     @Override
-    public void clusterChanged(ClusterChangedEvent event) {
+    public void update(ClusterChangedEvent event) {
         if (event.metaDataChanged()) {
             cache.invalidateAll();
         }
@@ -139,13 +121,12 @@ public class BlobSchemaInfo implements SchemaInfo, ClusterStateListener {
         // TODO: once we support closing/opening tables change this to concreteIndices()
         // and add  state info to the TableInfo.
         return FluentIterable
-                .from(Arrays.asList(clusterService.state().metaData().concreteAllOpenIndices()))
-                .filter(BlobIndices.indicesFilter)
-                .transform(BlobIndices.STRIP_PREFIX);
+            .from(Arrays.asList(clusterService.state().metaData().concreteAllOpenIndices()))
+            .filter(BlobIndex::isBlobIndex)
+            .transform(BlobIndex::stripPrefix);
     }
 
     @Override
     public void close() throws Exception {
-        clusterService.remove(this);
     }
 }

@@ -23,19 +23,23 @@ package io.crate.types;
 
 import io.crate.Streamer;
 import io.crate.core.collections.MapComparator;
+import org.apache.lucene.util.BytesRef;
 import org.elasticsearch.common.io.stream.StreamInput;
 import org.elasticsearch.common.io.stream.StreamOutput;
+import org.elasticsearch.common.xcontent.XContentParser;
+import org.elasticsearch.common.xcontent.json.JsonXContent;
 
 import java.io.IOException;
 import java.util.Map;
 
-public class ObjectType extends DataType<Map<String,Object>>
-        implements Streamer<Map<String, Object>>, DataTypeFactory {
+public class ObjectType extends DataType<Map<String, Object>>
+    implements Streamer<Map<String, Object>>, DataTypeFactory {
 
     public static final ObjectType INSTANCE = new ObjectType();
     public static final int ID = 12;
 
-    private ObjectType() {}
+    private ObjectType() {
+    }
 
     @Override
     public int id() {
@@ -55,7 +59,19 @@ public class ObjectType extends DataType<Map<String,Object>>
     @Override
     @SuppressWarnings("unchecked")
     public Map<String, Object> value(Object value) {
-        return (Map<String, Object>)value;
+        if (value instanceof BytesRef) {
+            return mapFromBytesRef((BytesRef) value);
+        }
+        return (Map<String, Object>) value;
+    }
+
+    private static Map<String,Object> mapFromBytesRef(BytesRef value) {
+        try {
+            XContentParser parser = JsonXContent.jsonXContent.createParser(value.bytes, value.offset, value.length);
+            return parser.map();
+        } catch (IOException e) {
+            throw new RuntimeException(e);
+        }
     }
 
     @Override

@@ -24,14 +24,14 @@ package io.crate.operation.fetch;
 import io.crate.analyze.symbol.FetchReference;
 import io.crate.analyze.symbol.Field;
 import io.crate.analyze.symbol.InputColumn;
-import io.crate.analyze.symbol.Reference;
-import io.crate.core.collections.Row;
+import io.crate.data.Row;
 import io.crate.metadata.Functions;
+import io.crate.metadata.Reference;
 import io.crate.metadata.RowGranularity;
 import io.crate.metadata.TableIdent;
 import io.crate.operation.BaseImplementationSymbolVisitor;
 import io.crate.operation.Input;
-import io.crate.operation.projectors.FetchProjector;
+import io.crate.operation.projectors.fetch.FetchProjector;
 import io.crate.planner.node.fetch.FetchSource;
 
 import java.util.Map;
@@ -46,9 +46,10 @@ public class FetchRowInputSymbolVisitor extends BaseImplementationSymbolVisitor<
         private Map<TableIdent, FetchSource> fetchSources;
         private final FetchProjector.ArrayBackedRow inputRow = new FetchProjector.ArrayBackedRow();
         private final int[] docIdPositions;
+        private final Object[][] nullCells;
 
         public Context(Map<TableIdent, FetchSource> fetchSources) {
-            assert !fetchSources.isEmpty();
+            assert !fetchSources.isEmpty() : "fetchSources must not be empty";
             this.fetchSources = fetchSources;
 
             int numDocIds = 0;
@@ -59,6 +60,7 @@ public class FetchRowInputSymbolVisitor extends BaseImplementationSymbolVisitor<
             this.fetchRows = new FetchProjector.ArrayBackedRow[numDocIds];
             this.docIdPositions = new int[numDocIds];
             this.partitionRows = new FetchProjector.ArrayBackedRow[numDocIds];
+            nullCells = new Object[numDocIds][];
 
             int idx = 0;
             for (FetchSource fetchSource : fetchSources.values()) {
@@ -68,6 +70,7 @@ public class FetchRowInputSymbolVisitor extends BaseImplementationSymbolVisitor<
                     if (!fetchSource.partitionedByColumns().isEmpty()) {
                         partitionRows[idx] = new FetchProjector.ArrayBackedRow();
                     }
+                    nullCells[idx] = new Object[fetchSource.references().size()];
                     idx++;
                 }
             }
@@ -92,6 +95,10 @@ public class FetchRowInputSymbolVisitor extends BaseImplementationSymbolVisitor<
             return inputRow;
         }
 
+        public Object[][] nullCells() {
+            return nullCells;
+        }
+
         public Input<?> allocateInput(int index) {
             return new RowInput(inputRow, index);
         }
@@ -101,10 +108,10 @@ public class FetchRowInputSymbolVisitor extends BaseImplementationSymbolVisitor<
             int fetchIdx = 0;
             FetchSource fs = null;
             for (FetchSource fetchSource : fetchSources.values()) {
-                idx = fetchSource.partitionedByColumns().indexOf(fetchReference.ref().info());
+                idx = fetchSource.partitionedByColumns().indexOf(fetchReference.ref());
                 if (idx >= 0) {
                     for (InputColumn col : fetchSource.docIdCols()) {
-                        if (col.equals(fetchReference.docId())){
+                        if (col.equals(fetchReference.docId())) {
                             fs = fetchSource;
                             break;
                         }
@@ -115,12 +122,12 @@ public class FetchRowInputSymbolVisitor extends BaseImplementationSymbolVisitor<
                 }
                 fetchIdx++;
             }
-            assert fs != null;
+            assert fs != null : "fs must not be null";
             if (partitionRows == null) {
                 partitionRows = new FetchProjector.ArrayBackedRow[fetchSources.size()];
             }
             FetchProjector.ArrayBackedRow row = partitionRows[fetchIdx];
-            if (row == null){
+            if (row == null) {
                 row = new FetchProjector.ArrayBackedRow();
                 partitionRows[fetchIdx] = row;
             }
@@ -131,10 +138,10 @@ public class FetchRowInputSymbolVisitor extends BaseImplementationSymbolVisitor<
             FetchSource fs = null;
             int fetchIdx = 0;
             for (Map.Entry<TableIdent, FetchSource> entry : fetchSources.entrySet()) {
-                if (entry.getKey().equals(fetchReference.ref().ident().tableIdent())){
+                if (entry.getKey().equals(fetchReference.ref().ident().tableIdent())) {
                     fs = entry.getValue();
                     for (InputColumn col : fs.docIdCols()) {
-                        if (col.equals(fetchReference.docId())){
+                        if (col.equals(fetchReference.docId())) {
                             break;
                         }
                         fetchIdx++;
@@ -144,7 +151,7 @@ public class FetchRowInputSymbolVisitor extends BaseImplementationSymbolVisitor<
                     fetchIdx += entry.getValue().docIdCols().size();
                 }
             }
-            assert fs != null;
+            assert fs != null : "fs must not be null";
             Row row = fetchRows[fetchIdx];
             int idx = 0;
             RowInput input = null;
@@ -155,7 +162,7 @@ public class FetchRowInputSymbolVisitor extends BaseImplementationSymbolVisitor<
                 }
                 idx++;
             }
-            assert input != null;
+            assert input != null : "input must not be null";
             return input;
         }
 
@@ -193,10 +200,11 @@ public class FetchRowInputSymbolVisitor extends BaseImplementationSymbolVisitor<
 
     @Override
     public Input<?> visitFetchReference(FetchReference fetchReference, Context context) {
-        if (fetchReference.ref().info().granularity() == RowGranularity.DOC){
+        if (fetchReference.ref().granularity() == RowGranularity.DOC) {
             return context.allocateInput(fetchReference);
         }
-        assert fetchReference.ref().info().granularity() == RowGranularity.PARTITION;
+        assert fetchReference.ref().granularity() == RowGranularity.PARTITION :
+            "fetchReference.ref().granularity() must be " + RowGranularity.PARTITION;
         return context.allocatePartitionedInput(fetchReference);
 
     }

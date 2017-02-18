@@ -22,22 +22,25 @@
 
 package io.crate.planner.projection;
 
+import com.google.common.base.Function;
 import io.crate.analyze.symbol.Symbol;
+import org.elasticsearch.common.io.stream.StreamInput;
+
+import java.io.IOException;
 
 public class DeleteProjection extends DMLProjection {
-
-    public static final ProjectionFactory<DeleteProjection> FACTORY = new ProjectionFactory<DeleteProjection>() {
-        @Override
-        public DeleteProjection newInstance() {
-            return new DeleteProjection();
-        }
-    };
 
     public DeleteProjection(Symbol uidSymbol) {
         super(uidSymbol);
     }
 
-    public DeleteProjection() {
+    DeleteProjection(StreamInput in) throws IOException {
+        super(in);
+    }
+
+    @Override
+    public void replaceSymbols(Function<Symbol, Symbol> replaceFunction) {
+        uidSymbol = replaceFunction.apply(uidSymbol);
     }
 
     @Override

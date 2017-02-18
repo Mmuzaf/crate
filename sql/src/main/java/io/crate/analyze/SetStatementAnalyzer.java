@@ -24,47 +24,57 @@ package io.crate.analyze;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.Sets;
 import io.crate.analyze.expressions.ExpressionToStringVisitor;
+import io.crate.data.Row;
 import io.crate.metadata.settings.CrateSettings;
-import io.crate.metadata.settings.Setting;
 import io.crate.sql.tree.*;
 import org.elasticsearch.common.logging.ESLogger;
 import org.elasticsearch.common.logging.Loggers;
-import org.elasticsearch.common.settings.ImmutableSettings;
 
 import java.util.*;
 
-public class SetStatementAnalyzer {
+class SetStatementAnalyzer {
 
     private static final ESLogger logger = Loggers.getLogger(SetStatementAnalyzer.class);
-    private SetStatementAnalyzer() {}
 
-    public static SetAnalyzedStatement analyze(SetStatement node, ParameterContext parameterContext) {
-        ImmutableSettings.Builder builder = ImmutableSettings.builder();
-        for (Assignment assignment : node.assignments()) {
-            String settingsName = ExpressionToStringVisitor.convert(assignment.columnName(),
-                    parameterContext.parameters());
+    public static SetAnalyzedStatement analyze(SetStatement node) {
+        boolean isPersistent = node.settingType().equals(SetStatement.SettingType.PERSISTENT);
+        Map<String, List<Expression>> settings = new HashMap<>();
 
-            SettingsApplier settingsApplier = CrateSettings.getSetting(settingsName);
-            for (String setting : ExpressionToSettingNameListVisitor.convert(assignment)) {
-                checkIfSettingIsRuntime(setting);
+        if (!SetStatement.Scope.GLOBAL.equals(node.scope())) {
+            Assignment assignment = node.assignments().get(0);
+            // parser does not allow using the parameter expressions as setting names in the SET statements,
+            // therefore it is fine to convert the expression to string here.
+            String settingName = ExpressionToStringVisitor.convert(assignment.columnName(), Row.EMPTY);
+            Set<String> nameParts = CrateSettings.settingNamesByPrefix(settingName);
+            if (nameParts.size() != 0) {
+                throw new IllegalArgumentException(String.format(Locale.ENGLISH,
+                    "GLOBAL Cluster setting '%s' cannot be used with SET SESSION / LOCAL", settingName));
             }
-
-            settingsApplier.apply(builder, parameterContext.parameters(), assignment.expression());
+            settings.put(settingName, assignment.expressions());
+            return new SetAnalyzedStatement(node.scope(), settings, isPersistent);
+        } else {
+            for (Assignment assignment : node.assignments()) {
+                for (String setting : ExpressionToSettingNameListVisitor.convert(assignment)) {
+                    CrateSettings.checkIfRuntimeSetting(setting);
+                }
+                String settingName = ExpressionToStringVisitor.convert(assignment.columnName(), Row.EMPTY);
+                settings.put(settingName, ImmutableList.of(assignment.expression()));
+            }
+            return new SetAnalyzedStatement(node.scope(), settings, isPersistent);
         }
-        return new SetAnalyzedStatement(builder.build(), node.settingType().equals(SetStatement.SettingType.PERSISTENT));
     }
 
-    public static ResetAnalyzedStatement analyze(ResetStatement node, ParameterContext parameterContext) {
+    public static ResetAnalyzedStatement analyze(ResetStatement node) {
         Set<String> settingsToRemove = Sets.newHashSet();
         for (Expression expression : node.columns()) {
-            String settingsName = ExpressionToStringVisitor.convert(expression, parameterContext.parameters());
+            String settingsName = ExpressionToStringVisitor.convert(expression, Row.EMPTY);
             if (!settingsToRemove.contains(settingsName)) {
                 Set<String> settingNames = CrateSettings.settingNamesByPrefix(settingsName);
                 if (settingNames.size() == 0) {
                     throw new IllegalArgumentException(String.format(Locale.ENGLISH, "setting '%s' not supported", settingsName));
                 }
                 for (String setting : settingNames) {
-                    checkIfSettingIsRuntime(setting);
+                    CrateSettings.checkIfRuntimeSetting(setting);
                 }
                 settingsToRemove.addAll(settingNames);
                 logger.info("resetting [{}]", settingNames);
@@ -73,24 +83,9 @@ public class SetStatementAnalyzer {
         return new ResetAnalyzedStatement(settingsToRemove);
     }
 
-    private static void checkIfSettingIsRuntime(String name) {
-        checkIfSettingIsRuntime(CrateSettings.CRATE_SETTINGS, name);
-    }
-
-    private static void checkIfSettingIsRuntime(List<Setting> settings, String name) {
-        for (Setting<?, ?> setting : settings) {
-            if (setting.settingName().equals(name) && !setting.isRuntime()) {
-                throw new UnsupportedOperationException(String.format(Locale.ENGLISH,
-                        "setting '%s' cannot be set/reset at runtime", name));
-            }
-            checkIfSettingIsRuntime(setting.children(), name);
-        }
-    }
-
     private static class ExpressionToSettingNameListVisitor extends AstVisitor<Collection<String>, String> {
 
         private static final ExpressionToSettingNameListVisitor INSTANCE = new ExpressionToSettingNameListVisitor();
-        private ExpressionToSettingNameListVisitor() {}
 
         public static Collection<String> convert(Node node) {
             return INSTANCE.process(node, null);
@@ -98,7 +93,7 @@ public class SetStatementAnalyzer {
 
         @Override
         public Collection<String> visitAssignment(Assignment node, String context) {
-            String left = ExpressionToStringVisitor.convert(node.columnName(), null);
+            String left = ExpressionToStringVisitor.convert(node.columnName(), Row.EMPTY);
             return node.expression().accept(this, left);
         }
 
@@ -131,5 +126,4 @@ public class SetStatementAnalyzer {
             return ImmutableList.of(context);
         }
     }
-
 }

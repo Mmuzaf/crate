@@ -21,6 +21,11 @@
 
 package io.crate.operation;
 
+import io.crate.planner.Plan;
+import io.crate.planner.node.dql.Collect;
+import io.crate.planner.node.dql.CollectPhase;
+import io.crate.planner.node.dql.RoutedCollectPhase;
+
 import javax.annotation.Nullable;
 
 import static com.google.common.base.MoreObjects.firstNonNull;
@@ -29,7 +34,7 @@ public class Paging {
 
     // this must not be final so tests could adjust it
     public static int PAGE_SIZE = 500_000;
-    private final static double OVERHEAD_FACTOR = 1.5;
+    private static final double OVERHEAD_FACTOR = 1.5;
 
     public static int getWeightedPageSize(@Nullable Integer limit, double weight) {
         return getWeightedPageSize(limit, weight, OVERHEAD_FACTOR);
@@ -45,5 +50,19 @@ public class Paging {
             return dynPageSize;
         }
         return Math.min(dynPageSize, limit);
+    }
+
+    public static boolean shouldPage(int maxRowsPerNode) {
+        return maxRowsPerNode == -1 || maxRowsPerNode > PAGE_SIZE;
+    }
+
+    public static void updateNodePageSizeHint(Plan subPlan, int nodePageSize) {
+        if (!(subPlan instanceof Collect) || nodePageSize == -1) {
+            return;
+        }
+        CollectPhase collectPhase = ((Collect) subPlan).collectPhase();
+        if (collectPhase instanceof RoutedCollectPhase) {
+            ((RoutedCollectPhase) collectPhase).pageSizeHint(nodePageSize);
+        }
     }
 }

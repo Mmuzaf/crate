@@ -22,8 +22,8 @@
 
 package io.crate.executor.transport;
 
-import com.google.common.util.concurrent.ListenableFuture;
-import com.google.common.util.concurrent.SettableFuture;
+import com.google.common.base.Functions;
+import io.crate.action.FutureActionListener;
 import io.crate.analyze.CreateSnapshotAnalyzedStatement;
 import io.crate.analyze.DropSnapshotAnalyzedStatement;
 import io.crate.analyze.RestoreSnapshotAnalyzedStatement;
@@ -43,9 +43,10 @@ import org.elasticsearch.common.logging.Loggers;
 import org.elasticsearch.snapshots.SnapshotInfo;
 import org.elasticsearch.snapshots.SnapshotState;
 
+import java.util.concurrent.CompletableFuture;
+
 import static io.crate.analyze.SnapshotSettings.IGNORE_UNAVAILABLE;
 import static io.crate.analyze.SnapshotSettings.WAIT_FOR_COMPLETION;
-
 
 
 @Singleton
@@ -59,34 +60,34 @@ public class SnapshotRestoreDDLDispatcher {
         this.transportActionProvider = transportActionProvider;
     }
 
-    public ListenableFuture<Long> dispatch(final DropSnapshotAnalyzedStatement statement) {
-        final SettableFuture<Long> future = SettableFuture.create();
+    public CompletableFuture<Long> dispatch(final DropSnapshotAnalyzedStatement statement) {
+        final CompletableFuture<Long> future = new CompletableFuture<>();
         final String repositoryName = statement.repository();
         final String snapshotName = statement.snapshot();
 
         transportActionProvider.transportDeleteSnapshotAction().execute(
-                new DeleteSnapshotRequest(repositoryName, snapshotName),
-                new ActionListener<DeleteSnapshotResponse>() {
-                    @Override
-                    public void onResponse(DeleteSnapshotResponse response) {
-                        if (!response.isAcknowledged()) {
-                            LOGGER.info("delete snapshot '{}.{}' not acknowledged", repositoryName, snapshotName);
-                        }
-                        future.set(1L);
+            new DeleteSnapshotRequest(repositoryName, snapshotName),
+            new ActionListener<DeleteSnapshotResponse>() {
+                @Override
+                public void onResponse(DeleteSnapshotResponse response) {
+                    if (!response.isAcknowledged()) {
+                        LOGGER.info("delete snapshot '{}.{}' not acknowledged", repositoryName, snapshotName);
                     }
-
-                    @Override
-                    public void onFailure(Throwable e) {
-                        future.setException(e);
-                    }
+                    future.complete(1L);
                 }
+
+                @Override
+                public void onFailure(Throwable e) {
+                    future.completeExceptionally(e);
+                }
+            }
         );
         return future;
 
     }
 
-    public ListenableFuture<Long> dispatch(final CreateSnapshotAnalyzedStatement statement) {
-        final SettableFuture<Long> resultFuture = SettableFuture.create();
+    public CompletableFuture<Long> dispatch(final CreateSnapshotAnalyzedStatement statement) {
+        final CompletableFuture<Long> resultFuture = new CompletableFuture<>();
 
         boolean waitForCompletion = statement.snapshotSettings().getAsBoolean(WAIT_FOR_COMPLETION.settingName(), WAIT_FOR_COMPLETION.defaultValue());
         boolean ignoreUnavailable = statement.snapshotSettings().getAsBoolean(IGNORE_UNAVAILABLE.settingName(), IGNORE_UNAVAILABLE.defaultValue());
@@ -95,11 +96,11 @@ public class SnapshotRestoreDDLDispatcher {
         IndicesOptions indicesOptions = IndicesOptions.fromOptions(ignoreUnavailable, true, true, false, IndicesOptions.lenientExpandOpen());
 
         CreateSnapshotRequest request = new CreateSnapshotRequest(statement.snapshotId().getRepository(), statement.snapshotId().getSnapshot())
-                .includeGlobalState(statement.includeMetadata())
-                .waitForCompletion(waitForCompletion)
-                .indices(statement.indices())
-                .indicesOptions(indicesOptions)
-                .settings(statement.snapshotSettings());
+            .includeGlobalState(statement.includeMetadata())
+            .waitForCompletion(waitForCompletion)
+            .indices(statement.indices())
+            .indicesOptions(indicesOptions)
+            .settings(statement.snapshotSettings());
 
         //noinspection ThrowableResultOfMethodCallIgnored
         assert request.validate() == null : "invalid CREATE SNAPSHOT statement";
@@ -109,31 +110,29 @@ public class SnapshotRestoreDDLDispatcher {
                 SnapshotInfo snapshotInfo = createSnapshotResponse.getSnapshotInfo();
                 if (snapshotInfo == null) {
                     // if wait_for_completion is false the snapshotInfo is null
-                    resultFuture.set(1L);
+                    resultFuture.complete(1L);
                 } else if (snapshotInfo.state() == SnapshotState.FAILED) {
                     // fail request if snapshot creation failed
                     String reason = createSnapshotResponse.getSnapshotInfo().reason()
-                            .replaceAll("Index", "Table")
-                            .replaceAll("Indices", "Tables");
-                    resultFuture.setException(
-                            new CreateSnapshotException(statement.snapshotId(), reason)
+                        .replaceAll("Index", "Table")
+                        .replaceAll("Indices", "Tables");
+                    resultFuture.completeExceptionally(
+                        new CreateSnapshotException(statement.snapshotId(), reason)
                     );
                 } else {
-                    resultFuture.set(1L);
+                    resultFuture.complete(1L);
                 }
             }
 
             @Override
             public void onFailure(Throwable e) {
-                resultFuture.setException(e);
+                resultFuture.completeExceptionally(e);
             }
         });
         return resultFuture;
     }
 
-    public ListenableFuture<Long> dispatch(final RestoreSnapshotAnalyzedStatement analysis) {
-        final SettableFuture<Long> resultFuture = SettableFuture.create();
-
+    public CompletableFuture<Long> dispatch(final RestoreSnapshotAnalyzedStatement analysis) {
         boolean waitForCompletion = analysis.settings().getAsBoolean(WAIT_FOR_COMPLETION.settingName(), WAIT_FOR_COMPLETION.defaultValue());
         boolean ignoreUnavailable = analysis.settings().getAsBoolean(IGNORE_UNAVAILABLE.settingName(), IGNORE_UNAVAILABLE.defaultValue());
 
@@ -141,23 +140,14 @@ public class SnapshotRestoreDDLDispatcher {
         IndicesOptions indicesOptions = IndicesOptions.fromOptions(ignoreUnavailable, true, true, false, IndicesOptions.lenientExpandOpen());
 
         RestoreSnapshotRequest request = new RestoreSnapshotRequest(analysis.repositoryName(), analysis.snapshotName())
-                .indices(analysis.indices())
-                .indicesOptions(indicesOptions)
-                .settings(analysis.settings())
-                .waitForCompletion(waitForCompletion)
-                .includeGlobalState(false)
-                .includeAliases(true);
-        transportActionProvider.transportRestoreSnapshotAction().execute(request, new ActionListener<RestoreSnapshotResponse>() {
-            @Override
-            public void onResponse(RestoreSnapshotResponse restoreSnapshotResponse) {
-                resultFuture.set(1L);
-            }
-
-            @Override
-            public void onFailure(Throwable e) {
-                resultFuture.setException(e);
-            }
-        });
-        return resultFuture;
+            .indices(analysis.indices())
+            .indicesOptions(indicesOptions)
+            .settings(analysis.settings())
+            .waitForCompletion(waitForCompletion)
+            .includeGlobalState(false)
+            .includeAliases(true);
+        FutureActionListener<RestoreSnapshotResponse, Long> listener = new FutureActionListener<>(Functions.constant(1L));
+        transportActionProvider.transportRestoreSnapshotAction().execute(request, listener);
+        return listener;
     }
 }

@@ -45,7 +45,8 @@ public class CountPhase implements UpstreamPhase {
     private WhereClause whereClause;
     private DistributionInfo distributionInfo;
 
-    CountPhase() {}
+    CountPhase() {
+    }
 
     public CountPhase(int executionPhaseId,
                       Routing routing,
@@ -76,12 +77,12 @@ public class CountPhase implements UpstreamPhase {
     }
 
     @Override
-    public int executionPhaseId() {
+    public int phaseId() {
         return executionPhaseId;
     }
 
     @Override
-    public Set<String> executionNodes() {
+    public Set<String> nodeIds() {
         return routing.nodes();
     }
 

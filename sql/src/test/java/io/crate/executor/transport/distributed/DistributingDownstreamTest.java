@@ -24,72 +24,49 @@ package io.crate.executor.transport.distributed;
 import com.google.common.collect.ImmutableList;
 import com.google.common.util.concurrent.*;
 import io.crate.Streamer;
-import io.crate.action.job.KeepAliveRequest;
-import io.crate.action.job.TransportKeepAliveAction;
-import io.crate.core.collections.Bucket;
-import io.crate.core.collections.Row;
-import io.crate.core.collections.Row1;
+import io.crate.data.Bucket;
+import io.crate.data.Row;
+import io.crate.data.Row1;
 import io.crate.executor.transport.Transports;
-import io.crate.jobs.ExecutionState;
 import io.crate.jobs.JobContextService;
-import io.crate.jobs.KeepAliveTimers;
+import io.crate.jobs.PageDownstreamContext;
 import io.crate.test.integration.CrateUnitTest;
+import io.crate.testing.RowGenerator;
 import io.crate.testing.RowSender;
 import io.crate.types.DataTypes;
 import org.apache.lucene.util.BytesRef;
 import org.elasticsearch.action.ActionListener;
-import org.elasticsearch.common.settings.ImmutableSettings;
-import org.elasticsearch.common.unit.TimeValue;
+import org.elasticsearch.common.logging.Loggers;
+import org.elasticsearch.common.settings.Settings;
 import org.elasticsearch.threadpool.ThreadPool;
-import org.elasticsearch.transport.TransportResponse;
 import org.elasticsearch.transport.TransportService;
 import org.hamcrest.Matchers;
 import org.junit.After;
 import org.junit.Before;
 import org.junit.Test;
-import org.mockito.Answers;
-import org.mockito.Mockito;
-import org.mockito.invocation.InvocationOnMock;
-import org.mockito.stubbing.Answer;
 
-import java.util.*;
-import java.util.concurrent.*;
+import java.util.ArrayList;
+import java.util.Collections;
+import java.util.List;
+import java.util.UUID;
+import java.util.concurrent.Executors;
+import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.AtomicReference;
 
+import static org.hamcrest.Matchers.instanceOf;
 import static org.hamcrest.core.Is.is;
-import static org.mockito.Matchers.anyString;
-import static org.mockito.Mockito.*;
+import static org.mockito.Mockito.mock;
 
 public class DistributingDownstreamTest extends CrateUnitTest {
 
     private ListeningExecutorService executorService;
-    private ScheduledExecutorService scheduledExecutorService;
-    private ThreadPool threadPool;
 
     @Override
     @Before
     public void setUp() throws Exception {
         super.setUp();
         executorService = MoreExecutors.listeningDecorator(Executors.newFixedThreadPool(3));
-        scheduledExecutorService = Executors.newScheduledThreadPool(1);
-        // need to mock here, as we cannot set estimated_time_interval via settings due to ES ThreadPool bug
-        threadPool = mock(ThreadPool.class);
-        when(threadPool.executor(anyString())).thenReturn(executorService);
-        doAnswer(new Answer() {
-            @Override
-            public Object answer(InvocationOnMock invocation) throws Throwable {
-                return System.currentTimeMillis();
-            }
-        }).when(threadPool).estimatedTimeInMillis();
-        when(threadPool.scheduleWithFixedDelay(any(Runnable.class), any(TimeValue.class))).thenAnswer(new Answer<ScheduledFuture<?>>() {
-            @Override
-            public ScheduledFuture<?> answer(InvocationOnMock invocation) throws Throwable {
-
-                Runnable runnable = (Runnable)invocation.getArguments()[0];
-                TimeValue interval = (TimeValue)invocation.getArguments()[1];
-                return scheduledExecutorService.scheduleWithFixedDelay(runnable, interval.millis(), interval.millis(), TimeUnit.MILLISECONDS);
-            }
-        });
     }
 
     @Override
@@ -98,7 +75,6 @@ public class DistributingDownstreamTest extends CrateUnitTest {
         super.tearDown();
         executorService.shutdown();
         executorService.awaitTermination(1, TimeUnit.SECONDS);
-        scheduledExecutorService.shutdownNow();
     }
 
     @Test
@@ -106,11 +82,11 @@ public class DistributingDownstreamTest extends CrateUnitTest {
         final SettableFuture<Boolean> allRowsReceived = SettableFuture.create();
         final List<Row> receivedRows = Collections.synchronizedList(new ArrayList<Row>());
         TransportDistributedResultAction transportDistributedResultAction = new TransportDistributedResultAction(
-                mock(Transports.class),
-                mock(JobContextService.class),
-                mock(ThreadPool.class),
-                mock(TransportService.class),
-                ImmutableSettings.EMPTY) {
+            mock(Transports.class),
+            mock(JobContextService.class),
+            mock(ThreadPool.class),
+            mock(TransportService.class),
+            Settings.EMPTY) {
 
 
             @Override
@@ -137,19 +113,19 @@ public class DistributingDownstreamTest extends CrateUnitTest {
             }
         };
 
-        Streamer[] streamers = new Streamer[] {DataTypes.STRING.streamer() };
+        Streamer[] streamers = new Streamer[]{DataTypes.STRING.streamer()};
         int pageSize = 10;
         final DistributingDownstream distributingDownstream = new DistributingDownstream(
-                UUID.randomUUID(),
-                new BroadcastingBucketBuilder(streamers, 1),
-                1,
-                (byte) 0,
-                0,
-                ImmutableList.of("n1"),
-                transportDistributedResultAction,
-                mock(KeepAliveTimers.class, Answers.RETURNS_MOCKS.get()),
-                streamers,
-                pageSize
+            Loggers.getLogger(PageDownstreamContext.class),
+            UUID.randomUUID(),
+            new BroadcastingBucketBuilder(streamers, 1),
+            1,
+            (byte) 0,
+            0,
+            ImmutableList.of("n1"),
+            transportDistributedResultAction,
+            streamers,
+            pageSize
         );
 
         final List<Row> rows = new ArrayList<>();
@@ -171,48 +147,16 @@ public class DistributingDownstreamTest extends CrateUnitTest {
     }
 
     @Test
-    public void testDownstreamKeepAlive() throws Exception {
-        TransportKeepAliveAction transportKeepAliveAction = mock(TransportKeepAliveAction.class);
-        final CountDownLatch countDownLatch = new CountDownLatch(3);
-        doAnswer(new Answer() {
-            @Override
-            public Object answer(InvocationOnMock invocation) throws Throwable {
-                countDownLatch.countDown();
-                ActionListener<TransportResponse.Empty> actionListener = (ActionListener<TransportResponse.Empty>) invocation.getArguments()[2];
-                actionListener.onResponse(TransportResponse.Empty.INSTANCE);
-                return null;
-            }
-        }).when(transportKeepAliveAction).keepAlive(anyString(), Mockito.any(KeepAliveRequest.class), Mockito.<ActionListener<TransportResponse.Empty>>any());
-        KeepAliveTimers keepAliveTimers = new KeepAliveTimers(threadPool, TimeValue.timeValueMillis(10), transportKeepAliveAction);
-        Streamer[] streamers = new Streamer[] {DataTypes.STRING.streamer() };
-        int pageSize = 10;
-        final DistributingDownstream distributingDownstream = new DistributingDownstream(
-                UUID.randomUUID(),
-                new BroadcastingBucketBuilder(streamers, 1),
-                1,
-                (byte) 0,
-                0,
-                ImmutableList.of("n1"),
-                mock(TransportDistributedResultAction.class),
-                keepAliveTimers,
-                streamers,
-                pageSize
-        );
-        distributingDownstream.prepare(mock(ExecutionState.class));
-        countDownLatch.await(1, TimeUnit.SECONDS);
-    }
-
-    @Test
     public void testTwoDownstreamsOneFinishedOneNeedsMoreDoesNotGetStuck() throws Exception {
-        Streamer[] streamers = new Streamer[] {DataTypes.INTEGER.streamer() };
+        Streamer[] streamers = new Streamer[]{DataTypes.INTEGER.streamer()};
 
         final AtomicInteger requestsReceived = new AtomicInteger(0);
         TransportDistributedResultAction transportDistributedResultAction = new TransportDistributedResultAction(
-                mock(Transports.class),
-                mock(JobContextService.class),
-                mock(ThreadPool.class),
-                mock(TransportService.class),
-                ImmutableSettings.EMPTY) {
+            mock(Transports.class),
+            mock(JobContextService.class),
+            mock(ThreadPool.class),
+            mock(TransportService.class),
+            Settings.EMPTY) {
 
 
             @Override
@@ -226,33 +170,60 @@ public class DistributingDownstreamTest extends CrateUnitTest {
             }
         };
 
-        KeepAliveTimers keepAliveTimers = new KeepAliveTimers(threadPool, TimeValue.timeValueMillis(10), mock(TransportKeepAliveAction.class));
         DistributingDownstream dd = new DistributingDownstream(
-                UUID.randomUUID(),
-                new BroadcastingBucketBuilder(streamers, 2),
-                1,
-                (byte) 0,
-                0,
-                ImmutableList.of("n1", "n2"),
-                transportDistributedResultAction,
-                keepAliveTimers,
-                streamers,
-                2
+            Loggers.getLogger(DistributingDownstream.class),
+            UUID.randomUUID(),
+            new BroadcastingBucketBuilder(streamers, 2),
+            1,
+            (byte) 0,
+            0,
+            ImmutableList.of("n1", "n2"),
+            transportDistributedResultAction,
+            streamers,
+            2
         );
-        dd.prepare(mock(ExecutionState.class));
-
         RowSender rowSender = new RowSender(
-                Arrays.<Row>asList(
-                        new Row1(1),
-                        new Row1(2),
-                        new Row1(3),
-                        new Row1(4),
-                        new Row1(5)
-                ),
-                dd,
-                MoreExecutors.directExecutor()
+            RowGenerator.range(1, 6),
+            dd,
+            MoreExecutors.directExecutor()
         );
         rowSender.run();
         assertThat(requestsReceived.get(), is(3));
+    }
+
+    @Test
+    public void testKillFailureIsForwarded() throws Exception {
+        Streamer[] streamers = new Streamer[]{DataTypes.INTEGER.streamer()};
+        AtomicReference<Throwable> throwableReceived = new AtomicReference<>();
+        TransportDistributedResultAction transportDistributedResultAction = new TransportDistributedResultAction(
+            mock(Transports.class),
+            mock(JobContextService.class),
+            mock(ThreadPool.class),
+            mock(TransportService.class),
+            Settings.EMPTY) {
+
+            @Override
+            public void pushResult(String node, final DistributedResultRequest request, final ActionListener<DistributedResultResponse> listener) {
+                if (request.isKilled() && request.throwable() != null) {
+                    throwableReceived.set(request.throwable());
+                }
+            }
+        };
+
+        DistributingDownstream dd = new DistributingDownstream(
+            Loggers.getLogger(DistributingDownstream.class),
+            UUID.randomUUID(),
+            new BroadcastingBucketBuilder(streamers, 2),
+            1,
+            (byte) 0,
+            0,
+            ImmutableList.of("n1", "n2"),
+            transportDistributedResultAction,
+            streamers,
+            2
+        );
+        dd.kill(new IllegalStateException("dummy"));
+
+        assertThat(throwableReceived.get(), instanceOf(IllegalStateException.class));
     }
 }

@@ -24,8 +24,8 @@ package io.crate.analyze.symbol;
 
 import io.crate.sql.tree.QualifiedName;
 import io.crate.types.DataTypes;
-import org.elasticsearch.common.io.stream.BytesStreamInput;
 import org.elasticsearch.common.io.stream.BytesStreamOutput;
+import org.elasticsearch.common.io.stream.StreamInput;
 import org.junit.Test;
 
 import static org.hamcrest.MatcherAssert.assertThat;
@@ -38,9 +38,9 @@ public class RelationColumnTest {
     public void testStreaming() throws Exception {
         RelationColumn rc = new RelationColumn(QualifiedName.of("a", "b"), 5, DataTypes.STRING);
         BytesStreamOutput out = new BytesStreamOutput(256);
-        Symbol.toStream(rc, out);
-        BytesStreamInput in = new BytesStreamInput(out.bytes());
-        RelationColumn rc2 = (RelationColumn) Symbol.fromStream(in);
+        Symbols.toStream(rc, out);
+        StreamInput in = StreamInput.wrap(out.bytes());
+        RelationColumn rc2 = (RelationColumn) Symbols.fromStream(in);
         assertThat(rc2, is(rc));
     }
 }

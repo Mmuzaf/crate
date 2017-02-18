@@ -15,28 +15,24 @@ import java.util.Locale;
 
 public class Function extends Symbol implements Cloneable {
 
-    public static final SymbolFactory<Function> FACTORY = new SymbolFactory<Function>() {
-        @Override
-        public Function newInstance() {
-            return new Function();
-        }
-    };
+    private final List<Symbol> arguments;
+    private final FunctionInfo info;
 
-    private List<Symbol> arguments;
-    private FunctionInfo info;
+    public Function(StreamInput in) throws IOException {
+        info = new FunctionInfo();
+        info.readFrom(in);
+        arguments = Symbols.listFromStream(in);
+    }
 
     public Function(FunctionInfo info, List<Symbol> arguments) {
         Preconditions.checkNotNull(info, "function info is null");
-        Preconditions.checkArgument(arguments.size() == info.ident().argumentTypes().size());
+        Preconditions.checkArgument(arguments.size() == info.ident().argumentTypes().size(),
+            "number of arguments must match the number of argumentTypes of the FunctionIdent");
         this.info = info;
 
         assert arguments.isEmpty() || !(arguments instanceof ImmutableList) :
-                "must not be an immutable list - would break setArgument";
+            "must not be an immutable list - would break setArgument";
         this.arguments = arguments;
-    }
-
-    private Function() {
-
     }
 
     public List<Symbol> arguments() {
@@ -67,24 +63,9 @@ public class Function extends Symbol implements Cloneable {
     }
 
     @Override
-    public void readFrom(StreamInput in) throws IOException {
-        info = new FunctionInfo();
-        info.readFrom(in);
-
-        int numArguments = in.readVInt();
-        arguments = new ArrayList<>(numArguments);
-        for (int i = 0; i < numArguments; i++) {
-            arguments.add(Symbol.fromStream(in));
-        }
-    }
-
-    @Override
     public void writeTo(StreamOutput out) throws IOException {
         info.writeTo(out);
-        out.writeVInt(arguments.size());
-        for (Symbol argument : arguments) {
-            Symbol.toStream(argument, out);
-        }
+        Symbols.toStream(arguments, out);
     }
 
     @Override
@@ -99,16 +80,14 @@ public class Function extends Symbol implements Cloneable {
 
         Function function = (Function) o;
 
-        if (info != null ? !info.equals(function.info) : function.info != null)
-            return false;
-        return !(arguments != null ? !arguments.equals(function.arguments) : function.arguments != null);
-
+        if (!arguments.equals(function.arguments)) return false;
+        return info.equals(function.info);
     }
 
     @Override
     public int hashCode() {
-        int result = arguments != null ? arguments.hashCode() : 0;
-        result = 31 * result + (info != null ? info.hashCode() : 0);
+        int result = arguments.hashCode();
+        result = 31 * result + info.hashCode();
         return result;
     }
 

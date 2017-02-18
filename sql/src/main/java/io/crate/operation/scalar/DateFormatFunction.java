@@ -22,8 +22,6 @@
 package io.crate.operation.scalar;
 
 import com.google.common.collect.ImmutableList;
-import io.crate.analyze.symbol.Function;
-import io.crate.analyze.symbol.Symbol;
 import io.crate.metadata.FunctionIdent;
 import io.crate.metadata.FunctionInfo;
 import io.crate.metadata.Scalar;
@@ -45,22 +43,22 @@ public class DateFormatFunction extends Scalar<BytesRef, Object> {
 
     public static void register(ScalarFunctionModule module) {
         List<DataType> supportedTimestampTypes = ImmutableList.<DataType>of(
-                DataTypes.TIMESTAMP, DataTypes.LONG, DataTypes.STRING);
+            DataTypes.TIMESTAMP, DataTypes.LONG, DataTypes.STRING);
         for (DataType dataType : supportedTimestampTypes) {
             // without format
             module.register(new DateFormatFunction(new FunctionInfo(
-                    new FunctionIdent(NAME, ImmutableList.of(dataType)),
-                    DataTypes.STRING)
+                new FunctionIdent(NAME, ImmutableList.of(dataType)),
+                DataTypes.STRING)
             ));
             // with format
             module.register(new DateFormatFunction(new FunctionInfo(
-                    new FunctionIdent(NAME, ImmutableList.of(DataTypes.STRING, dataType)),
-                    DataTypes.STRING)
+                new FunctionIdent(NAME, ImmutableList.of(DataTypes.STRING, dataType)),
+                DataTypes.STRING)
             ));
             // time zone aware variant
             module.register(new DateFormatFunction(new FunctionInfo(
-                    new FunctionIdent(NAME, ImmutableList.of(DataTypes.STRING, DataTypes.STRING, dataType)),
-                    DataTypes.STRING)
+                new FunctionIdent(NAME, ImmutableList.of(DataTypes.STRING, DataTypes.STRING, dataType)),
+                DataTypes.STRING)
             ));
         }
     }
@@ -74,25 +72,31 @@ public class DateFormatFunction extends Scalar<BytesRef, Object> {
 
     @Override
     public BytesRef evaluate(Input<Object>... args) {
-        if (hasNullInputs(args)) {
-            return null;
-        }
         BytesRef format;
         Input<?> timezoneLiteral = null;
         if (args.length == 1) {
             format = DEFAULT_FORMAT;
         } else {
-            format = (BytesRef)args[0].value();
+            format = (BytesRef) args[0].value();
+            if (format == null) {
+                return null;
+            }
             if (args.length == 3) {
                 timezoneLiteral = args[1];
             }
         }
-        Object tsValue = args[args.length-1].value();
+        Object tsValue = args[args.length - 1].value();
+        if (tsValue == null) {
+            return null;
+        }
         Long timestamp = TimestampType.INSTANCE.value(tsValue);
         DateTimeZone timezone = DateTimeZone.UTC;
         if (timezoneLiteral != null) {
-            timezone = TimeZoneParser.parseTimeZone(
-                    BytesRefs.toBytesRef(timezoneLiteral.value()));
+            Object timezoneValue = timezoneLiteral.value();
+            if (timezoneValue == null) {
+                return null;
+            }
+            timezone = TimeZoneParser.parseTimeZone(BytesRefs.toBytesRef(timezoneValue));
         }
         DateTime dateTime = new DateTime(timestamp, timezone);
         return TimestampFormatter.format(format, dateTime);

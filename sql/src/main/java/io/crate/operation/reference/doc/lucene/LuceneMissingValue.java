@@ -39,14 +39,15 @@ public class LuceneMissingValue {
     }
 
     public static Object missingValue(OrderBy orderBy, int orderIndex) {
-        assert orderIndex <= orderBy.orderBySymbols().size();
+        assert orderIndex <= orderBy.orderBySymbols().size() : "orderIndex must be < number of orderBy symbols";
         return missingValue(orderBy.reverseFlags()[orderIndex],
-                            orderBy.nullsFirst()[orderIndex],
-                            SortSymbolVisitor.LUCENE_TYPE_MAP.get(orderBy.orderBySymbols().get(orderIndex).valueType()));
+            orderBy.nullsFirst()[orderIndex],
+            SortSymbolVisitor.LUCENE_TYPE_MAP.get(orderBy.orderBySymbols().get(orderIndex).valueType()));
 
     }
 
-    /** Calculates the missing Values as in {@link org.elasticsearch.index.fielddata.IndexFieldData}
+    /**
+     * Calculates the missing Values as in {@link org.elasticsearch.index.fielddata.IndexFieldData}
      * The results in the {@link org.apache.lucene.search.ScoreDoc} contains this missingValues instead of nulls. Because we
      * need nulls in the result, it's necessary to check if a value is a missingValue.
      */

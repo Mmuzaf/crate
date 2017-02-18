@@ -24,9 +24,9 @@ package io.crate.operation.merge;
 import com.google.common.base.Function;
 import com.google.common.collect.Iterables;
 import com.google.common.collect.Ordering;
-import io.crate.core.collections.ArrayBucket;
-import io.crate.core.collections.Bucket;
-import io.crate.core.collections.Row;
+import io.crate.data.ArrayBucket;
+import io.crate.data.Bucket;
+import io.crate.data.Row;
 import io.crate.operation.projectors.sorting.OrderingByPosition;
 import io.crate.test.integration.CrateUnitTest;
 import io.crate.testing.TestingHelpers;
@@ -43,21 +43,21 @@ import static org.hamcrest.core.Is.is;
 public class SortedPagingIteratorTest extends CrateUnitTest {
 
     public static final Ordering<Row> ORDERING =
-            OrderingByPosition.rowOrdering(new int[]{0}, new boolean[]{false}, new Boolean[]{null});
+        OrderingByPosition.rowOrdering(new int[]{0}, new boolean[]{false}, new Boolean[]{null});
 
     @Test
     public void testTwoBucketsAndTwoPagesAreSortedCorrectly() throws Exception {
-        SortedPagingIterator<Row> pagingIterator = new SortedPagingIterator<>(ORDERING, randomBoolean());
+        SortedPagingIterator<Void, Row> pagingIterator = new SortedPagingIterator<>(ORDERING, randomBoolean());
 
         pagingIterator.merge(numberedBuckets(Arrays.<Bucket>asList(
-                new ArrayBucket(new Object[][] {
-                        new Object[] {"a"} ,
-                        new Object[] {"b"},
-                        new Object[] {"c"}}),
-                new ArrayBucket(new Object[][] {
-                        new Object[] {"x"},
-                        new Object[] {"y"},
-                })
+            new ArrayBucket(new Object[][]{
+                new Object[]{"a"},
+                new Object[]{"b"},
+                new Object[]{"c"}}),
+            new ArrayBucket(new Object[][]{
+                new Object[]{"x"},
+                new Object[]{"y"},
+            })
         )));
 
         List<Object[]> rows = new ArrayList<>();
@@ -68,14 +68,14 @@ public class SortedPagingIteratorTest extends CrateUnitTest {
         assertThat(TestingHelpers.printRows(rows), is("a\nb\nc\n"));
 
         pagingIterator.merge(numberedBuckets(Arrays.<Bucket>asList(
-                new ArrayBucket(new Object[][] {
-                        new Object[] {"d"},
-                        new Object[] {"e"},
-                }),
-                new ArrayBucket(new Object[][] {
-                        new Object[] {"y"},
-                        new Object[] {"z"},
-                })
+            new ArrayBucket(new Object[][]{
+                new Object[]{"d"},
+                new Object[]{"e"},
+            }),
+            new ArrayBucket(new Object[][]{
+                new Object[]{"y"},
+                new Object[]{"z"},
+            })
         )));
 
         consumeRows(pagingIterator, rows);
@@ -102,33 +102,33 @@ public class SortedPagingIteratorTest extends CrateUnitTest {
 
     @Test
     public void testReplayReplaysCorrectly() throws Exception {
-        SortedPagingIterator<Row> pagingIterator = new SortedPagingIterator<>(ORDERING, true);
+        SortedPagingIterator<Void, Row> pagingIterator = new SortedPagingIterator<>(ORDERING, true);
         pagingIterator.merge(numberedBuckets(Arrays.<Bucket>asList(
-                new ArrayBucket(new Object[][]{
-                        new Object[]{"a"},
-                        new Object[]{"b"},
-                        new Object[]{"c"}}),
-                new ArrayBucket(new Object[][]{
-                        new Object[]{"x"},
-                        new Object[]{"y"},
-                }),
-                new ArrayBucket(new Object[][]{
-                        new Object[]{"m"},
-                        new Object[]{"n"},
-                        new Object[]{"o"}
-                })
+            new ArrayBucket(new Object[][]{
+                new Object[]{"a"},
+                new Object[]{"b"},
+                new Object[]{"c"}}),
+            new ArrayBucket(new Object[][]{
+                new Object[]{"x"},
+                new Object[]{"y"},
+            }),
+            new ArrayBucket(new Object[][]{
+                new Object[]{"m"},
+                new Object[]{"n"},
+                new Object[]{"o"}
+            })
         )));
         List<Object> rows = new ArrayList<>();
         consumeSingleColumnRows(pagingIterator, rows);
 
         pagingIterator.merge(numberedBuckets(Arrays.<Bucket>asList(
-                new ArrayBucket(new Object[][]{
-                        new Object[]{"d"},
-                        new Object[]{"e"},
-                        new Object[]{"f"}}),
-                new ArrayBucket(new Object[][]{
-                        new Object[]{"z"}
-                })
+            new ArrayBucket(new Object[][]{
+                new Object[]{"d"},
+                new Object[]{"e"},
+                new Object[]{"f"}}),
+            new ArrayBucket(new Object[][]{
+                new Object[]{"z"}
+            })
         )));
         pagingIterator.finish();
         consumeSingleColumnRows(pagingIterator, rows);
@@ -139,16 +139,13 @@ public class SortedPagingIteratorTest extends CrateUnitTest {
         assertThat(rows, is(replayedRows));
     }
 
-    private Iterable<? extends NumberedIterable<Row>> numberedBuckets(List<Bucket> buckets) {
-        return Iterables.transform(buckets, new Function<Bucket, NumberedIterable<Row>>() {
-
-            int number = -1;
+    private Iterable<? extends KeyIterable<Void, Row>> numberedBuckets(List<Bucket> buckets) {
+        return Iterables.transform(buckets, new Function<Bucket, KeyIterable<Void, Row>>() {
 
             @Nullable
             @Override
-            public NumberedIterable<Row> apply(Bucket input) {
-                number++;
-                return new NumberedIterable<>(number, input);
+            public KeyIterable<Void, Row> apply(Bucket input) {
+                return new KeyIterable<>(null, input);
             }
         });
     }

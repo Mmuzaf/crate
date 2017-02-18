@@ -21,21 +21,18 @@
 package io.crate.operation.reference.sys.shard;
 
 import io.crate.metadata.PartitionName;
-import io.crate.metadata.SimpleObjectExpression;
-import io.crate.metadata.shard.ShardReferenceImplementation;
+import io.crate.metadata.ReferenceImplementation;
 import org.elasticsearch.cluster.ClusterService;
 import org.elasticsearch.cluster.metadata.MetaData;
-import org.elasticsearch.common.inject.Inject;
 import org.elasticsearch.index.shard.ShardId;
 
-public class ShardPartitionOrphanedExpression extends SimpleObjectExpression<Boolean> implements ShardReferenceImplementation<Boolean> {
+public class ShardPartitionOrphanedExpression implements ReferenceImplementation<Boolean> {
 
     private final ClusterService clusterService;
     private final String aliasName;
     private final String templateName;
     private final boolean isPartition;
 
-    @Inject
     public ShardPartitionOrphanedExpression(ShardId shardId, ClusterService clusterService) {
         this.clusterService = clusterService;
         isPartition = PartitionName.isPartition(shardId.getIndex());
@@ -43,8 +40,8 @@ public class ShardPartitionOrphanedExpression extends SimpleObjectExpression<Boo
             PartitionName partitionName = PartitionName.fromIndexOrTemplate(shardId.getIndex());
             aliasName = partitionName.tableIdent().indexName();
             templateName = PartitionName.templateName(
-                    partitionName.tableIdent().schema(),
-                    partitionName.tableIdent().name());
+                partitionName.tableIdent().schema(),
+                partitionName.tableIdent().name());
         } else {
             templateName = null;
             aliasName = null;

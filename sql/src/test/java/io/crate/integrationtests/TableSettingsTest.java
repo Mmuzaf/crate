@@ -22,17 +22,14 @@
 package io.crate.integrationtests;
 
 import io.crate.action.sql.SQLActionException;
+import io.crate.testing.UseJdbc;
 import org.junit.Before;
-import org.junit.Rule;
 import org.junit.Test;
-import org.junit.rules.ExpectedException;
 
 import java.util.Map;
 
+@UseJdbc
 public class TableSettingsTest extends SQLTransportIntegrationTest {
-
-    @Rule
-    public ExpectedException expectedException = ExpectedException.none();
 
     @Before
     public void prepare() throws Exception {
@@ -51,7 +48,7 @@ public class TableSettingsTest extends SQLTransportIntegrationTest {
                 "\"translog.disable_flush\" = false, " +
                 "\"recovery.initial_shards\" = 'quorum', " +
                 "\"warmer.enabled\" = false, " +
-                "\"gateway.local.sync\" = '20s'," +
+                "\"translog.sync_interval\" = '20s'," +
                 "\"refresh_interval\" = '1000'," +
                 "\"unassigned.node_left.delayed_timeout\" = '1m'" +
                 ")");
@@ -60,7 +57,7 @@ public class TableSettingsTest extends SQLTransportIntegrationTest {
     @Test
     public void testSelectSettingsColumn() throws Exception {
         // system tables have no settings
-        execute("select settings from information_schema.tables where schema_name = 'sys'");
+        execute("select settings from information_schema.tables where table_schema = 'sys'");
         for (Object[] row : response.rows()) {
             assertNull(row[0]);
         }
@@ -72,7 +69,6 @@ public class TableSettingsTest extends SQLTransportIntegrationTest {
             assertTrue(((Map<String, Object>) row[0]).containsKey("translog"));
             assertTrue(((Map<String, Object>) row[0]).containsKey("recovery"));
             assertTrue(((Map<String, Object>) row[0]).containsKey("warmer"));
-            assertTrue(((Map<String, Object>) row[0]).containsKey("gateway"));
             assertTrue(((Map<String, Object>) row[0]).containsKey("refresh_interval"));
             assertTrue(((Map<String, Object>) row[0]).containsKey("unassigned"));
         }
@@ -81,15 +77,15 @@ public class TableSettingsTest extends SQLTransportIntegrationTest {
     @Test
     public void testSetNonDynamicTableSetting() {
         expectedException.expect(SQLActionException.class);
-        expectedException.expectMessage("Can't update non dynamic settings[[index.gateway.local.sync]] for open indices [[settings_table]]");
-        execute("alter table settings_table set (\"gateway.local.sync\"='10s')");
+        expectedException.expectMessage("Can't update non dynamic settings[[index.translog.sync_interval]] for open indices");
+        execute("alter table settings_table set (\"translog.sync_interval\"='10s')");
     }
 
     @Test
     public void testFilterOnNull() throws Exception {
         execute("select * from information_schema.tables " +
                 "where settings IS NULL");
-        assertEquals(16L, response.rowCount());
+        assertEquals(20L, response.rowCount());
         execute("select * from information_schema.tables " +
                 "where table_name = 'settings_table' and settings['warmer']['enabled'] IS NULL");
         assertEquals(0, response.rowCount());
@@ -108,18 +104,21 @@ public class TableSettingsTest extends SQLTransportIntegrationTest {
                 "where settings['translog']['disable_flush'] = true");
         assertEquals(0, response.rowCount());
     }
+
     @Test
     public void testFilterOnInteger() throws Exception {
         execute("select * from information_schema.tables " +
                 "where settings['translog']['flush_threshold_ops'] >= 1000");
         assertEquals(1, response.rowCount());
     }
+
     @Test
     public void testFilterOnByteSizeValue() throws Exception {
         execute("select * from information_schema.tables " +
                 "where settings['translog']['flush_threshold_size'] < 2000000");
         assertEquals(1, response.rowCount());
     }
+
     @Test
     public void testFilterOnString() throws Exception {
         execute("select * from information_schema.tables " +

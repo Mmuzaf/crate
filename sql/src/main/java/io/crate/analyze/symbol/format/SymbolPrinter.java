@@ -27,17 +27,14 @@ import io.crate.analyze.symbol.*;
 import io.crate.metadata.ColumnIdent;
 import io.crate.metadata.FunctionImplementation;
 import io.crate.metadata.Functions;
-import io.crate.operation.operator.InOperator;
+import io.crate.metadata.Reference;
 import io.crate.operation.operator.any.AnyOperator;
-import io.crate.types.SetType;
 import org.elasticsearch.common.inject.Inject;
 import org.elasticsearch.common.inject.Singleton;
 
 import javax.annotation.Nullable;
-import java.util.Iterator;
 import java.util.List;
 import java.util.Locale;
-import java.util.Set;
 
 import static io.crate.analyze.symbol.format.SymbolPrinter.Strings.*;
 
@@ -66,14 +63,22 @@ public class SymbolPrinter {
     private static final OperatorFormatSpec SIMPLE_OPERATOR_FORMAT_SPEC = new OperatorFormatSpec() {
         @Override
         public String operator(Function function) {
-            assert function.info().ident().name().startsWith("op_");
+            assert function.info().ident().name().startsWith("op_") :
+                "function.info().ident().name() must start with 'op_'";
             return function.info().ident().name().substring(3).toUpperCase(Locale.ENGLISH);
+        }
+    };
+
+    public static final com.google.common.base.Function<? super Symbol, String> FUNCTION = new com.google.common.base.Function<Symbol, String>() {
+        @Nullable
+        @Override
+        public String apply(@Nullable Symbol input) {
+            return input == null ? null : INSTANCE.printSimple(input);
         }
     };
 
     public enum Style {
         SIMPLE(SymbolPrinterContext.DEFAULT_MAX_DEPTH, SymbolPrinterContext.DEFAULT_FULL_QUALIFIED, SymbolPrinterContext.DEFAULT_FAIL_IF_MAX_DEPTH_REACHED),
-        DEFAULT(SymbolPrinterContext.DEFAULT_MAX_DEPTH, SymbolPrinterContext.DEFAULT_FULL_QUALIFIED, SymbolPrinterContext.DEFAULT_FAIL_IF_MAX_DEPTH_REACHED),
         PARSEABLE(100, true, true),
         FULL_QUALIFIED(SymbolPrinterContext.DEFAULT_MAX_DEPTH, true, false),
         PARSEABLE_NOT_QUALIFIED(100, false, true);
@@ -111,8 +116,8 @@ public class SymbolPrinter {
     /**
      * format the given symbol
      *
-     * @param symbol the symbol to format
-     * @param maxDepth the max depth to print, if maxDepth is reached, "..." is printed for the rest
+     * @param symbol        the symbol to format
+     * @param maxDepth      the max depth to print, if maxDepth is reached, "..." is printed for the rest
      * @param fullQualified if references should be fully qualified (contain schema and table name)
      */
     public String print(Symbol symbol, int maxDepth, boolean fullQualified, boolean failIfMaxDepthReached) {
@@ -168,9 +173,7 @@ public class SymbolPrinter {
 
             // handle special functions
             String functionName = function.info().ident().name();
-            if (InOperator.NAME.equals(functionName)) {
-                printInOperator(function, context);
-            } else if (functionName.startsWith(AnyOperator.OPERATOR_PREFIX)) {
+            if (functionName.startsWith(AnyOperator.OPERATOR_PREFIX)) {
                 printAnyOperator(function, context);
             } else {
                 printGenericFunction(function, context);
@@ -183,11 +186,11 @@ public class SymbolPrinter {
             OperatorFormatSpec operatorFormatSpec = null;
 
             if (functions != null) {
-                FunctionImplementation<?> impl = functions.get(function.info().ident());
+                FunctionImplementation impl = functions.get(function.info().ident());
                 if (impl instanceof FunctionFormatSpec) {
-                    functionFormatSpec = (FunctionFormatSpec)impl;
+                    functionFormatSpec = (FunctionFormatSpec) impl;
                 } else if (impl instanceof OperatorFormatSpec) {
-                    operatorFormatSpec = (OperatorFormatSpec)impl;
+                    operatorFormatSpec = (OperatorFormatSpec) impl;
                 }
             } else if (function.info().ident().name().startsWith("op_")) {
                 operatorFormatSpec = SIMPLE_OPERATOR_FORMAT_SPEC;
@@ -205,7 +208,7 @@ public class SymbolPrinter {
         private void printAnyOperator(Function function, SymbolPrinterContext context) {
 
             List<Symbol> args = function.arguments();
-            assert args.size() == 2;
+            assert args.size() == 2 : "function's number of arguments must be 2";
             context.builder.append(PAREN_OPEN); // wrap operator in parens to ensure precedence
             context.down();
             process(args.get(0), context);
@@ -214,52 +217,21 @@ public class SymbolPrinter {
             // print operator
             String operatorName = anyOperatorName(function.info().ident().name());
             context.builder
-                    .append(WS)
-                    .append(operatorName)
-                    .append(WS);
+                .append(WS)
+                .append(operatorName)
+                .append(WS);
 
             context.builder.append(ANY).append(PAREN_OPEN);
             context.down();
             process(args.get(1), context);
             context.up();
             context.builder.append(PAREN_CLOSE)
-                           .append(PAREN_CLOSE);
+                .append(PAREN_CLOSE);
         }
 
         private String anyOperatorName(String functionName) {
             // handles NOT_LIKE -> NOT LIKE
-            return functionName.substring(4).replace("_", " ").toUpperCase(Locale.ENGLISH);
-        }
-
-        private void printInOperator(Function function, final SymbolPrinterContext context) {
-            // --> (ref IN (1, 2, 3))
-            List<Symbol> args = function.arguments();
-            assert args.size() == 2;
-            context.builder.append(PAREN_OPEN); // wrap operator in parens to ensure precedence
-            context.down();
-            process(args.get(0), context);
-            context.up();
-            context.builder.append(WS)
-                    .append(IN)
-                    .append(WS)
-                    .append(PAREN_OPEN);
-            Symbol setArg = args.get(1);
-
-            context.down();
-            if (!context.verifyMaxDepthReached()) {
-                assert setArg instanceof Literal && setArg.valueType() instanceof SetType;
-                Set setValue = (Set)((Literal) setArg).value();
-                for (Iterator iterator = setValue.iterator(); iterator.hasNext(); ) {
-                    Object elem = iterator.next();
-                    LiteralValueFormatter.INSTANCE.format(elem, context.builder);
-                    if (iterator.hasNext()) {
-                        context.builder.append(COMMA).append(WS);
-                    }
-                }
-            }
-            context.up();
-            context.builder.append(PAREN_CLOSE)
-                           .append(PAREN_CLOSE);
+            return functionName.substring(4).replace('_', ' ').toUpperCase(Locale.ENGLISH);
         }
 
         @Override
@@ -269,10 +241,10 @@ public class SymbolPrinter {
             }
 
             if (context.isFullQualified()) {
-                context.builder.append(symbol.info().ident().tableIdent().sqlFqn())
-                        .append(DOT);
+                context.builder.append(symbol.ident().tableIdent().sqlFqn())
+                    .append(DOT);
             }
-            context.builder.append(symbol.info().ident().columnIdent().quotedOutputName());
+            context.builder.append(symbol.ident().columnIdent().quotedOutputName());
             return null;
         }
 
@@ -289,7 +261,7 @@ public class SymbolPrinter {
 
             if (context.isFullQualified()) {
                 context.builder.append(RelationPrinter.INSTANCE.process(field.relation(), null))
-                        .append(DOT);
+                    .append(DOT);
             }
             if (field.path() instanceof ColumnIdent) {
                 context.builder.append(((ColumnIdent) field.path()).quotedOutputName());
@@ -306,10 +278,10 @@ public class SymbolPrinter {
             }
 
             context.builder.append("RELCOL(")
-                    .append(relationColumn.relationName())
-                    .append(", ")
-                    .append(relationColumn.index())
-                    .append(")");
+                .append(relationColumn.relationName())
+                .append(", ")
+                .append(relationColumn.index())
+                .append(")");
             return null;
         }
 
@@ -319,8 +291,8 @@ public class SymbolPrinter {
                 return null;
             }
             context.builder.append("INPUT(")
-                    .append(inputColumn.index())
-                    .append(")");
+                .append(inputColumn.index())
+                .append(")");
             return null;
         }
 
@@ -354,7 +326,7 @@ public class SymbolPrinter {
             switch (numArgs) {
                 case 1:
                     context.builder.append(formatter.operator(function))
-                            .append(" ");
+                        .append(" ");
                     context.down();
                     function.arguments().get(0).accept(this, context);
                     context.up();
@@ -364,8 +336,8 @@ public class SymbolPrinter {
                     function.arguments().get(0).accept(this, context);
                     context.up();
                     context.builder.append(WS)
-                            .append(formatter.operator(function))
-                            .append(WS);
+                        .append(formatter.operator(function))
+                        .append(WS);
                     context.down();
                     function.arguments().get(1).accept(this, context);
                     context.up();
@@ -388,9 +360,9 @@ public class SymbolPrinter {
         private void printArgs(List<Symbol> args, SymbolPrinterContext context) {
             context.down();
             try {
-                for (int i = 0, size=args.size(); i < size; i++) {
+                for (int i = 0, size = args.size(); i < size; i++) {
                     args.get(i).accept(this, context);
-                    if (i < size-1) {
+                    if (i < size - 1) {
                         context.builder.append(COMMA).append(WS);
                     }
                 }
@@ -408,7 +380,6 @@ public class SymbolPrinter {
         public static final String NULL_LOWER = "null";
         public static final String WS = " ";
         public static final String DOT = ".";
-        public static final String IN = "IN";
         public static final String ANY = "ANY";
     }
 }

@@ -22,11 +22,8 @@
 package io.crate.executor.transport.distributed;
 
 import io.crate.Streamer;
-import io.crate.core.collections.Bucket;
-import io.crate.exceptions.UnknownUpstreamFailure;
+import io.crate.data.Bucket;
 import io.crate.executor.transport.StreamBucket;
-import org.elasticsearch.common.io.ThrowableObjectInputStream;
-import org.elasticsearch.common.io.ThrowableObjectOutputStream;
 import org.elasticsearch.common.io.stream.StreamInput;
 import org.elasticsearch.common.io.stream.StreamOutput;
 import org.elasticsearch.transport.TransportRequest;
@@ -47,15 +44,15 @@ public class DistributedResultRequest extends TransportRequest {
     private boolean isLast = true;
 
     private Throwable throwable = null;
+    private boolean isKilled = false;
 
     public DistributedResultRequest() {
     }
 
-    private DistributedResultRequest(UUID jobId, byte inputId, int executionPhaseId, int bucketIdx, Streamer<?>[] streamers) {
+    private DistributedResultRequest(UUID jobId, byte inputId, int executionPhaseId, int bucketIdx) {
         this.jobId = jobId;
         this.executionPhaseId = executionPhaseId;
         this.bucketIdx = bucketIdx;
-        this.streamers = streamers;
         this.inputId = inputId;
     }
 
@@ -66,7 +63,8 @@ public class DistributedResultRequest extends TransportRequest {
                                     Streamer<?>[] streamers,
                                     Bucket rows,
                                     boolean isLast) {
-        this(jobId, inputId, executionPhaseId, bucketIdx, streamers);
+        this(jobId, inputId, executionPhaseId, bucketIdx);
+        this.streamers = streamers;
         this.rows = rows;
         this.isLast = isLast;
     }
@@ -75,10 +73,11 @@ public class DistributedResultRequest extends TransportRequest {
                                     int executionPhaseId,
                                     byte inputId,
                                     int bucketIdx,
-                                    Streamer<?>[] streamers,
-                                    Throwable throwable) {
-        this(jobId, inputId, executionPhaseId, bucketIdx, streamers);
+                                    Throwable throwable,
+                                    boolean isKilled) {
+        this(jobId, inputId, executionPhaseId, bucketIdx);
         this.throwable = throwable;
+        this.isKilled = isKilled;
     }
 
     public UUID jobId() {
@@ -99,14 +98,14 @@ public class DistributedResultRequest extends TransportRequest {
 
     public void streamers(Streamer<?>[] streamers) {
         if (rows instanceof StreamBucket) {
-            assert streamers != null;
+            assert streamers != null : "streamers must not be null";
             ((StreamBucket) rows).streamers(streamers);
         }
         this.streamers = streamers;
     }
 
-    public boolean rowsCanBeRead(){
-        if (rows instanceof StreamBucket){
+    public boolean rowsCanBeRead() {
+        if (rows instanceof StreamBucket) {
             return streamers != null;
         }
         return true;
@@ -125,6 +124,10 @@ public class DistributedResultRequest extends TransportRequest {
         return throwable;
     }
 
+    public boolean isKilled() {
+        return isKilled;
+    }
+
     @Override
     public void readFrom(StreamInput in) throws IOException {
         super.readFrom(in);
@@ -136,12 +139,8 @@ public class DistributedResultRequest extends TransportRequest {
 
         boolean failure = in.readBoolean();
         if (failure) {
-            ThrowableObjectInputStream tis = new ThrowableObjectInputStream(in);
-            try {
-                throwable = (Throwable) tis.readObject();
-            } catch (ClassNotFoundException e) {
-                throwable = new UnknownUpstreamFailure();
-            }
+            throwable = in.readThrowable();
+            isKilled = in.readBoolean();
         } else {
             StreamBucket bucket = new StreamBucket(streamers);
             bucket.readFrom(in);
@@ -162,8 +161,8 @@ public class DistributedResultRequest extends TransportRequest {
         boolean failure = throwable != null;
         out.writeBoolean(failure);
         if (failure) {
-            ThrowableObjectOutputStream too = new ThrowableObjectOutputStream(out);
-            too.writeObject(throwable);
+            out.writeThrowable(throwable);
+            out.writeBoolean(isKilled);
         } else {
             // TODO: we should not rely on another bucket in this class and instead write to the stream directly
             StreamBucket.writeBucket(out, streamers, rows);

@@ -2,6 +2,7 @@ rootLogger: INFO, console
 
 logger:
   action: DEBUG
+  io.crate.action.sql: DEBUG
 
 appender:
   console:

@@ -21,153 +21,134 @@
 
 package io.crate.jobs;
 
-import com.google.common.util.concurrent.FutureCallback;
-import com.google.common.util.concurrent.Futures;
-import com.google.common.util.concurrent.SettableFuture;
 import io.crate.Streamer;
 import io.crate.breaker.RamAccountingContext;
-import io.crate.core.collections.Bucket;
-import io.crate.core.collections.BucketPage;
-import io.crate.core.collections.Row1;
-import io.crate.core.collections.SingleRowBucket;
-import io.crate.operation.PageConsumeListener;
-import io.crate.operation.PageDownstream;
+import io.crate.data.ArrayBucket;
+import io.crate.data.Bucket;
+import io.crate.data.CollectionBucket;
+import io.crate.data.Row;
 import io.crate.operation.PageResultListener;
-import io.crate.operation.projectors.FlatProjectorChain;
+import io.crate.operation.merge.PagingIterator;
+import io.crate.operation.merge.PassThroughPagingIterator;
+import io.crate.operation.merge.SortedPagingIterator;
 import io.crate.test.integration.CrateUnitTest;
+import io.crate.testing.CollectingRowReceiver;
+import io.crate.testing.TestingHelpers;
 import org.elasticsearch.common.breaker.CircuitBreaker;
 import org.elasticsearch.common.breaker.NoopCircuitBreaker;
-import org.hamcrest.Matchers;
+import org.elasticsearch.common.logging.Loggers;
 import org.junit.Test;
-import org.mockito.invocation.InvocationOnMock;
-import org.mockito.stubbing.Answer;
 
-import java.util.List;
-import java.util.concurrent.CancellationException;
-import java.util.concurrent.CountDownLatch;
+import java.util.Collections;
+import java.util.Comparator;
+import java.util.Optional;
 import java.util.concurrent.atomic.AtomicReference;
 
+import static org.hamcrest.Matchers.instanceOf;
 import static org.hamcrest.Matchers.is;
-import static org.hamcrest.core.IsInstanceOf.instanceOf;
-import static org.mockito.Matchers.notNull;
-import static org.mockito.Mockito.*;
+import static org.mockito.Mockito.mock;
 
 public class PageDownstreamContextTest extends CrateUnitTest {
 
     private static final RamAccountingContext RAM_ACCOUNTING_CONTEXT =
-            new RamAccountingContext("dummy", new NoopCircuitBreaker(CircuitBreaker.Name.FIELDDATA));
+        new RamAccountingContext("dummy", new NoopCircuitBreaker(CircuitBreaker.FIELDDATA));
+
+    private PageDownstreamContext getPageDownstreamContext(CollectingRowReceiver rowReceiver,
+                                                           PagingIterator<Integer, Row> pagingIterator,
+                                                           int numBuckets) {
+        return new PageDownstreamContext(
+            Loggers.getLogger(PageDownstreamContext.class),
+            "n1",
+            1,
+            "dummy",
+            Optional.empty(),
+            rowReceiver,
+            pagingIterator,
+            new Streamer[0],
+            RAM_ACCOUNTING_CONTEXT,
+            numBuckets
+        );
+    }
 
     @Test
     public void testCantSetSameBucketTwiceWithoutReceivingFullPage() throws Exception {
-        final AtomicReference<Throwable> ref = new AtomicReference<>();
+        CollectingRowReceiver rowReceiver = new CollectingRowReceiver();
 
-        PageDownstream pageDownstream = mock(PageDownstream.class);
-        doAnswer(new Answer() {
-            @Override
-            public Void answer(InvocationOnMock invocation) throws Throwable {
-                ref.set((Throwable) invocation.getArguments()[0]);
-                return null;
-            }
-        }).when(pageDownstream).fail((Throwable)notNull());
-
-        PageDownstreamContext ctx = new PageDownstreamContext(1, "dummy", pageDownstream, new Streamer[0], RAM_ACCOUNTING_CONTEXT, 3, mock(FlatProjectorChain.class));
+        PageBucketReceiver ctx = getPageDownstreamContext(rowReceiver, PassThroughPagingIterator.oneShot(), 3);
 
         PageResultListener pageResultListener = mock(PageResultListener.class);
-        ctx.setBucket(1, new SingleRowBucket(new Row1("foo")), false, pageResultListener);
-        ctx.setBucket(1, new SingleRowBucket(new Row1("foo")), false, pageResultListener);
+        Bucket bucket = new CollectionBucket(Collections.singletonList(new Object[] { "foo" }));
+        ctx.setBucket(1, bucket, false, pageResultListener);
+        ctx.setBucket(1, bucket, false, pageResultListener);
 
-        Throwable t = ref.get();
-        assertThat(t, instanceOf(IllegalStateException.class));
-        assertThat(t.getMessage(), is("May not set the same bucket of a page more than once"));
+        expectedException.expect(IllegalStateException.class);
+        expectedException.expectMessage("Same bucket of a page set more than once. node=n1 method=setBucket phaseId=1 bucket=1");
+        rowReceiver.result();
     }
 
     @Test
     public void testKillCallsDownstream() throws Exception {
-        PageDownstream downstream = mock(PageDownstream.class);
+        CollectingRowReceiver rowReceiver = new CollectingRowReceiver();
+        PageDownstreamContext ctx = getPageDownstreamContext(rowReceiver, PassThroughPagingIterator.oneShot(), 3);
 
-        PageDownstreamContext ctx = new PageDownstreamContext(1, "dummy", downstream, new Streamer[0], RAM_ACCOUNTING_CONTEXT, 3, mock(FlatProjectorChain.class));
         final AtomicReference<Throwable> throwable = new AtomicReference<>();
-
-        ctx.future().addCallback(new FutureCallback<SubExecutionContextFuture.State>() {
-            @Override
-            public void onSuccess(SubExecutionContextFuture.State result) {
-
-            }
-
-            @Override
-            public void onFailure(Throwable t) {
+        ctx.completionFuture().whenComplete((r, t) -> {
+            if (t != null) {
                 assertTrue(throwable.compareAndSet(null, t));
+            } else {
+                fail("Expected exception");
             }
         });
+
         ctx.kill(null);
-        assertThat(throwable.get(), Matchers.instanceOf(CancellationException.class));
-        verify(downstream, times(1)).fail(any(CancellationException.class));
+        assertThat(throwable.get(), instanceOf(InterruptedException.class));
+
+        expectedException.expectCause(instanceOf(InterruptedException.class));
+        rowReceiver.result();
     }
 
     @Test
-    public void testActiveWhileProcessingPage() throws Exception {
-        PageDownstream downstream = mock(PageDownstream.class);
-        final SettableFuture<Void> pageCompleteFuture = SettableFuture.create();
-        final CountDownLatch pageConsumeLatch = new CountDownLatch(1);
-        doAnswer(new Answer() {
-            @Override
-            public Object answer(InvocationOnMock invocation) throws Throwable {
-                BucketPage bucketPage = (BucketPage)invocation.getArguments()[0];
-                final PageConsumeListener listener = (PageConsumeListener)invocation.getArguments()[1];
-                Futures.addCallback(
-                        Futures.allAsList(bucketPage.buckets()),
-                        new FutureCallback<List<Bucket>>() {
-                            @Override
-                            public void onSuccess(List<Bucket> result) {
-                                try {
-                                    pageConsumeLatch.await();
-                                    listener.finish();
-                                } catch (InterruptedException e) {
-                                    fail("interrupted while waiting on page result");
-                                }
-                                pageCompleteFuture.set(null);
-                            }
+    public void testPagingWithSortedPagingIterator() throws Exception {
+        CollectingRowReceiver rowReceiver = new CollectingRowReceiver();
+        PageDownstreamContext ctx = getPageDownstreamContext(
+            rowReceiver,
+            new SortedPagingIterator<>(Comparator.comparingInt(r -> (int)r.get(0)), false),
+            2
+        );
 
-                            @Override
-                            public void onFailure(Throwable t) {
-                                pageCompleteFuture.setException(t);
-                                listener.finish();
-                            }
-                        }
-                );
-                return null;
+        Bucket b1 = new ArrayBucket(new Object[][]{
+            new Object[]{1},
+            new Object[]{1},
+        });
+        Bucket b11 = new ArrayBucket(new Object[][]{
+            new Object[]{2},
+            new Object[]{2},
+        });
+        ctx.setBucket(0, b1, false, new PageResultListener() {
+            @Override
+            public void needMore(boolean needMore) {
+                if (needMore) {
+                    ctx.setBucket(0, b11, true, mock(PageResultListener.class));
+                }
             }
-        }).when(downstream).nextPage(any(BucketPage.class), any(PageConsumeListener.class));
-        final PageResultListener resultListener = mock(PageResultListener.class);
-        final PageDownstreamContext ctx = new PageDownstreamContext(1, "dummy", downstream, new Streamer[0], RAM_ACCOUNTING_CONTEXT, 2, mock(FlatProjectorChain.class));
 
-
-        // check passive by default
-        assertThat(ctx.subContextMode(), is(ExecutionSubContext.SubContextMode.PASSIVE));
-
-        // set first bucket
-        ctx.setBucket(0, new SingleRowBucket(new Row1("foo")), false, resultListener);
-
-        // check active until page is set
-        assertThat(ctx.subContextMode(), is(ExecutionSubContext.SubContextMode.ACTIVE));
-
-        // set second bucket
-        // in a thread because we block in the consumelistener to check the state while consuming
-        Thread setBucketThread2 = new Thread(new Runnable() {
             @Override
-            public void run() {
-                ctx.setBucket(1, new SingleRowBucket(new Row1("bar")), true, resultListener);
+            public int buckedIdx() {
+                return 0;
             }
         });
-        setBucketThread2.start();
+        Bucket b2 = new ArrayBucket(new Object[][] {
+            new Object[] { 4 }
+        });
+        ctx.setBucket(1, b2, true, mock(PageResultListener.class));
 
-        // check active while page is processed
-        assertThat(ctx.subContextMode(), is(ExecutionSubContext.SubContextMode.ACTIVE));
-        pageConsumeLatch.countDown();
 
-        setBucketThread2.join(100);
-        Thread.sleep(100);
-        // check closed is back to passive
-        assertThat(ctx.subContextMode(), is(ExecutionSubContext.SubContextMode.PASSIVE));
+        Bucket result = rowReceiver.result();
+        assertThat(TestingHelpers.printedTable(result),
+            is("1\n" +
+               "1\n" +
+               "2\n" +
+               "2\n" +
+               "4\n"));
     }
 }

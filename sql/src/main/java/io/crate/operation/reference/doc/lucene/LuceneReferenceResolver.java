@@ -23,54 +23,59 @@ package io.crate.operation.reference.doc.lucene;
 
 import io.crate.exceptions.UnhandledServerException;
 import io.crate.exceptions.UnsupportedFeatureException;
-import io.crate.metadata.ReferenceInfo;
+import io.crate.lucene.FieldTypeLookup;
+import io.crate.metadata.ColumnIdent;
+import io.crate.metadata.DocReferenceConverter;
+import io.crate.metadata.Reference;
 import io.crate.metadata.RowGranularity;
 import io.crate.operation.reference.ReferenceResolver;
 import io.crate.types.*;
-import org.elasticsearch.common.Nullable;
-import org.elasticsearch.index.mapper.MapperService;
+import org.elasticsearch.index.mapper.MappedFieldType;
 
 import java.util.Locale;
 
 public class LuceneReferenceResolver implements ReferenceResolver<LuceneCollectorExpression<?>> {
 
-    private final @Nullable MapperService mapperService;
+    private final FieldTypeLookup fieldTypeLookup;
 
-    private final static NullValueCollectorExpression NULL_COLLECTOR_EXPRESSION = new NullValueCollectorExpression();
-
-    public LuceneReferenceResolver(@Nullable MapperService mapperService) {
-        this.mapperService = mapperService;
+    public LuceneReferenceResolver(FieldTypeLookup fieldTypeLookup) {
+        this.fieldTypeLookup = fieldTypeLookup;
     }
 
     @Override
-    public LuceneCollectorExpression<?> getImplementation(ReferenceInfo refInfo) {
-        assert refInfo.granularity() == RowGranularity.DOC;
+    public LuceneCollectorExpression<?> getImplementation(Reference refInfo) {
+        assert refInfo.granularity() == RowGranularity.DOC: "lucene collector expressions are required to be on DOC granularity";
 
-        if (RawCollectorExpression.COLUMN_NAME.equals(refInfo.ident().columnIdent().name())){
-            if (refInfo.ident().columnIdent().isColumn()){
+        ColumnIdent columnIdent = refInfo.ident().columnIdent();
+        String name = columnIdent.name();
+        if (RawCollectorExpression.COLUMN_NAME.equals(name)) {
+            if (columnIdent.isColumn()) {
                 return new RawCollectorExpression();
             } else {
                 // TODO: implement an Object source expression which may support subscripts
                 throw new UnsupportedFeatureException(
-                        String.format(Locale.ENGLISH, "_source expression does not support subscripts %s",
-                        refInfo.ident().columnIdent().fqn()));
+                    String.format(Locale.ENGLISH, "_source expression does not support subscripts %s",
+                        columnIdent.fqn()));
             }
-        } else if (IdCollectorExpression.COLUMN_NAME.equals(refInfo.ident().columnIdent().name())) {
+        } else if (UidCollectorExpression.COLUMN_NAME.equals(name)) {
+            return new UidCollectorExpression();
+        } else if (IdCollectorExpression.COLUMN_NAME.equals(name)) {
             return new IdCollectorExpression();
-        } else if (DocCollectorExpression.COLUMN_NAME.equals(refInfo.ident().columnIdent().name())) {
+        } else if (DocCollectorExpression.COLUMN_NAME.equals(name)) {
             return DocCollectorExpression.create(refInfo);
-        } else if (DocIdCollectorExpression.COLUMN_NAME.equals(refInfo.ident().columnIdent().name())) {
+        } else if (DocIdCollectorExpression.COLUMN_NAME.equals(name)) {
             return new DocIdCollectorExpression();
-        } else if (ScoreCollectorExpression.COLUMN_NAME.equals(refInfo.ident().columnIdent().name())) {
+        } else if (ScoreCollectorExpression.COLUMN_NAME.equals(name)) {
             return new ScoreCollectorExpression();
         }
 
-        String colName = refInfo.ident().columnIdent().fqn();
-        if (this.mapperService != null && mapperService.smartNameFieldMapper(colName) == null) {
-            return NULL_COLLECTOR_EXPRESSION;
+        String colName = columnIdent.fqn();
+        MappedFieldType fieldType = fieldTypeLookup.get(colName);
+        if (fieldType == null) {
+            return new NullValueCollectorExpression(colName);
         }
 
-        switch (refInfo.type().id()) {
+        switch (refInfo.valueType().id()) {
             case ByteType.ID:
                 return new ByteColumnReference(colName);
             case ShortType.ID:
@@ -78,30 +83,37 @@ public class LuceneReferenceResolver implements ReferenceResolver<LuceneCollecto
             case IpType.ID:
                 return new IpColumnReference(colName);
             case StringType.ID:
-                return new BytesRefColumnReference(colName);
+                return new BytesRefColumnReference(colName, fieldType);
             case DoubleType.ID:
-                return new DoubleColumnReference(colName);
+                return new DoubleColumnReference(colName, fieldType);
             case BooleanType.ID:
                 return new BooleanColumnReference(colName);
             case ObjectType.ID:
                 return new ObjectColumnReference(colName);
             case FloatType.ID:
-                return new FloatColumnReference(colName);
+                return new FloatColumnReference(colName, fieldType);
             case LongType.ID:
             case TimestampType.ID:
                 return new LongColumnReference(colName);
             case IntegerType.ID:
                 return new IntegerColumnReference(colName);
             case GeoPointType.ID:
-                return new GeoPointColumnReference(colName);
+                return new GeoPointColumnReference(colName, fieldType);
             case GeoShapeType.ID:
                 return new GeoShapeColumnReference(colName);
+            case ArrayType.ID:
+            case SetType.ID:
+                return DocCollectorExpression.create(DocReferenceConverter.toSourceLookup(refInfo));
             default:
-                throw new UnhandledServerException(String.format(Locale.ENGLISH, "unsupported type '%s'", refInfo.type().getName()));
+                throw new UnhandledServerException(String.format(Locale.ENGLISH, "unsupported type '%s'", refInfo.valueType().getName()));
         }
     }
 
     private static class NullValueCollectorExpression extends LuceneCollectorExpression<Void> {
+
+        NullValueCollectorExpression(String columnName) {
+            super(columnName);
+        }
 
         @Override
         public Void value() {

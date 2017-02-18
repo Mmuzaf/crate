@@ -21,10 +21,11 @@
 
 package io.crate.executor.transport;
 
+import com.carrotsearch.hppc.IntObjectHashMap;
 import com.carrotsearch.hppc.IntObjectMap;
-import com.carrotsearch.hppc.IntObjectOpenHashMap;
 import com.carrotsearch.hppc.cursors.IntObjectCursor;
 import io.crate.Streamer;
+import io.crate.data.Bucket;
 import org.elasticsearch.common.io.stream.StreamInput;
 import org.elasticsearch.common.io.stream.StreamOutput;
 import org.elasticsearch.transport.TransportResponse;
@@ -34,18 +35,16 @@ import java.io.IOException;
 
 public class NodeFetchResponse extends TransportResponse {
 
-    static final NodeFetchResponse EMPTY = new NodeFetchResponse(null, null);
-
     private final IntObjectMap<Streamer[]> streamers;
 
     @Nullable
     private IntObjectMap<StreamBucket> fetched;
 
-    public static NodeFetchResponse forSending(IntObjectMap<StreamBucket> fetched){
+    public static NodeFetchResponse forSending(IntObjectMap<StreamBucket> fetched) {
         return new NodeFetchResponse(null, fetched);
     }
 
-    public static NodeFetchResponse forReceiveing(@Nullable IntObjectMap<Streamer[]> streamers){
+    public static NodeFetchResponse forReceiveing(@Nullable IntObjectMap<Streamer[]> streamers) {
         return new NodeFetchResponse(streamers, null);
     }
 
@@ -56,7 +55,7 @@ public class NodeFetchResponse extends TransportResponse {
     }
 
     @Nullable
-    public IntObjectMap<StreamBucket> fetched() {
+    public IntObjectMap<? extends Bucket> fetched() {
         return fetched;
     }
 
@@ -65,8 +64,8 @@ public class NodeFetchResponse extends TransportResponse {
         super.readFrom(in);
         int numReaders = in.readVInt();
         if (numReaders > 0) {
-            assert streamers != null;
-            fetched = new IntObjectOpenHashMap<>(numReaders);
+            assert streamers != null : "streamers must not be null";
+            fetched = new IntObjectHashMap<>(numReaders);
             for (int i = 0; i < numReaders; i++) {
                 int readerId = in.readVInt();
                 StreamBucket bucket = new StreamBucket(streamers.get(readerId));

@@ -22,199 +22,58 @@
 
 package io.crate.operation.collect.collectors;
 
-import com.google.common.collect.Iterables;
-import io.crate.analyze.OrderBy;
-import io.crate.analyze.symbol.Reference;
-import io.crate.analyze.symbol.Symbol;
-import io.crate.core.collections.Row;
-import io.crate.lucene.QueryBuilderHelper;
-import io.crate.operation.Input;
-import io.crate.operation.merge.NumberedIterable;
-import io.crate.operation.reference.doc.lucene.CollectorContext;
-import io.crate.operation.reference.doc.lucene.LuceneCollectorExpression;
-import io.crate.operation.reference.doc.lucene.LuceneMissingValue;
-import org.apache.lucene.queries.BooleanFilter;
-import org.apache.lucene.search.*;
-import org.elasticsearch.common.logging.ESLogger;
-import org.elasticsearch.common.logging.Loggers;
-import org.elasticsearch.search.internal.ContextIndexSearcher;
-import org.elasticsearch.search.internal.SearchContext;
+import io.crate.data.Row;
+import io.crate.operation.merge.KeyIterable;
+import org.elasticsearch.index.shard.ShardId;
 
-import javax.annotation.Nullable;
-import java.io.IOException;
-import java.util.Arrays;
-import java.util.Collection;
 import java.util.Collections;
-import java.util.List;
 import java.util.concurrent.Callable;
 
-public class OrderedDocCollector implements Callable<NumberedIterable<Row>>, AutoCloseable {
+public abstract class OrderedDocCollector implements Callable<KeyIterable<ShardId, Row>>, AutoCloseable {
+    private final ShardId shardId;
+    private final KeyIterable<ShardId, Row> empty;
 
-    private static final ESLogger LOGGER = Loggers.getLogger(OrderedDocCollector.class);
+    protected volatile boolean exhausted = false;
 
-    private final SearchContext searchContext;
-    private final boolean doDocsScores;
-    private final int batchSize;
-    private final OrderBy orderBy;
-    private final CollectorContext collectorContext;
-    private final Sort sort;
-    private final Collection<LuceneCollectorExpression<?>> expressions;
-    private final NumberedIterable<Row> empty;
-    private final int shardId;
-    private final ScoreDocRowFunction rowFunction;
-    private final DummyScorer scorer;
-    private final ContextIndexSearcher searcher;
-
-    private final Object[] missingValues;
-
-
-    @Nullable
-    private volatile FieldDoc lastDoc = null;
-
-    volatile boolean exhausted = false;
-
-
-    public OrderedDocCollector(SearchContext searchContext,
-                               boolean doDocsScores,
-                               int batchSize,
-                               CollectorContext collectorContext,
-                               OrderBy orderBy,
-                               Sort sort,
-                               List<Input<?>> inputs,
-                               Collection<LuceneCollectorExpression<?>> expressions) {
-        this.searchContext = searchContext;
-        this.shardId = searchContext.indexShard().shardId().id();
-        this.doDocsScores = doDocsScores;
-        this.batchSize = batchSize;
-        this.orderBy = orderBy;
-        searcher = searchContext.searcher();
-        this.collectorContext = collectorContext;
-        this.sort = sort;
-        this.scorer = new DummyScorer();
-        this.expressions = expressions;
-        this.rowFunction = new ScoreDocRowFunction(
-                searcher.getIndexReader(),
-                inputs,
-                expressions,
-                scorer
-        );
-        empty = new NumberedIterable<>(shardId, Collections.<Row>emptyList());
-        missingValues = new Object[orderBy.orderBySymbols().size()];
-        for (int i = 0; i < orderBy.orderBySymbols().size(); i++) {
-            missingValues[i] = LuceneMissingValue.missingValue(orderBy, i);
-        }
+    public OrderedDocCollector(ShardId shardId) {
+        this.shardId = shardId;
+        empty = new KeyIterable<>(shardId, Collections.<Row>emptyList());
     }
 
-    /**
-     * On the first call this will do an initial search and provide {@link #batchSize} number of rows
-     * (or less if there aren't more available)
-     * </p>
-     * On subsequent calls it will return more rows (max {@link #batchSize} or less.
-     * These rows are always the rows that come after the last row of the previously returned rows
-     *
-     * Basically, calling this function multiple times pages through the shard in batches.
-     */
-    @Override
-    public NumberedIterable<Row> call() throws Exception {
-        if (exhausted) {
-            return empty;
-        }
-        if (lastDoc == null) {
-            return initialSearch();
-        }
-        return searchMore();
+    public ShardId shardId() {
+        return shardId;
     }
 
     @Override
     public void close() {
-        searcher.finishStage(ContextIndexSearcher.Stage.MAIN_QUERY);
-        searchContext.clearReleasables(SearchContext.Lifetime.PHASE);
-        searchContext.close();
     }
 
-    private NumberedIterable<Row> scoreDocToIterable(ScoreDoc[] scoreDocs) {
-        exhausted = scoreDocs.length < batchSize;
-        if (scoreDocs.length > 0) {
-            lastDoc = (FieldDoc) scoreDocs[scoreDocs.length - 1];
-        }
-        return new NumberedIterable<>(shardId, Iterables.transform(Arrays.asList(scoreDocs), rowFunction));
-    }
-
-    private NumberedIterable<Row> searchMore() throws IOException {
+    /**
+     * Returns an iterable for a batch of rows. In order to consume all rows of this collector,
+     * {@linkplain #call()} needs to be called while {@linkplain #exhausted()} is {@code false}.
+     * After {@linkplain #exhausted()} is {@code true}, all subsequent calls to {@linkplain #call()}
+     * will return an empty iterable.
+     *
+     * @return an iterable for the next batch of rows.
+     */
+    @Override
+    public KeyIterable<ShardId, Row> call() throws Exception {
         if (exhausted) {
-            LOGGER.trace("searchMore but EXHAUSTED");
-            return empty;
+            return empty();
         }
-        LOGGER.debug("searchMore from [{}]", lastDoc);
-        TopDocs topDocs = searcher.searchAfter(lastDoc, query(lastDoc), null, batchSize, sort, doDocsScores, false);
-        return scoreDocToIterable(topDocs.scoreDocs);
+        return collect();
     }
 
-    private NumberedIterable<Row> initialSearch() throws IOException {
-        for (LuceneCollectorExpression<?> expression : expressions) {
-            expression.startCollect(collectorContext);
-            expression.setScorer(scorer);
-        }
-        searcher.inStage(ContextIndexSearcher.Stage.MAIN_QUERY);
-        TopFieldDocs topFieldDocs = searcher.search(searchContext.query(), null, batchSize, sort, doDocsScores, false);
-        return scoreDocToIterable(topFieldDocs.scoreDocs);
+    protected abstract KeyIterable<ShardId, Row> collect() throws Exception;
+
+    /**
+     * Returns {@code true} if this collector has no rows to deliver anymore.
+     */
+    public boolean exhausted() {
+        return exhausted;
     }
 
-    private Query query(FieldDoc lastDoc) {
-        Query query = nextPageQuery(lastDoc, orderBy, missingValues);
-        if (query == null) {
-            return searchContext.query();
-        }
-        BooleanQuery searchAfterQuery = new BooleanQuery();
-        searchAfterQuery.add(searchContext.query(), BooleanClause.Occur.MUST);
-        searchAfterQuery.add(query, BooleanClause.Occur.MUST_NOT);
-        return searchAfterQuery;
-    }
-
-    @Nullable
-    public static Query nextPageQuery(FieldDoc lastCollected, OrderBy orderBy, Object[] missingValues) {
-        BooleanQuery query = new BooleanQuery();
-        for (int i = 0; i < orderBy.orderBySymbols().size(); i++) {
-            Symbol order = orderBy.orderBySymbols().get(i);
-            Object value = lastCollected.fields[i];
-            if (order instanceof Reference) {
-                boolean nullsFirst = orderBy.nullsFirst()[i] == null ? false : orderBy.nullsFirst()[i];
-                value = value.equals(missingValues[i]) ? null : value;
-                if (nullsFirst && value == null) {
-                   // no filter needed
-                   continue;
-                }
-                QueryBuilderHelper helper = QueryBuilderHelper.forType(order.valueType());
-                String columnName = ((Reference) order).info().ident().columnIdent().fqn();
-
-                Query orderQuery;
-                // nulls already gone, so they should be excluded
-                if (nullsFirst && value != null) {
-                    BooleanFilter booleanFilter = new BooleanFilter();
-                    if (orderBy.reverseFlags()[i]) {
-                        booleanFilter.add(helper.rangeFilter(columnName, null, value, false, true), BooleanClause.Occur.MUST_NOT);
-                    } else {
-                        booleanFilter.add(helper.rangeFilter(columnName, value, null, true, false), BooleanClause.Occur.MUST_NOT);
-                    }
-                    orderQuery = new FilteredQuery(new MatchAllDocsQuery(), booleanFilter);
-                } else {
-                    if (orderBy.reverseFlags()[i]) {
-                        orderQuery = helper.rangeQuery(columnName, value, null, false, false);
-                    } else {
-                        orderQuery = helper.rangeQuery(columnName, null, value, false, false);
-                    }
-                }
-                query.add(orderQuery, BooleanClause.Occur.MUST);
-            }
-        }
-        if (query.clauses().size() > 0) {
-            return query;
-        } else {
-            return null;
-        }
-    }
-
-    public int shardId() {
-        return shardId;
+    public KeyIterable<ShardId, Row> empty() {
+        return empty;
     }
 }

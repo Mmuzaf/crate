@@ -23,14 +23,14 @@
 package io.crate.metadata;
 
 import com.google.common.collect.ImmutableList;
-import io.crate.analyze.symbol.Reference;
 import io.crate.analyze.symbol.Symbol;
 import io.crate.test.integration.CrateUnitTest;
 import io.crate.types.DataTypes;
 import org.elasticsearch.common.collect.MapBuilder;
 import org.junit.Test;
 
-import static io.crate.testing.TestingHelpers.isLiteral;
+import static io.crate.testing.SymbolMatchers.isLiteral;
+
 
 public class ReferenceToLiteralConverterTest extends CrateUnitTest {
 
@@ -40,11 +40,11 @@ public class ReferenceToLiteralConverterTest extends CrateUnitTest {
     @Test
     public void testReplaceSimpleReference() throws Exception {
         Object[] inputValues = new Object[]{1};
-        Reference idRef = new Reference(new ReferenceInfo(
-                new ReferenceIdent(TABLE_IDENT, new ColumnIdent("id")), RowGranularity.DOC, DataTypes.INTEGER));
+        Reference idRef = new Reference(
+            new ReferenceIdent(TABLE_IDENT, new ColumnIdent("id")), RowGranularity.DOC, DataTypes.INTEGER);
 
         ReferenceToLiteralConverter.Context context = new ReferenceToLiteralConverter.Context(
-                ImmutableList.of(idRef), ImmutableList.of(idRef.info()));
+            ImmutableList.of(idRef), ImmutableList.of(idRef));
         context.values(inputValues);
 
         Symbol replacedSymbol = REFERENCE_TO_LITERAL_CONVERTER.process(idRef, context);
@@ -54,16 +54,16 @@ public class ReferenceToLiteralConverterTest extends CrateUnitTest {
     @Test
     public void testReplaceSubscriptReference() throws Exception {
         Object[] inputValues = new Object[]{
-                MapBuilder.newMapBuilder().put("name", "Ford").map()};
+            MapBuilder.newMapBuilder().put("name", "Ford").map()};
 
-        Reference userRef = new Reference(new ReferenceInfo(
-                new ReferenceIdent(TABLE_IDENT, new ColumnIdent("user")), RowGranularity.DOC, DataTypes.OBJECT));
-        Reference nameRef = new Reference(new ReferenceInfo(
-                new ReferenceIdent(TABLE_IDENT, new ColumnIdent("user", ImmutableList.of("name"))),
-                RowGranularity.DOC, DataTypes.STRING));
+        Reference userRef = new Reference(
+            new ReferenceIdent(TABLE_IDENT, new ColumnIdent("user")), RowGranularity.DOC, DataTypes.OBJECT);
+        Reference nameRef = new Reference(
+            new ReferenceIdent(TABLE_IDENT, new ColumnIdent("user", ImmutableList.of("name"))),
+            RowGranularity.DOC, DataTypes.STRING);
 
         ReferenceToLiteralConverter.Context context = new ReferenceToLiteralConverter.Context(
-                ImmutableList.of(userRef), ImmutableList.of(nameRef.info()));
+            ImmutableList.of(userRef), ImmutableList.of(nameRef));
         context.values(inputValues);
 
         Symbol replacedSymbol = REFERENCE_TO_LITERAL_CONVERTER.process(nameRef, context);
@@ -73,18 +73,18 @@ public class ReferenceToLiteralConverterTest extends CrateUnitTest {
     @Test
     public void testReplaceNestedSubscriptReference() throws Exception {
         Object[] inputValues = new Object[]{
-                MapBuilder.newMapBuilder().put("profile",
-                        MapBuilder.newMapBuilder().put("name", "Ford").map()
-                ).map()};
+            MapBuilder.newMapBuilder().put("profile",
+                MapBuilder.newMapBuilder().put("name", "Ford").map()
+            ).map()};
 
-        Reference userRef = new Reference(new ReferenceInfo(
-                new ReferenceIdent(TABLE_IDENT, new ColumnIdent("user")), RowGranularity.DOC, DataTypes.OBJECT));
-        Reference nameRef = new Reference(new ReferenceInfo(
-                new ReferenceIdent(TABLE_IDENT, new ColumnIdent("user", ImmutableList.of("profile", "name"))),
-                RowGranularity.DOC, DataTypes.STRING));
+        Reference userRef = new Reference(
+            new ReferenceIdent(TABLE_IDENT, new ColumnIdent("user")), RowGranularity.DOC, DataTypes.OBJECT);
+        Reference nameRef = new Reference(
+            new ReferenceIdent(TABLE_IDENT, new ColumnIdent("user", ImmutableList.of("profile", "name"))),
+            RowGranularity.DOC, DataTypes.STRING);
 
         ReferenceToLiteralConverter.Context context = new ReferenceToLiteralConverter.Context(
-                ImmutableList.of(userRef), ImmutableList.of(nameRef.info()));
+            ImmutableList.of(userRef), ImmutableList.of(nameRef));
         context.values(inputValues);
 
         Symbol replacedSymbol = REFERENCE_TO_LITERAL_CONVERTER.process(nameRef, context);

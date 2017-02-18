@@ -21,15 +21,15 @@
 
 package io.crate.operation.reference.sys.cluster;
 
-import io.crate.metadata.SimpleObjectExpression;
+import io.crate.metadata.ReferenceImplementation;
 import io.crate.metadata.settings.CrateSettings;
 import io.crate.metadata.settings.Setting;
 import io.crate.operation.reference.NestedObjectExpression;
 import io.crate.types.DataType;
+import org.elasticsearch.cluster.ClusterService;
 import org.elasticsearch.common.inject.Inject;
 import org.elasticsearch.common.logging.ESLogger;
 import org.elasticsearch.common.logging.Loggers;
-import org.elasticsearch.common.settings.ImmutableSettings;
 import org.elasticsearch.common.settings.Settings;
 import org.elasticsearch.node.settings.NodeSettingsService;
 
@@ -43,7 +43,7 @@ public class ClusterSettingsExpression extends NestedObjectExpression {
 
     public static final String NAME = "settings";
 
-    static class SettingExpression extends SimpleObjectExpression<Object> {
+    static class SettingExpression implements ReferenceImplementation<Object> {
         private final Map<String, Object> values;
         private final String name;
         private final DataType dataType;
@@ -73,11 +73,11 @@ public class ClusterSettingsExpression extends NestedObjectExpression {
             for (Setting childSetting : childSettings) {
                 if (childSetting.children().isEmpty()) {
                     childImplementations.put(childSetting.name(),
-                            new SettingExpression(childSetting, values)
+                        new SettingExpression(childSetting, values)
                     );
                 } else {
                     childImplementations.put(childSetting.name(),
-                            new NestedSettingExpression(childSetting, values)
+                        new NestedSettingExpression(childSetting, values)
                     );
                 }
             }
@@ -94,14 +94,15 @@ public class ClusterSettingsExpression extends NestedObjectExpression {
             this.logger = Loggers.getLogger(getClass());
             this.values = values;
             this.initialSettings = initialSettings;
+            applySettings(CrateSettings.SETTINGS, initialSettings);
         }
 
         @Override
         public void onRefreshSettings(Settings settings) {
-            applySettings(CrateSettings.CRATE_SETTINGS,
-                    ImmutableSettings.builder()
-                            .put(initialSettings)
-                            .put(settings).build()
+            applySettings(CrateSettings.SETTINGS,
+                Settings.builder()
+                    .put(initialSettings)
+                    .put(settings).build()
             );
         }
 
@@ -129,45 +130,50 @@ public class ClusterSettingsExpression extends NestedObjectExpression {
 
 
     private final ConcurrentHashMap<String, Object> values = new ConcurrentHashMap<>();
+    private final ClusterService clusterService;
 
     @Inject
-    public ClusterSettingsExpression(Settings settings, NodeSettingsService nodeSettingsService) {
-        applyDefaults(CrateSettings.CRATE_SETTINGS);
+    public ClusterSettingsExpression(Settings settings, NodeSettingsService nodeSettingsService, ClusterService clusterService) {
+        this.clusterService = clusterService;
+        setDefaultValues(CrateSettings.SETTINGS);
         ApplySettings applySettings = new ApplySettings(settings, values);
 
         nodeSettingsService.addListener(applySettings);
         addChildImplementations();
     }
 
-    private void applyDefaults(List<Setting> settings) {
+    private void setDefaultValues(List<Setting> settings) {
         for (Setting<?, ?> setting : settings) {
             String settingName = setting.settingName();
             values.put(settingName, setting.defaultValue());
-            applyDefaults(setting.children());
+            setDefaultValues(setting.children());
         }
     }
 
     private void addChildImplementations() {
         childImplementations.put(
-                CrateSettings.STATS.name(),
-                new NestedSettingExpression(CrateSettings.STATS, values));
+            CrateSettings.STATS.name(),
+            new NestedSettingExpression(CrateSettings.STATS, values));
         childImplementations.put(
-                CrateSettings.CLUSTER.name(),
-                new NestedSettingExpression(CrateSettings.CLUSTER, values));
+            CrateSettings.CLUSTER.name(),
+            new NestedSettingExpression(CrateSettings.CLUSTER, values));
         childImplementations.put(
-                CrateSettings.DISCOVERY.name(),
-                new NestedSettingExpression(CrateSettings.DISCOVERY, values));
+            CrateSettings.DISCOVERY.name(),
+            new NestedSettingExpression(CrateSettings.DISCOVERY, values));
         childImplementations.put(
-                CrateSettings.INDICES.name(),
-                new NestedSettingExpression(CrateSettings.INDICES, values));
+            CrateSettings.INDICES.name(),
+            new NestedSettingExpression(CrateSettings.INDICES, values));
         childImplementations.put(
-                CrateSettings.BULK.name(),
-                new NestedSettingExpression(CrateSettings.BULK, values));
+            CrateSettings.BULK.name(),
+            new NestedSettingExpression(CrateSettings.BULK, values));
         childImplementations.put(
-                CrateSettings.GATEWAY.name(),
-                new NestedSettingExpression(CrateSettings.GATEWAY, values));
+            CrateSettings.GATEWAY.name(),
+            new NestedSettingExpression(CrateSettings.GATEWAY, values));
         childImplementations.put(
-                CrateSettings.UDC.name(),
-                new NestedSettingExpression(CrateSettings.UDC, values));
+            CrateSettings.UDC.name(),
+            new NestedSettingExpression(CrateSettings.UDC, values));
+        childImplementations.put(
+            ClusterLoggingOverridesExpression.NAME,
+            new ClusterLoggingOverridesExpression(clusterService));
     }
 }

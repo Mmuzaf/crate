@@ -21,64 +21,43 @@
 
 package io.crate.analyze;
 
-import com.google.common.base.Optional;
-import io.crate.analyze.relations.AnalyzedRelation;
-import io.crate.analyze.relations.AnalyzedRelationVisitor;
-import io.crate.analyze.relations.QueriedRelation;
-import io.crate.analyze.relations.RelationSplitter;
+import com.google.common.collect.ImmutableList;
+import io.crate.analyze.relations.*;
 import io.crate.analyze.symbol.Field;
 import io.crate.analyze.symbol.Symbol;
 import io.crate.metadata.Path;
+import io.crate.metadata.table.Operation;
 import io.crate.sql.tree.QualifiedName;
 
+import javax.annotation.Nonnull;
 import java.util.*;
 
 public class MultiSourceSelect implements QueriedRelation {
 
     private final RelationSplitter splitter;
-
-    public static class Source {
-        private final AnalyzedRelation relation;
-        private final QuerySpec querySpec;
-
-        public Source(AnalyzedRelation relation, QuerySpec querySpec) {
-            this.relation = relation;
-            this.querySpec = querySpec;
-        }
-
-        public QuerySpec querySpec() {
-            return querySpec;
-        }
-
-        public AnalyzedRelation relation() {
-            return relation;
-        }
-
-        @Override
-        public String toString() {
-            return "Source{" +
-                   "rel=" + relation +
-                   ", qs=" + querySpec +
-                   '}';
-        }
-    }
-
-    private final HashMap<QualifiedName, Source> sources;
-    private final List<Field> fields;
+    private final HashMap<QualifiedName, RelationSource> sources;
     private final QuerySpec querySpec;
+    private final Fields fields;
+    private final List<JoinPair> joinPairs;
+    private final List<Symbol> outputSymbols;
+    private QualifiedName qualifiedName;
 
-    public MultiSourceSelect(
-            Map<QualifiedName, AnalyzedRelation> sources,
-            List<? extends Path> outputNames,
-            QuerySpec querySpec) {
+    public MultiSourceSelect(Map<QualifiedName, AnalyzedRelation> sources,
+                             List<Symbol> outputSymbols,
+                             Collection<? extends Path> outputNames,
+                             QuerySpec querySpec,
+                             List<JoinPair> joinPairs) {
+        this.outputSymbols = ImmutableList.copyOf(outputSymbols);
         assert sources.size() > 1 : "MultiSourceSelect requires at least 2 relations";
+        this.splitter = new RelationSplitter(querySpec, sources.values(), joinPairs);
+        this.sources = initializeSources(sources);
         this.querySpec = querySpec;
-        this.sources = new LinkedHashMap<>(sources.size());
-        this.splitter = initSources(sources);
+        this.joinPairs = joinPairs;
         assert outputNames.size() == querySpec.outputs().size() : "size of outputNames and outputSymbols must match";
-        fields = new ArrayList<>(outputNames.size());
-        for (int i = 0; i < outputNames.size(); i++) {
-            fields.add(new Field(this, outputNames.get(i), querySpec.outputs().get(i).valueType()));
+        fields = new Fields(outputNames.size());
+        Iterator<Symbol> outputsIterator = querySpec.outputs().iterator();
+        for (Path path : outputNames) {
+            fields.add(path, new Field(this, path, outputsIterator.next().valueType()));
         }
     }
 
@@ -86,16 +65,16 @@ public class MultiSourceSelect implements QueriedRelation {
         return splitter.requiredForQuery();
     }
 
-    public Set<Field> canBeFetched(){
+    public Set<Field> canBeFetched() {
         return splitter.canBeFetched();
     }
 
-    public Map<QualifiedName, Source> sources() {
+    public Map<QualifiedName, RelationSource> sources() {
         return sources;
     }
 
-    public void normalize(EvaluatingNormalizer normalizer) {
-        querySpec.normalize(normalizer);
+    public List<JoinPair> joinPairs() {
+        return joinPairs;
     }
 
     @Override
@@ -104,42 +83,55 @@ public class MultiSourceSelect implements QueriedRelation {
     }
 
     @Override
-    public Field getField(Path path) {
-        throw new UnsupportedOperationException("getField on SelectAnalyzedStatement is not implemented");
-    }
-
-    @Override
-    public Field getWritableField(Path path) throws UnsupportedOperationException {
-        throw new UnsupportedOperationException("SelectAnalyzedStatement is not writable");
+    public Field getField(Path path, Operation operation) throws UnsupportedOperationException {
+        if (operation != Operation.READ) {
+            throw new UnsupportedOperationException("getField on MultiSourceSelect is only supported for READ operations");
+        }
+        return fields.get(path);
     }
 
     @Override
     public List<Field> fields() {
-        return fields;
+        return fields.asList();
     }
 
+    @Override
+    public QualifiedName getQualifiedName() {
+        return qualifiedName;
+    }
+
+    @Override
+    public void setQualifiedName(@Nonnull QualifiedName qualifiedName) {
+        this.qualifiedName = qualifiedName;
+    }
+
+    @Override
     public QuerySpec querySpec() {
         return querySpec;
     }
 
-    private RelationSplitter initSources(Map<QualifiedName, AnalyzedRelation> sources) {
-
-        RelationSplitter splitter = RelationSplitter.process(querySpec, sources.values());
-        for (Map.Entry<QualifiedName, AnalyzedRelation> entry : sources.entrySet()) {
-            QuerySpec spec = splitter.getSpec(entry.getValue());
-            assert spec != null;
-            Source source = new Source(entry.getValue(), spec);
-            this.sources.put(entry.getKey(), source);
+    private static HashMap<QualifiedName, RelationSource> initializeSources(Map<QualifiedName, AnalyzedRelation> originalSources) {
+        HashMap<QualifiedName, RelationSource> sources = new LinkedHashMap<>(originalSources.size());
+        for (Map.Entry<QualifiedName, AnalyzedRelation> entry : originalSources.entrySet()) {
+            RelationSource source = new RelationSource(entry.getKey(), entry.getValue());
+            sources.put(entry.getKey(), source);
         }
-        return splitter;
+        return sources;
     }
 
-    /**
-     * Returns an orderBy containing only orderings which are not already pushed down to sources. The optional is only
-     * pressent if there are orderBySymbols left. The existing orderBy is returned if it
-     * there are no changes.
-     */
-    public Optional<OrderBy> remainingOrderBy() {
+    public void pushDownQuerySpecs() {
+        splitter.process();
+        for (RelationSource source : sources.values()) {
+            QuerySpec spec = splitter.getSpec(source.relation());
+            source.querySpec(spec);
+        }
+    }
+
+    public Optional<RemainingOrderBy> remainingOrderBy() {
         return splitter.remainingOrderBy();
+    }
+
+    public List<Symbol> outputSymbols() {
+        return outputSymbols;
     }
 }

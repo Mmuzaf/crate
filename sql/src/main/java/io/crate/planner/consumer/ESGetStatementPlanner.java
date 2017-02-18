@@ -22,37 +22,46 @@
 package io.crate.planner.consumer;
 
 
-import com.google.common.base.Optional;
-import io.crate.analyze.relations.AnalyzedRelation;
-import io.crate.analyze.relations.PlannedAnalyzedRelation;
+import io.crate.analyze.QuerySpec;
 import io.crate.analyze.relations.QueriedDocTable;
+import io.crate.analyze.where.DocKeys;
 import io.crate.exceptions.VersionInvalidException;
 import io.crate.metadata.doc.DocTableInfo;
+import io.crate.planner.Limits;
 import io.crate.planner.NoopPlan;
 import io.crate.planner.Plan;
 import io.crate.planner.Planner;
-import io.crate.planner.node.NoopPlannedAnalyzedRelation;
-import io.crate.planner.node.dql.ESGetNode;
+import io.crate.planner.node.dql.ESGet;
 
-import java.util.UUID;
+import java.util.Optional;
 
 public class ESGetStatementPlanner {
 
-
     public static Plan convert(QueriedDocTable table, Planner.Context context) {
-        assert !(table.querySpec().hasAggregates()
-                || table.querySpec().groupBy().isPresent()
-                || !table.querySpec().where().docKeys().isPresent());
+        QuerySpec querySpec = table.querySpec();
+        Optional<DocKeys> optKeys = querySpec.where().docKeys();
+        assert !querySpec.hasAggregates() : "Can't create ESGet plan for queries with aggregates";
+        assert !querySpec.groupBy().isPresent() : "Can't create ESGet plan for queries with group by";
+        assert optKeys.isPresent() : "Can't create ESGet without docKeys";
 
         DocTableInfo tableInfo = table.tableRelation().tableInfo();
-        if(table.querySpec().where().docKeys().get().withVersions()){
+        DocKeys docKeys = optKeys.get();
+        if (docKeys.withVersions()){
             throw new VersionInvalidException();
         }
-        Optional<Integer> limit = table.querySpec().limit();
-        if (limit.isPresent() && limit.get() == 0){
+        Limits limits = context.getLimits(querySpec);
+        if (limits.hasLimit() && limits.finalLimit() == 0) {
             return new NoopPlan(context.jobId());
         }
-        table.tableRelation().validateOrderBy(table.querySpec().orderBy());
-        return new ESGetNode(context.nextExecutionPhaseId(), tableInfo, table.querySpec(), context.jobId()).plan();
+        table.tableRelation().validateOrderBy(querySpec.orderBy());
+        return new ESGet(
+            context.nextExecutionPhaseId(),
+            tableInfo,
+            querySpec.outputs(),
+            optKeys.get(),
+            querySpec.orderBy(),
+            limits.finalLimit(),
+            limits.offset(),
+            context.jobId());
     }
 }

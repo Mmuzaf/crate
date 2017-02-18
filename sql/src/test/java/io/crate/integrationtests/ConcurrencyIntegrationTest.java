@@ -21,6 +21,7 @@
 
 package io.crate.integrationtests;
 
+import io.crate.testing.UseJdbc;
 import org.junit.After;
 import org.junit.Before;
 import org.junit.Test;
@@ -31,6 +32,7 @@ import java.util.concurrent.Executors;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicReference;
 
+@UseJdbc
 public class ConcurrencyIntegrationTest extends SQLTransportIntegrationTest {
 
     private ExecutorService executor;
@@ -60,33 +62,33 @@ public class ConcurrencyIntegrationTest extends SQLTransportIntegrationTest {
         final CountDownLatch latch = new CountDownLatch(1000);
         final AtomicReference<Throwable> lastThrowable = new AtomicReference<>();
 
-        String[] statements = new String[] {
-                "insert into t1 (id, x) values (1, 10) on duplicate key update x = x + 10 ",
-                "insert into t2 (id, x) values (1, 'bar') on duplicate key update x = 'foo' ",
-                "insert into t3 (x) values (current_timestamp) ",
-                "insert into t4 (y) values ('foo') ",
+        String[] statements = new String[]{
+            "insert into t1 (id, x) values (1, 10) on duplicate key update x = x + 10 ",
+            "insert into t2 (id, x) values (1, 'bar') on duplicate key update x = 'foo' ",
+            "insert into t3 (x) values (current_timestamp) ",
+            "insert into t4 (y) values ('foo') ",
         };
 
         for (final String statement : statements) {
             for (int i = 0; i < 50; i++) {
                 executor.submit(
-                        new Runnable() {
-                            @Override
-                            public void run() {
-                                try {
-                                    while (latch.getCount() > 0) {
-                                        execute(statement);
-                                        latch.countDown();
-                                    }
-                                } catch (Throwable t) {
-                                    // ignore VersionConflict.. too many concurrent inserts
-                                    // retry might not succeed
-                                    if (!t.getMessage().contains("version conflict")) {
-                                        lastThrowable.set(t);
-                                    }
+                    new Runnable() {
+                        @Override
+                        public void run() {
+                            try {
+                                while (latch.getCount() > 0) {
+                                    execute(statement);
+                                    latch.countDown();
+                                }
+                            } catch (Throwable t) {
+                                // ignore VersionConflict.. too many concurrent inserts
+                                // retry might not succeed
+                                if (!t.getMessage().contains("version conflict")) {
+                                    lastThrowable.set(t);
                                 }
                             }
                         }
+                    }
                 );
             }
         }

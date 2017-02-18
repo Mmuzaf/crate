@@ -22,8 +22,8 @@
 package io.crate.lucene;
 
 import com.google.common.base.Preconditions;
-import com.google.common.base.Throwables;
 import com.google.common.collect.ImmutableMap;
+import com.google.common.collect.ImmutableSet;
 import com.google.common.collect.Iterables;
 import com.spatial4j.core.context.jts.JtsSpatialContext;
 import com.spatial4j.core.shape.Rectangle;
@@ -31,19 +31,22 @@ import com.spatial4j.core.shape.Shape;
 import com.vividsolutions.jts.geom.Coordinate;
 import com.vividsolutions.jts.geom.Geometry;
 import io.crate.Constants;
+import io.crate.analyze.MatchOptionsAnalysis;
 import io.crate.analyze.WhereClause;
 import io.crate.analyze.symbol.*;
 import io.crate.analyze.symbol.format.SymbolFormatter;
 import io.crate.analyze.symbol.format.SymbolPrinter;
 import io.crate.exceptions.UnsupportedFeatureException;
 import io.crate.geo.GeoJSONUtils;
+import io.crate.lucene.match.CrateRegexCapabilities;
+import io.crate.lucene.match.CrateRegexQuery;
 import io.crate.lucene.match.MatchQueryBuilder;
 import io.crate.lucene.match.MultiMatchQueryBuilder;
-import io.crate.metadata.DocReferenceConverter;
-import io.crate.metadata.Functions;
+import io.crate.metadata.*;
 import io.crate.metadata.doc.DocSysColumns;
 import io.crate.operation.Input;
-import io.crate.operation.collect.CollectInputSymbolVisitor;
+import io.crate.operation.InputFactory;
+import io.crate.operation.collect.DocInputFactory;
 import io.crate.operation.collect.collectors.CollectorFieldsVisitor;
 import io.crate.operation.operator.*;
 import io.crate.operation.operator.any.*;
@@ -58,76 +61,75 @@ import io.crate.operation.scalar.geo.WithinFunction;
 import io.crate.types.CollectionType;
 import io.crate.types.DataType;
 import io.crate.types.DataTypes;
-import org.apache.lucene.index.AtomicReader;
-import org.apache.lucene.index.AtomicReaderContext;
 import org.apache.lucene.index.Term;
-import org.apache.lucene.queries.BooleanFilter;
-import org.apache.lucene.queries.TermsFilter;
-import org.apache.lucene.sandbox.queries.regex.JavaUtilRegexCapabilities;
-import org.apache.lucene.sandbox.queries.regex.RegexQuery;
 import org.apache.lucene.search.*;
+import org.apache.lucene.spatial.geopoint.document.GeoPointField;
+import org.apache.lucene.spatial.geopoint.search.GeoPointDistanceRangeQuery;
+import org.apache.lucene.spatial.prefix.PrefixTreeStrategy;
 import org.apache.lucene.spatial.query.SpatialArgs;
 import org.apache.lucene.spatial.query.SpatialOperation;
-import org.apache.lucene.util.Bits;
+import org.apache.lucene.spatial.util.GeoDistanceUtils;
 import org.apache.lucene.util.BytesRef;
 import org.apache.lucene.util.automaton.RegExp;
 import org.elasticsearch.ExceptionsHelper;
-import org.elasticsearch.common.Nullable;
+import org.elasticsearch.Version;
 import org.elasticsearch.common.collect.Tuple;
 import org.elasticsearch.common.geo.GeoDistance;
 import org.elasticsearch.common.geo.GeoPoint;
+import org.elasticsearch.common.geo.GeoUtils;
 import org.elasticsearch.common.geo.ShapeRelation;
 import org.elasticsearch.common.inject.Inject;
 import org.elasticsearch.common.inject.Singleton;
 import org.elasticsearch.common.logging.ESLogger;
 import org.elasticsearch.common.logging.Loggers;
 import org.elasticsearch.common.lucene.BytesRefs;
-import org.elasticsearch.common.lucene.docset.MatchDocIdSet;
 import org.elasticsearch.common.lucene.search.Queries;
-import org.elasticsearch.common.lucene.search.RegexpFilter;
-import org.elasticsearch.common.lucene.search.XConstantScoreQuery;
 import org.elasticsearch.index.cache.IndexCache;
 import org.elasticsearch.index.fielddata.IndexFieldDataService;
 import org.elasticsearch.index.fielddata.IndexGeoPointFieldData;
-import org.elasticsearch.index.mapper.FieldMapper;
+import org.elasticsearch.index.mapper.MappedFieldType;
 import org.elasticsearch.index.mapper.MapperService;
 import org.elasticsearch.index.mapper.Uid;
 import org.elasticsearch.index.mapper.geo.GeoPointFieldMapper;
 import org.elasticsearch.index.mapper.geo.GeoShapeFieldMapper;
 import org.elasticsearch.index.query.RegexpFlag;
-import org.elasticsearch.index.search.geo.GeoDistanceRangeFilter;
-import org.elasticsearch.index.search.geo.GeoPolygonFilter;
-import org.elasticsearch.index.search.geo.InMemoryGeoBoundingBoxFilter;
+import org.elasticsearch.index.search.geo.GeoDistanceRangeQuery;
+import org.elasticsearch.index.search.geo.GeoPolygonQuery;
+import org.elasticsearch.index.search.geo.InMemoryGeoBoundingBoxQuery;
 
+import javax.annotation.Nullable;
 import java.io.IOException;
 import java.util.*;
+import java.util.stream.Collectors;
+import java.util.stream.Stream;
 
-import static com.google.common.base.Preconditions.checkArgument;
 import static io.crate.operation.scalar.regex.RegexMatcher.isPcrePattern;
+import static org.apache.lucene.spatial.util.GeoEncodingUtils.TOLERANCE;
 
 @Singleton
 public class LuceneQueryBuilder {
 
     private static final ESLogger LOGGER = Loggers.getLogger(LuceneQueryBuilder.class);
     private final static Visitor VISITOR = new Visitor();
-    private final CollectInputSymbolVisitor<LuceneCollectorExpression<?>> inputSymbolVisitor;
+    private final DocInputFactory docInputFactory;
 
     @Inject
     public LuceneQueryBuilder(Functions functions) {
-        inputSymbolVisitor = new CollectInputSymbolVisitor<>(functions, new LuceneReferenceResolver(null));
+        docInputFactory = new DocInputFactory(functions, new LuceneReferenceResolver(null));
     }
 
     public Context convert(WhereClause whereClause,
                            MapperService mapperService,
                            IndexFieldDataService indexFieldDataService,
                            IndexCache indexCache) throws UnsupportedFeatureException {
-        Context ctx = new Context(inputSymbolVisitor, mapperService, indexFieldDataService, indexCache);
+        Context ctx = new Context(docInputFactory, mapperService, indexFieldDataService, indexCache);
         if (whereClause.noMatch()) {
             ctx.query = Queries.newMatchNoDocsQuery();
         } else if (!whereClause.hasQuery()) {
             ctx.query = Queries.newMatchAllQuery();
         } else {
-            ctx.query = VISITOR.process(whereClause.query(), ctx);
+            Symbol query = InverseDocReferenceConverter.convertIf(whereClause.query());
+            ctx.query = VISITOR.process(query, ctx);
         }
         if (LOGGER.isTraceEnabled()) {
             if (whereClause.hasQuery()) {
@@ -137,21 +139,37 @@ public class LuceneQueryBuilder {
         return ctx;
     }
 
+    private static Query termsQuery(@Nullable MappedFieldType fieldType, List values) {
+        if (fieldType == null) {
+            return Queries.newMatchNoDocsQuery();
+        }
+        return fieldType.termsQuery(values, null);
+    }
+
+
+    private static List asList(Literal literal) {
+        Object val = literal.value();
+        if (val instanceof Object[]) {
+            return Stream.of((Object[])val).filter(Objects::nonNull).collect(Collectors.toList());
+        }
+        return (List) val;
+    }
+
     public static class Context {
         Query query;
 
         final Map<String, Object> filteredFieldValues = new HashMap<>();
 
-        final CollectInputSymbolVisitor<LuceneCollectorExpression<?>> inputSymbolVisitor;
+        final DocInputFactory docInputFactory;
         final MapperService mapperService;
         final IndexFieldDataService fieldDataService;
         final IndexCache indexCache;
 
-        Context(CollectInputSymbolVisitor<LuceneCollectorExpression<?>> inputSymbolVisitor,
+        Context(DocInputFactory docInputFactory,
                 MapperService mapperService,
                 IndexFieldDataService fieldDataService,
                 IndexCache indexCache) {
-            this.inputSymbolVisitor = inputSymbolVisitor;
+            this.docInputFactory = docInputFactory;
             this.mapperService = mapperService;
             this.fieldDataService = fieldDataService;
             this.indexCache = indexCache;
@@ -171,7 +189,7 @@ public class LuceneQueryBuilder {
         }
 
         @Nullable
-        public String unsupportedMessage(String field){
+        public String unsupportedMessage(String field) {
             return UNSUPPORTED_FIELDS.get(field);
         }
 
@@ -180,7 +198,9 @@ public class LuceneQueryBuilder {
          * If a filtered field is encountered the value of the literal is written into filteredFieldValues
          * (only applies to Function with 2 arguments and if left == reference and right == literal)
          */
-        final static Set<String> FILTERED_FIELDS = new HashSet<String>(){{ add("_score"); }};
+        final static Set<String> FILTERED_FIELDS = new HashSet<String>() {{
+            add("_score");
+        }};
 
         /**
          * key = columnName
@@ -190,21 +210,48 @@ public class LuceneQueryBuilder {
          * the LuceneQueryBuilder is never used)
          */
         final static Map<String, String> UNSUPPORTED_FIELDS = ImmutableMap.<String, String>builder()
-                .put("_version", "\"_version\" column is not valid in the WHERE clause")
-                .build();
+            .put("_version", "\"_version\" column is not valid in the WHERE clause")
+            .build();
+
+        @Nullable
+        MappedFieldType getFieldTypeOrNull(String fqColumnName) {
+            return mapperService.smartNameFieldType(fqColumnName);
+        }
     }
 
     public static String convertSqlLikeToLuceneWildcard(String wildcardString) {
         // lucene uses * and ? as wildcard characters
         // but via SQL they are used as % and _
         // here they are converted back.
-        wildcardString = wildcardString.replaceAll("(?<!\\\\)\\*", "\\\\*");
-        wildcardString = wildcardString.replaceAll("(?<!\\\\)%", "*");
-        wildcardString = wildcardString.replaceAll("\\\\%", "%");
+        StringBuilder regex = new StringBuilder();
 
-        wildcardString = wildcardString.replaceAll("(?<!\\\\)\\?", "\\\\?");
-        wildcardString = wildcardString.replaceAll("(?<!\\\\)_", "?");
-        return wildcardString.replaceAll("\\\\_", "_");
+        boolean escaped = false;
+        for (char currentChar : wildcardString.toCharArray()) {
+            if (!escaped && currentChar == LikeOperator.DEFAULT_ESCAPE) {
+                escaped = true;
+            } else {
+                switch (currentChar) {
+                    case '%':
+                        regex.append(escaped ? '%' : '*');
+                        escaped = false;
+                        break;
+                    case '_':
+                        regex.append(escaped ? '_' : '?');
+                        escaped = false;
+                        break;
+                    default:
+                        switch (currentChar) {
+                            case '\\':
+                            case '*':
+                            case '?':
+                                regex.append('\\');
+                        }
+                        regex.append(currentChar);
+                        escaped = false;
+                }
+            }
+        }
+        return regex.toString();
     }
 
     public static String negateWildcard(String wildCard) {
@@ -216,15 +263,15 @@ public class LuceneQueryBuilder {
         interface FunctionToQuery {
 
             @Nullable
-            Query apply (Function input, Context context) throws IOException;
+            Query apply(Function input, Context context) throws IOException;
         }
 
         static abstract class CmpQuery implements FunctionToQuery {
 
             @Nullable
             protected Tuple<Reference, Literal> prepare(Function input) {
-                assert input != null;
-                assert input.arguments().size() == 2;
+                assert input != null : "function must not be null";
+                assert input.arguments().size() == 2 : "function's number of arguments must be 2";
 
                 Symbol left = input.arguments().get(0);
                 Symbol right = input.arguments().get(1);
@@ -232,8 +279,9 @@ public class LuceneQueryBuilder {
                 if (!(left instanceof Reference) || !(right.symbolType().isValueSymbol())) {
                     return null;
                 }
-                assert right.symbolType() == SymbolType.LITERAL;
-                return new Tuple<>((Reference)left, (Literal)right);
+                assert right.symbolType() == SymbolType.LITERAL :
+                    "right.symbolType() must be " + SymbolType.LITERAL;
+                return new Tuple<>((Reference) left, (Literal) right);
             }
         }
 
@@ -244,16 +292,19 @@ public class LuceneQueryBuilder {
                 Symbol left = function.arguments().get(0);
                 Symbol collectionSymbol = function.arguments().get(1);
                 Preconditions.checkArgument(DataTypes.isCollectionType(collectionSymbol.valueType()),
-                        "invalid argument for ANY expression");
+                    "invalid argument for ANY expression");
                 if (left.symbolType().isValueSymbol()) {
                     // 1 = any (array_col) - simple eq
-                    assert collectionSymbol instanceof Reference: "no reference found in ANY expression";
-                    return applyArrayReference((Reference)collectionSymbol, (Literal)left, context);
-                } else if (collectionSymbol.symbolType().isValueSymbol()) {
-                    assert left instanceof Reference : "no reference found in ANY expression";
-                    return applyArrayLiteral((Reference)left, (Literal)collectionSymbol, context);
+                    if (collectionSymbol instanceof Reference) {
+                        return applyArrayReference((Reference) collectionSymbol, (Literal) left, context);
+                    } else {
+                        // no reference found (maybe subscript) in ANY expression -> fallback to slow generic function filter
+                        return null;
+                    }
+                } else if (left instanceof Reference && collectionSymbol.symbolType().isValueSymbol()) {
+                    return applyArrayLiteral((Reference) left, (Literal) collectionSymbol, context);
                 } else {
-                    // should never get here - 2 literal arguments must have been normalized away yet
+                    // might be the case if the left side is a function -> will fallback to (slow) generic function filter
                     return null;
                 }
             }
@@ -263,11 +314,11 @@ public class LuceneQueryBuilder {
              */
             public static Iterable<?> toIterable(Object value) {
                 return Iterables.transform(AnyOperator.collectionValueToIterable(value), new com.google.common.base.Function<Object, Object>() {
-                    @javax.annotation.Nullable
+                    @Nullable
                     @Override
-                    public Object apply(@javax.annotation.Nullable Object input) {
+                    public Object apply(@Nullable Object input) {
                         if (input != null && input instanceof String) {
-                            input = new BytesRef((String)input);
+                            input = new BytesRef((String) input);
                         }
                         return input;
                     }
@@ -275,38 +326,28 @@ public class LuceneQueryBuilder {
             }
 
             protected abstract Query applyArrayReference(Reference arrayReference, Literal literal, Context context) throws IOException;
+
             protected abstract Query applyArrayLiteral(Reference reference, Literal arrayLiteral, Context context) throws IOException;
         }
 
         static class AnyEqQuery extends AbstractAnyQuery {
 
-            private TermsFilter termsFilter(String columnName, Literal arrayLiteral) {
-                TermsFilter termsFilter;
-                Object values = arrayLiteral.value();
-                if (values instanceof Collection) {
-                    termsFilter = new TermsFilter(
-                            columnName,
-                            getBytesRefs((Collection)values,
-                                    TermBuilder.forType(arrayLiteral.valueType())));
-                } else  {
-                    termsFilter = new TermsFilter(
-                            columnName,
-                            getBytesRefs((Object[])values,
-                                    TermBuilder.forType(arrayLiteral.valueType())));
-                }
-                return termsFilter;
-            }
-
             @Override
             protected Query applyArrayReference(Reference arrayReference, Literal literal, Context context) throws IOException {
-                QueryBuilderHelper builder = QueryBuilderHelper.forType(((CollectionType)arrayReference.valueType()).innerType());
-                return builder.eq(arrayReference.ident().columnIdent().fqn(), literal.value());
+                MappedFieldType fieldType = context.getFieldTypeOrNull(arrayReference.ident().columnIdent().fqn());
+                if (fieldType == null) {
+                    if (CollectionType.unnest(arrayReference.valueType()).equals(DataTypes.OBJECT)) {
+                        return null; // fallback to generic query to enable {x=10} = any(objects)
+                    }
+                    return Queries.newMatchNoDocsQuery();
+                }
+                return fieldType.termQuery(literal.value(), null);
             }
 
             @Override
             protected Query applyArrayLiteral(Reference reference, Literal arrayLiteral, Context context) throws IOException {
                 String columnName = reference.ident().columnIdent().fqn();
-                return new FilteredQuery(Queries.newMatchAllQuery(), termsFilter(columnName, arrayLiteral));
+                return termsQuery(context.getFieldTypeOrNull(columnName), asList(arrayLiteral));
             }
         }
 
@@ -315,37 +356,40 @@ public class LuceneQueryBuilder {
             @Override
             protected Query applyArrayReference(Reference arrayReference, Literal literal, Context context) throws IOException {
                 // 1 != any ( col ) -->  gt 1 or lt 1
-                String columnName = arrayReference.info().ident().columnIdent().fqn();
+                String columnName = arrayReference.ident().columnIdent().fqn();
                 Object value = literal.value();
 
-                QueryBuilderHelper builder = QueryBuilderHelper.forType(arrayReference.valueType());
-                BooleanQuery query = new BooleanQuery();
+                MappedFieldType fieldType = context.getFieldTypeOrNull(columnName);
+                if (fieldType == null) {
+                    return Queries.newMatchNoDocsQuery();
+                }
+                BooleanQuery.Builder query = new BooleanQuery.Builder();
                 query.setMinimumNumberShouldMatch(1);
                 query.add(
-                        builder.rangeQuery(columnName, value, null, false, false),
-                        BooleanClause.Occur.SHOULD
+                    fieldType.rangeQuery(value, null, false, false),
+                    BooleanClause.Occur.SHOULD
                 );
                 query.add(
-                        builder.rangeQuery(columnName, null, value, false, false),
-                        BooleanClause.Occur.SHOULD
+                    fieldType.rangeQuery(null, value, false, false),
+                    BooleanClause.Occur.SHOULD
                 );
-                return query;
+                return query.build();
             }
 
             @Override
             protected Query applyArrayLiteral(Reference reference, Literal arrayLiteral, Context context) throws IOException {
                 //  col != ANY ([1,2,3]) --> not(col=1 and col=2 and col=3)
-                String columnName = reference.info().ident().columnIdent().fqn();
-                QueryBuilderHelper builder = QueryBuilderHelper.forType(reference.valueType());
-                BooleanFilter filter = new BooleanFilter();
-
-                BooleanFilter notFilter = new BooleanFilter();
-                for (Object value : toIterable(arrayLiteral.value())) {
-                    notFilter.add(builder.eqFilter(columnName, value), BooleanClause.Occur.MUST);
+                String columnName = reference.ident().columnIdent().fqn();
+                MappedFieldType fieldType = context.getFieldTypeOrNull(columnName);
+                if (fieldType == null) {
+                    return Queries.newMatchNoDocsQuery();
                 }
-                filter.add(notFilter, BooleanClause.Occur.MUST_NOT);
 
-                return new FilteredQuery(Queries.newMatchAllQuery(), filter);
+                BooleanQuery.Builder andBuilder = new BooleanQuery.Builder();
+                for (Object value : toIterable(arrayLiteral.value())) {
+                    andBuilder.add(fieldType.termQuery(value, null), BooleanClause.Occur.MUST);
+                }
+                return Queries.not(andBuilder.build());
             }
         }
 
@@ -358,46 +402,44 @@ public class LuceneQueryBuilder {
                 String notLike = negateWildcard(regexString);
 
                 return new RegexpQuery(new Term(
-                        arrayReference.info().ident().columnIdent().fqn(),
-                        notLike),
-                        RegexpFlag.COMPLEMENT.value()
+                    arrayReference.ident().columnIdent().fqn(),
+                    notLike),
+                    RegexpFlag.COMPLEMENT.value()
                 );
             }
 
             @Override
             protected Query applyArrayLiteral(Reference reference, Literal arrayLiteral, Context context) throws IOException {
                 // col not like ANY (['a', 'b']) --> not(and(like(col, 'a'), like(col, 'b')))
-                BooleanQuery query = new BooleanQuery();
-                BooleanQuery notQuery = new BooleanQuery();
-
                 String columnName = reference.ident().columnIdent().fqn();
-                QueryBuilderHelper builder = QueryBuilderHelper.forType(reference.valueType());
+                MappedFieldType fieldType = context.getFieldTypeOrNull(columnName);
+
+                BooleanQuery.Builder andLikeQueries = new BooleanQuery.Builder();
                 for (Object value : toIterable(arrayLiteral.value())) {
-                    notQuery.add(builder.like(columnName, value, context.indexCache.filter()), BooleanClause.Occur.MUST);
+                    andLikeQueries.add(
+                        LikeQueryBuilder.like(reference.valueType(), fieldType, value),
+                        BooleanClause.Occur.MUST);
                 }
-                query.add(notQuery, BooleanClause.Occur.MUST_NOT);
-                return query;
+                return Queries.not(andLikeQueries.build());
             }
         }
 
         static class AnyLikeQuery extends AbstractAnyQuery {
 
-            private final LikeQuery likeQuery = new LikeQuery();
-
             @Override
             protected Query applyArrayReference(Reference arrayReference, Literal literal, Context context) throws IOException {
-                return likeQuery.toQuery(arrayReference, literal.value(), context);
+                return LikeQuery.toQuery(arrayReference, literal.value(), context);
             }
 
             @Override
             protected Query applyArrayLiteral(Reference reference, Literal arrayLiteral, Context context) throws IOException {
                 // col like ANY (['a', 'b']) --> or(like(col, 'a'), like(col, 'b'))
-                BooleanQuery booleanQuery = new BooleanQuery();
+                BooleanQuery.Builder booleanQuery = new BooleanQuery.Builder();
                 booleanQuery.setMinimumNumberShouldMatch(1);
                 for (Object value : toIterable(arrayLiteral.value())) {
-                    booleanQuery.add(likeQuery.toQuery(reference, value, context), BooleanClause.Occur.SHOULD);
+                    booleanQuery.add(LikeQuery.toQuery(reference, value, context), BooleanClause.Occur.SHOULD);
                 }
-                return booleanQuery;
+                return booleanQuery.build();
             }
         }
 
@@ -412,45 +454,99 @@ public class LuceneQueryBuilder {
                 return toQuery(tuple.v1(), tuple.v2().value(), context);
             }
 
-            public Query toQuery(Reference reference, Object value, Context context) {
-                String columnName = reference.info().ident().columnIdent().fqn();
-                QueryBuilderHelper builder = QueryBuilderHelper.forType(reference.valueType());
-                return builder.like(columnName, value, context.indexCache.filter());
-            }
-        }
-
-        static class InQuery extends CmpQuery {
-
-            @Override
-            public Query apply(Function input, Context context) throws IOException {
-                Tuple<Reference, Literal> tuple = prepare(input);
-                if (tuple == null) {
-                    return null;
-                }
-                String field = tuple.v1().info().ident().columnIdent().fqn();
-                Literal literal = tuple.v2();
-                CollectionType dataType = ((CollectionType) literal.valueType());
-
-                Set values = (Set) literal.value();
-                DataType innerType = dataType.innerType();
-                BytesRef[] terms = getBytesRefs(values, TermBuilder.forType(innerType));
-                TermsFilter termsFilter = new TermsFilter(field, terms);
-                return new FilteredQuery(Queries.newMatchAllQuery(), termsFilter);
+            static Query toQuery(Reference reference, Object value, Context context) {
+                DataType dataType = CollectionType.unnest(reference.valueType());
+                return LikeQueryBuilder.like(
+                    dataType,
+                    context.getFieldTypeOrNull(reference.ident().columnIdent().fqn()),
+                    value
+                );
             }
         }
 
         class NotQuery implements FunctionToQuery {
 
+            private class SymbolToNotNullContext {
+                private final HashSet<Reference> references = new HashSet<>();
+                boolean containsNullCanMatchFunction = false;
+
+                boolean add(Reference symbol) {
+                    return references.add(symbol);
+                }
+
+                Set<Reference> references() {
+                    return references;
+                }
+            }
+
+            private class SymbolToNotNullRangeQueryArgs extends SymbolVisitor<SymbolToNotNullContext, Void> {
+
+                private final Set<String> NULL_CAN_MATCH_FUNCTIONS = ImmutableSet.of("any", "coalesce");
+
+                private boolean nullCanMatch(Function symbol) {
+                    return NULL_CAN_MATCH_FUNCTIONS.contains(symbol.info().ident().name());
+                }
+
+                @Override
+                public Void visitReference(Reference symbol, SymbolToNotNullContext context) {
+                    context.add(symbol);
+                    return null;
+                }
+
+                @Override
+                public Void visitFunction(Function symbol, SymbolToNotNullContext context) {
+                    if (!nullCanMatch(symbol)) {
+                        for (Symbol arg: symbol.arguments()) {
+                            process(arg, context);
+                        }
+                    } else {
+                        context.containsNullCanMatchFunction = true;
+                    }
+                    return null;
+                }
+            }
+
+            private final SymbolToNotNullRangeQueryArgs INNER_VISITOR = new SymbolToNotNullRangeQueryArgs();
+
             @Override
             public Query apply(Function input, Context context) {
-                assert input != null;
-                assert input.arguments().size() == 1;
-                BooleanQuery query = new BooleanQuery();
+                assert input != null : "function must not be null";
+                assert input.arguments().size() == 1 : "function's number of arguments must be 1";
+                /**
+                 * not null -> null     -> no match
+                 * not true -> false    -> no match
+                 * not false -> true    -> match
+                 */
 
-                query.add(process(input.arguments().get(0), context), BooleanClause.Occur.MUST_NOT);
-                query.add(Queries.newMatchAllQuery(), BooleanClause.Occur.MUST);
+                // handles not true / not false
+                Symbol arg = input.arguments().get(0);
+                Query innerQuery = process(arg, context);
+                Query notX = Queries.not(innerQuery);
 
-                return query;
+                // not x =  not x & x is not null
+                BooleanQuery.Builder builder = new BooleanQuery.Builder();
+                builder.add(notX, BooleanClause.Occur.MUST);
+
+                SymbolToNotNullContext ctx = new SymbolToNotNullContext();
+                INNER_VISITOR.process(arg, ctx);
+                for (Reference reference : ctx.references()) {
+                    String columnName = reference.ident().columnIdent().fqn();
+                    MappedFieldType fieldType = context.getFieldTypeOrNull(columnName);
+                    if (fieldType == null) {
+                        // probably an object column, fallback to genericFunctionFilter
+                        return null;
+                    }
+                    builder.add(fieldType.rangeQuery(null, null, true, true), BooleanClause.Occur.MUST);
+                }
+                if (ctx.containsNullCanMatchFunction) {
+                    FunctionInfo isNullInfo = IsNullPredicate.generateInfo(Collections.singletonList(arg.valueType()));
+                    Function isNullFunction = new Function(isNullInfo, Collections.singletonList(arg));
+                    builder.add(
+                        Queries.not(genericFunctionFilter(isNullFunction, context)),
+                        BooleanClause.Occur.MUST
+                    );
+                }
+                return builder.build();
             }
         }
 
@@ -458,20 +554,25 @@ public class LuceneQueryBuilder {
 
             @Override
             public Query apply(Function input, Context context) {
-                assert input != null;
-                assert input.arguments().size() == 1;
+                assert input != null : "input must not be null";
+                assert input.arguments().size() == 1 : "function's number of arguments must be 1";
                 Symbol arg = input.arguments().get(0);
                 if (arg.symbolType() != SymbolType.REFERENCE) {
                     return null;
                 }
-                Reference reference = (Reference)arg;
+                Reference reference = (Reference) arg;
 
-                String columnName = reference.info().ident().columnIdent().fqn();
-                QueryBuilderHelper builderHelper = QueryBuilderHelper.forType(reference.valueType());
-                BooleanFilter boolFilter = new BooleanFilter();
-                boolFilter.add(builderHelper.rangeFilter(columnName, null, null, true, true),
-                        BooleanClause.Occur.MUST_NOT);
-                return new FilteredQuery(Queries.newMatchAllQuery(), boolFilter);
+                String columnName = reference.ident().columnIdent().fqn();
+                MappedFieldType fieldType = context.getFieldTypeOrNull(columnName);
+                if (fieldType == null) {
+                    if (reference.valueType().equals(DataTypes.OBJECT)) {
+                        // object column has no mappedFieldType, but may exist. Need to use generic fallback
+                        return null;
+                    }
+                    // is null on an unknown column is always true
+                    return Queries.newMatchAllQuery();
+                }
+                return Queries.not(fieldType.rangeQuery(null, null, true, true));
             }
         }
 
@@ -485,78 +586,58 @@ public class LuceneQueryBuilder {
                 }
                 Reference reference = tuple.v1();
                 Literal literal = tuple.v2();
-                String columnName = reference.info().ident().columnIdent().fqn();
-                if (DataTypes.isCollectionType(reference.valueType()) && DataTypes.isCollectionType(literal.valueType())) {
-
-                    // create boolean filter with term filters to pre-filter the result before applying the functionQuery.
-                    BooleanFilter boolTermsFilter = new BooleanFilter();
-                    DataType type = literal.valueType();
-                    while (DataTypes.isCollectionType(type)) {
-                        type = ((CollectionType) type).innerType();
+                String columnName = reference.ident().columnIdent().fqn();
+                MappedFieldType fieldType = context.getFieldTypeOrNull(columnName);
+                if (fieldType == null) {
+                    if (reference.valueType().equals(DataTypes.OBJECT)) {
+                        return null; // fallback to generic filter for  "o = {x=10, y=20}"
                     }
-                    QueryBuilderHelper builder = QueryBuilderHelper.forType(type);
-                    Object value = literal.value();
-                    buildTermsQuery(boolTermsFilter, value, columnName, builder);
+                    // field doesn't exist, can't match
+                    return Queries.newMatchNoDocsQuery();
+                }
+                if (DataTypes.isCollectionType(reference.valueType()) &&
+                    DataTypes.isCollectionType(literal.valueType())) {
 
-                    if (boolTermsFilter.clauses().isEmpty()) {
-                        // all values are null...
-                        return genericFunctionQuery(input, context);
+                    List values = asList(literal);
+                    if (values.isEmpty()) {
+                        return genericFunctionFilter(input, context);
                     }
+                    Query termsQuery = termsQuery(fieldType, values);
 
                     // wrap boolTermsFilter and genericFunction filter in an additional BooleanFilter to control the ordering of the filters
                     // termsFilter is applied first
                     // afterwards the more expensive genericFunctionFilter
-                    BooleanFilter filterClauses = new BooleanFilter();
-                    filterClauses.add(boolTermsFilter, BooleanClause.Occur.MUST);
-                    filterClauses.add(
-                            genericFunctionFilter(input, context),
-                            BooleanClause.Occur.MUST);
-                    return new FilteredQuery(Queries.newMatchAllQuery(), filterClauses);
+                    BooleanQuery.Builder filterClauses = new BooleanQuery.Builder();
+                    filterClauses.add(termsQuery, BooleanClause.Occur.MUST);
+                    filterClauses.add(genericFunctionFilter(input, context), BooleanClause.Occur.MUST);
+                    return filterClauses.build();
                 }
-                QueryBuilderHelper builder = QueryBuilderHelper.forType(tuple.v1().valueType());
-                return builder.eq(columnName, tuple.v2().value());
-            }
-
-            private void buildTermsQuery(BooleanFilter booleanFilter,
-                                            Object value,
-                                            String columnName,
-                                            QueryBuilderHelper builder) {
-                if (value == null) {
-                    return;
-                }
-                if (value.getClass().isArray()) {
-                    Object[] array = (Object[]) value;
-                    for (Object o : array) {
-                        buildTermsQuery(booleanFilter, o, columnName, builder);
-                    }
-                } else {
-                    booleanFilter.add(builder.eqFilter(columnName, value), BooleanClause.Occur.MUST);
-                }
+                return fieldType.termQuery(literal.value(), null);
             }
         }
 
         class AndQuery implements FunctionToQuery {
             @Override
             public Query apply(Function input, Context context) {
-                assert input != null;
-                BooleanQuery query = new BooleanQuery();
+                assert input != null : "input must not be null";
+                BooleanQuery.Builder query = new BooleanQuery.Builder();
                 for (Symbol symbol : input.arguments()) {
                     query.add(process(symbol, context), BooleanClause.Occur.MUST);
                 }
-                return query;
+                return query.build();
             }
         }
 
         class OrQuery implements FunctionToQuery {
             @Override
             public Query apply(Function input, Context context) {
-                assert input != null;
-                BooleanQuery query = new BooleanQuery();
+                assert input != null : "input must not be null";
+                BooleanQuery.Builder query = new BooleanQuery.Builder();
                 query.setMinimumNumberShouldMatch(1);
                 for (Symbol symbol : input.arguments()) {
                     query.add(process(symbol, context), BooleanClause.Occur.SHOULD);
                 }
-                return query;
+                return query.build();
             }
         }
 
@@ -574,21 +655,23 @@ public class LuceneQueryBuilder {
             protected Query applyArrayReference(Reference arrayReference, Literal literal, Context context) throws IOException {
                 // 1 < ANY (array_col) --> array_col > 1
                 return rangeQuery.toQuery(
-                        arrayReference,
-                        ((CollectionType)arrayReference.valueType()).innerType(),
-                        literal.value()
+                    arrayReference,
+                    literal.value(),
+                    context::getFieldTypeOrNull
                 );
             }
 
             @Override
             protected Query applyArrayLiteral(Reference reference, Literal arrayLiteral, Context context) throws IOException {
                 // col < ANY ([1,2,3]) --> or(col<1, col<2, col<3)
-                BooleanQuery booleanQuery = new BooleanQuery();
+                BooleanQuery.Builder booleanQuery = new BooleanQuery.Builder();
                 booleanQuery.setMinimumNumberShouldMatch(1);
                 for (Object value : toIterable(arrayLiteral.value())) {
-                    booleanQuery.add(inverseRangeQuery.toQuery(reference, reference.valueType(), value), BooleanClause.Occur.SHOULD);
+                    booleanQuery.add(
+                        inverseRangeQuery.toQuery(reference, value, context::getFieldTypeOrNull),
+                        BooleanClause.Occur.SHOULD);
                 }
-                return booleanQuery;
+                return booleanQuery.build();
             }
         }
 
@@ -598,15 +681,15 @@ public class LuceneQueryBuilder {
             private final boolean includeUpper;
             private final com.google.common.base.Function<Object, Tuple<?, ?>> boundsFunction;
 
-            private static final com.google.common.base.Function<Object, Tuple<?, ?>> LOWER_BOUND = new com.google.common.base.Function<Object, Tuple<?,?>>() {
-                @javax.annotation.Nullable
+            private static final com.google.common.base.Function<Object, Tuple<?, ?>> LOWER_BOUND = new com.google.common.base.Function<Object, Tuple<?, ?>>() {
+                @Nullable
                 @Override
                 public Tuple<?, ?> apply(@Nullable Object input) {
                     return new Tuple<>(input, null);
                 }
             };
 
-            private static final com.google.common.base.Function<Object, Tuple<?, ?>> UPPER_BOUND = new com.google.common.base.Function<Object, Tuple<?,?>>() {
+            private static final com.google.common.base.Function<Object, Tuple<?, ?>> UPPER_BOUND = new com.google.common.base.Function<Object, Tuple<?, ?>>() {
                 @Override
                 public Tuple<?, ?> apply(Object input) {
                     return new Tuple<>(null, input);
@@ -646,15 +729,19 @@ public class LuceneQueryBuilder {
                 if (tuple == null) {
                     return null;
                 }
-                return toQuery(tuple.v1(), tuple.v1().valueType(), tuple.v2().value());
+                return toQuery(tuple.v1(), tuple.v2().value(), context::getFieldTypeOrNull);
             }
 
-            public Query toQuery(Reference reference, DataType type, Object value) {
-                String columnName = reference.info().ident().columnIdent().fqn();
-                QueryBuilderHelper builder = QueryBuilderHelper.forType(type);
+            public Query toQuery(Reference reference, Object value, FieldTypeLookup fieldTypeLookup) {
+                String columnName = reference.ident().columnIdent().fqn();
+                MappedFieldType fieldType = fieldTypeLookup.get(columnName);
+                if (fieldType == null) {
+                    // can't match column that doesn't exist or is an object ( "o >= {x=10}" is not supported)
+                    return Queries.newMatchNoDocsQuery();
+                }
                 Tuple<?, ?> bounds = boundsFunction.apply(value);
-                assert bounds != null;
-                return builder.rangeQuery(columnName, bounds.v1(), bounds.v2(), includeLower, includeUpper);
+                assert bounds != null : "bounds must not be null";
+                return fieldType.rangeQuery(bounds.v1(), bounds.v2(), includeLower, includeUpper);
             }
         }
 
@@ -664,31 +751,56 @@ public class LuceneQueryBuilder {
             public Query apply(Function input, Context context) throws IOException {
                 List<Symbol> arguments = input.arguments();
                 assert arguments.size() == 4 : "invalid number of arguments";
-                assert Symbol.isLiteral(arguments.get(0), DataTypes.OBJECT); // fields
-                assert Symbol.isLiteral(arguments.get(2), DataTypes.STRING); // matchType
+                assert Symbol.isLiteral(arguments.get(0), DataTypes.OBJECT) :
+                    "fields must be literal";
+                assert Symbol.isLiteral(arguments.get(2), DataTypes.STRING) :
+                    "matchType must be literal";
 
                 Symbol queryTerm = arguments.get(1);
-                if (queryTerm.valueType().equals(DataTypes.GEO_SHAPE)) {
-                    return geoMatch(context, arguments, queryTerm);
+                Preconditions.checkArgument(queryTerm instanceof Input, "queryTerm must be a literal");
+                Object queryTermVal = ((Input) queryTerm).value();
+                if (queryTermVal == null) {
+                    throw new IllegalArgumentException("cannot use NULL as query term in match predicate");
                 }
-                return stringMatch(context, arguments, queryTerm);
+                if (queryTerm.valueType().equals(DataTypes.GEO_SHAPE)) {
+                    return geoMatch(context, arguments, queryTermVal);
+                }
+                return stringMatch(context, arguments, queryTermVal);
             }
 
-            private Query geoMatch(Context context, List<Symbol> arguments, Symbol queryTerm) {
-                assert Symbol.isLiteral(arguments.get(1), DataTypes.GEO_SHAPE);
+            private Query geoMatch(Context context, List<Symbol> arguments, Object queryTerm) {
 
                 Map fields = (Map) ((Literal) arguments.get(0)).value();
                 String fieldName = ((String) Iterables.getOnlyElement(fields.keySet()));
-                FieldMapper fieldMapper = context.mapperService.smartNameFieldMapper(fieldName);
-                GeoShapeFieldMapper geoShapeFieldMapper = (GeoShapeFieldMapper) fieldMapper;
+                MappedFieldType fieldType = context.mapperService.smartNameFieldType(fieldName);
+                GeoShapeFieldMapper.GeoShapeFieldType geoShapeFieldType = (GeoShapeFieldMapper.GeoShapeFieldType) fieldType;
                 String matchType = ((BytesRef) ((Input) arguments.get(2)).value()).utf8ToString();
                 @SuppressWarnings("unchecked")
-                Shape shape = GeoJSONUtils.map2Shape(((Map<String, Object>) ((Input) queryTerm).value()));
+                Shape shape = GeoJSONUtils.map2Shape((Map<String, Object>) queryTerm);
 
                 ShapeRelation relation = ShapeRelation.getRelationByName(matchType);
                 assert relation != null : "invalid matchType: " + matchType;
+
+                PrefixTreeStrategy prefixTreeStrategy = geoShapeFieldType.defaultStrategy();
+                if (relation == ShapeRelation.DISJOINT) {
+                    /**
+                     * See {@link org.elasticsearch.index.query.GeoShapeQueryParser}:
+                     */
+                    // this strategy doesn't support disjoint anymore: but it did before, including creating lucene fieldcache (!)
+                    // in this case, execute disjoint as exists && !intersects
+
+                    BooleanQuery.Builder bool = new BooleanQuery.Builder();
+
+                    Query exists = new TermRangeQuery(fieldName, null, null, true, true);
+
+                    Query intersects = prefixTreeStrategy.makeQuery(getArgs(shape, ShapeRelation.INTERSECTS));
+                    bool.add(exists, BooleanClause.Occur.MUST);
+                    bool.add(intersects, BooleanClause.Occur.MUST_NOT);
+                    return new ConstantScoreQuery(bool.build());
+                }
+
                 SpatialArgs spatialArgs = getArgs(shape, relation);
-                return geoShapeFieldMapper.defaultStrategy().makeQuery(spatialArgs);
+                return prefixTreeStrategy.makeQuery(spatialArgs);
             }
 
             private SpatialArgs getArgs(Shape shape, ShapeRelation relation) {
@@ -705,26 +817,25 @@ public class LuceneQueryBuilder {
 
             private AssertionError invalidMatchType(String matchType) {
                 throw new AssertionError(String.format(Locale.ENGLISH,
-                        "Invalid match type: %s. Analyzer should have made sure that it is valid", matchType));
+                    "Invalid match type: %s. Analyzer should have made sure that it is valid", matchType));
             }
 
-            private Query stringMatch(Context context, List<Symbol> arguments, Symbol queryTerm) throws IOException {
-                assert Symbol.isLiteral(queryTerm, DataTypes.STRING);
-                assert Symbol.isLiteral(arguments.get(3), DataTypes.OBJECT);
+            private Query stringMatch(Context context, List<Symbol> arguments, Object queryTerm) throws IOException {
 
                 @SuppressWarnings("unchecked")
                 Map<String, Object> fields = (Map) ((Literal) arguments.get(0)).value();
-                BytesRef queryString = (BytesRef) ((Literal) queryTerm).value();
+                BytesRef queryString = (BytesRef) queryTerm;
                 BytesRef matchType = (BytesRef) ((Literal) arguments.get(2)).value();
-                Map options = (Map) ((Literal) arguments.get(3)).value();
+                //noinspection unchecked
+                Map<String, Object> options = (Map<String, Object>) ((Literal) arguments.get(3)).value();
 
-                checkArgument(queryString != null, "cannot use NULL as query term in match predicate");
+                MatchOptionsAnalysis.validate(options);
 
                 MatchQueryBuilder queryBuilder;
                 if (fields.size() == 1) {
-                    queryBuilder = new MatchQueryBuilder(context.mapperService, context.indexCache, matchType, options);
+                    queryBuilder = new MatchQueryBuilder(context.mapperService, matchType, options);
                 } else {
-                    queryBuilder = new MultiMatchQueryBuilder(context.mapperService, context.indexCache, matchType, options);
+                    queryBuilder = new MultiMatchQueryBuilder(context.mapperService, matchType, options);
                 }
                 return queryBuilder.query(fields, queryString);
             }
@@ -732,30 +843,29 @@ public class LuceneQueryBuilder {
 
         static class RegexpMatchQuery extends CmpQuery {
 
-            private Query toLuceneRegexpQuery(String fieldName, BytesRef value, Context context) {
-                return new XConstantScoreQuery(
-                        context.indexCache.filter().cache(
-                                new RegexpFilter(new Term(fieldName, value), RegExp.ALL)
-                        )
-                );
+            private Query toLuceneRegexpQuery(String fieldName, BytesRef value) {
+                return new ConstantScoreQuery(
+                    new RegexpQuery(new Term(fieldName, value), RegExp.ALL));
             }
 
             @Override
             public Query apply(Function input, Context context) throws IOException {
                 Tuple<Reference, Literal> prepare = prepare(input);
-                if (prepare == null) { return null; }
-                String fieldName = prepare.v1().info().ident().columnIdent().fqn();
-                Object value = prepare.v2().value();
-
-                if (value instanceof BytesRef) {
-                    BytesRef pattern = ((BytesRef) value);
-                    if (isPcrePattern(pattern)) {
-                        return new RegexQuery(new Term(fieldName, pattern));
-                    } else {
-                        return toLuceneRegexpQuery(fieldName, pattern, context);
-                    }
+                if (prepare == null) {
+                    return null;
                 }
-                throw new IllegalArgumentException("Can only use ~ with patterns of type string");
+                String fieldName = prepare.v1().ident().columnIdent().fqn();
+                BytesRef pattern = BytesRefs.toBytesRef(prepare.v2().value());
+                if (pattern == null) {
+                    // cannot build query using null pattern value
+                    return null;
+                }
+
+                if (isPcrePattern(pattern.utf8ToString())) {
+                    return new CrateRegexQuery(new Term(fieldName, pattern));
+                } else {
+                    return toLuceneRegexpQuery(fieldName, pattern);
+                }
             }
         }
 
@@ -764,15 +874,16 @@ public class LuceneQueryBuilder {
             @Override
             public Query apply(Function input, Context context) throws IOException {
                 Tuple<Reference, Literal> prepare = prepare(input);
-                if (prepare == null) { return null; }
-                String fieldName = prepare.v1().info().ident().columnIdent().fqn();
+                if (prepare == null) {
+                    return null;
+                }
+                String fieldName = prepare.v1().ident().columnIdent().fqn();
                 Object value = prepare.v2().value();
 
                 if (value instanceof BytesRef) {
-                    RegexQuery query = new RegexQuery(new Term(fieldName, BytesRefs.toBytesRef(value)));
-                    query.setRegexImplementation(new JavaUtilRegexCapabilities(
-                            JavaUtilRegexCapabilities.FLAG_CASE_INSENSITIVE |
-                            JavaUtilRegexCapabilities.FLAG_UNICODE_CASE));
+                    CrateRegexQuery query = new CrateRegexQuery(
+                        new Term(fieldName, BytesRefs.toBytesRef(value)),
+                        CrateRegexCapabilities.FLAG_CASE_INSENSITIVE | CrateRegexCapabilities.FLAG_UNICODE_CASE);
                     return query;
                 }
                 throw new IllegalArgumentException("Can only use ~* with patterns of type string");
@@ -782,18 +893,18 @@ public class LuceneQueryBuilder {
         /**
          * interface for functions that can be used to generate a query from inner functions.
          * Has only a single method {@link #apply(io.crate.analyze.symbol.Function, io.crate.analyze.symbol.Function, io.crate.lucene.LuceneQueryBuilder.Context)}
-         *
+         * <p>
          * e.g. in a query like
          * <pre>
          *     where distance(p1, 'POINT (10 20)') = 20
          * </pre>
-         *
+         * <p>
          * The first parameter (parent) would be the "eq" function.
          * The second parameter (inner) would be the "distance" function.
-         *
+         * <p>
          * The returned Query must "contain" both the parent and inner functions.
          */
-         interface InnerFunctionToQuery {
+        interface InnerFunctionToQuery {
 
             /**
              * returns a query for the given functions or null if it can't build a query.
@@ -817,9 +928,7 @@ public class LuceneQueryBuilder {
                 if (query == null) return null;
                 Boolean negate = !(Boolean) outerPair.input().value();
                 if (negate) {
-                    BooleanQuery booleanQuery = new BooleanQuery();
-                    booleanQuery.add(query, BooleanClause.Occur.MUST_NOT);
-                    return booleanQuery;
+                    return Queries.not(query);
                 } else {
                     return query;
                 }
@@ -832,34 +941,79 @@ public class LuceneQueryBuilder {
                 }
                 if (innerPair.reference().valueType().equals(DataTypes.GEO_SHAPE)) {
                     // we have within('POINT(0 0)', shape_column)
-                    return genericFunctionQuery(inner, context);
+                    return genericFunctionFilter(inner, context);
                 }
-                GeoPointFieldMapper mapper = getGeoPointFieldMapper(
-                        innerPair.reference().info().ident().columnIdent().fqn(),
-                        context.mapperService
-                );
+                GeoPointFieldMapper.GeoPointFieldType geoPointFieldType = getGeoPointFieldType(
+                    innerPair.reference().ident().columnIdent().fqn(),
+                    context.mapperService);
+
                 Map<String, Object> geoJSON = (Map<String, Object>) innerPair.input().value();
                 Shape shape = GeoJSONUtils.map2Shape(geoJSON);
                 Geometry geometry = JtsSpatialContext.GEO.getGeometryFrom(shape);
-                IndexGeoPointFieldData fieldData = context.fieldDataService.getForField(mapper);
-                Filter filter;
+                IndexGeoPointFieldData fieldData = context.fieldDataService.getForField(geoPointFieldType);
                 if (geometry.isRectangle()) {
-                    Rectangle boundingBox = shape.getBoundingBox();
-                    filter = new InMemoryGeoBoundingBoxFilter(
-                            new GeoPoint(boundingBox.getMaxY(), boundingBox.getMinX()),
-                            new GeoPoint(boundingBox.getMinY(), boundingBox.getMaxX()),
-                            fieldData
-                    );
+                    return getBoundingBoxQuery(shape, fieldData);
                 } else {
-                    Coordinate[] coordinates = geometry.getCoordinates();
+                    return getPolygonQuery(geometry, fieldData);
+                }
+            }
+
+            private Query getPolygonQuery(Geometry geometry, IndexGeoPointFieldData fieldData) {
+                Coordinate[] coordinates = geometry.getCoordinates();
+                GeoPoint[] points = new GeoPoint[coordinates.length];
+                for (int i = 0; i < coordinates.length; i++) {
+                    Coordinate coordinate = coordinates[i];
+                    points[i] = new GeoPoint(coordinate.y, coordinate.x);
+                }
+                return new GeoPolygonQuery(fieldData, points);
+            }
+
+            // FIXME: Once https://github.com/elastic/elasticsearch/issues/20333 is resolved
+            // The issue is resolved in elasticsearch master (5.x).
+            // Enable this method so that the new optimized query is used.
+            // Check test GeoShapeIntegrationTest.testGeoPointInPolygonQueryLuceneBug
+            // Enable test: LuceneQueryBuilderTest.testWithinFunctionTooFewPoints
+            // and change test: LuceneQueryBuilderTest.testWithinFunction
+/*
+            private Query getPolygonQuery(Context context, Geometry geometry, IndexGeoPointFieldData fieldData) {
+                final Version indexCreated = Version.indexCreated(context.indexCache.indexSettings());
+                Coordinate[] coordinates = geometry.getCoordinates();
+                final Query query;
+                // We can check for version 2.3 here because there is no Crate release with version 2.2
+                // although the optimized distance query is available since 2.2
+                if (indexCreated.before(Version.V_2_3_0)) {
                     GeoPoint[] points = new GeoPoint[coordinates.length];
                     for (int i = 0; i < coordinates.length; i++) {
                         Coordinate coordinate = coordinates[i];
                         points[i] = new GeoPoint(coordinate.y, coordinate.x);
                     }
-                    filter = new GeoPolygonFilter(fieldData, points);
+                    query = new GeoPolygonQuery(fieldData, points);
+                } else {
+                    // close the polygon shape if startpoint != endpoint
+                    if (!CoordinateArrays.isRing(coordinates)) {
+                        coordinates = Arrays.copyOf(coordinates, coordinates.length + 1);
+                        coordinates[coordinates.length - 1] = coordinates[0];
+                    }
+                    final double[] lats = new double[coordinates.length];
+                    final double[] lons = new double[coordinates.length];
+                    for (int i = 0; i < coordinates.length; i++) {
+                        lats[i] = coordinates[i].y;
+                        lons[i] = coordinates[i].x;
+                    }
+                    query = new GeoPointInPolygonQuery(fieldData.getFieldNames().indexName(),
+                        GeoPointField.TermEncoding.PREFIX,
+                        lons, lats);
                 }
-                return new FilteredQuery(Queries.newMatchAllQuery(), context.indexCache.filter().cache(filter));
+                return query;
+            }
+*/
+            private Query getBoundingBoxQuery(Shape shape, IndexGeoPointFieldData fieldData) {
+                Rectangle boundingBox = shape.getBoundingBox();
+                return new InMemoryGeoBoundingBoxQuery(
+                    new GeoPoint(boundingBox.getMaxY(), boundingBox.getMinX()),
+                    new GeoPoint(boundingBox.getMinY(), boundingBox.getMaxX()),
+                    fieldData
+                );
             }
 
             @Override
@@ -873,17 +1027,18 @@ public class LuceneQueryBuilder {
             final static GeoDistance GEO_DISTANCE = GeoDistance.DEFAULT;
             final static String OPTIMIZE_BOX = "memory";
 
+
             /**
-             *
              * @param parent the outer function. E.g. in the case of
-             *     <pre>where distance(p1, POINT (10 20)) > 20</pre>
-             *     this would be
-             *     <pre>gt( \<inner function\>,  20)</pre>
-             * @param inner has to be the distance function
+             *               <pre>where distance(p1, POINT (10 20)) > 20</pre>
+             *               this would be
+             *               <pre>gt( \<inner function\>,  20)</pre>
+             * @param inner  has to be the distance function
              */
             @Override
             public Query apply(Function parent, Function inner, Context context) {
-                assert inner.info().ident().name().equals(DistanceFunction.NAME);
+                assert inner.info().ident().name().equals(DistanceFunction.NAME) :
+                    "function must be " + DistanceFunction.NAME;
 
                 RefLiteralPair distanceRefLiteral = new RefLiteralPair(inner);
                 if (!distanceRefLiteral.isValid()) {
@@ -897,10 +1052,9 @@ public class LuceneQueryBuilder {
                 }
                 Double distance = DataTypes.DOUBLE.value(functionLiteralPair.input().value());
 
-                String fieldName = distanceRefLiteral.reference().info().ident().columnIdent().fqn();
-                FieldMapper mapper = getGeoPointFieldMapper(fieldName, context.mapperService);
-                GeoPointFieldMapper geoMapper = ((GeoPointFieldMapper) mapper);
-                IndexGeoPointFieldData fieldData = context.fieldDataService.getForField(mapper);
+                String fieldName = distanceRefLiteral.reference().ident().columnIdent().fqn();
+                GeoPointFieldMapper.GeoPointFieldType geoPointFieldType = getGeoPointFieldType(fieldName, context.mapperService);
+                IndexGeoPointFieldData fieldData = context.fieldDataService.getForField(geoPointFieldType);
 
                 Input geoPointInput = distanceRefLiteral.input();
                 Double[] pointValue = (Double[]) geoPointInput.value();
@@ -909,6 +1063,7 @@ public class LuceneQueryBuilder {
 
                 String parentName = functionLiteralPair.functionName();
 
+                GeoPoint geoPoint = new GeoPoint(lat, lon);
                 Double from = null;
                 Double to = null;
                 boolean includeLower = false;
@@ -923,48 +1078,68 @@ public class LuceneQueryBuilder {
                         break;
                     case LteOperator.NAME:
                         includeUpper = true;
+                        includeLower = true; // ignored by old query if from == null
                         to = distance;
                         break;
                     case LtOperator.NAME:
                         to = distance;
+                        includeLower = true; // ignored by old query if from == null
                         break;
                     case GteOperator.NAME:
                         from = distance;
                         includeLower = true;
+                        includeUpper = true; // ignored by old query if to == null
                         break;
                     case GtOperator.NAME:
                         from = distance;
+                        includeUpper = true; // ignored by old query if to == null
                         break;
                     default:
                         // invalid operator? give up
                         return null;
                 }
-                GeoPoint geoPoint = new GeoPoint(lat, lon);
-                Filter filter = new GeoDistanceRangeFilter(
+
+                final Version indexCreated = Version.indexCreated(context.indexCache.indexSettings());
+                final Query query;
+                if (indexCreated.before(Version.V_2_3_0)) {
+                    query = new GeoDistanceRangeQuery(
                         geoPoint,
                         from,
                         to,
                         includeLower,
                         includeUpper,
                         GEO_DISTANCE,
-                        geoMapper,
+                        geoPointFieldType,
                         fieldData,
-                        OPTIMIZE_BOX
-                );
-                return new FilteredQuery(Queries.newMatchAllQuery(), context.indexCache.filter().cache(filter));
+                        OPTIMIZE_BOX);
+                } else {
+                    GeoUtils.normalizePoint(geoPoint);
+                    if (from == null) {
+                        from = 0d;
+                    }
+                    if (to == null) {
+                        to = GeoDistanceUtils.maxRadialDistanceMeters(geoPoint.lon(), geoPoint.lat());
+                    }
+                    query = new GeoPointDistanceRangeQuery(
+                        fieldData.getFieldNames().indexName(),
+                        GeoPointField.TermEncoding.PREFIX,
+                        geoPoint.lon(), geoPoint.lat(),
+                        (includeLower) ? from : from + TOLERANCE,
+                        (includeUpper) ? to : to - TOLERANCE);
+                }
+                return query;
             }
         }
 
-        private static GeoPointFieldMapper getGeoPointFieldMapper(String fieldName, MapperService mapperService) {
-            MapperService.SmartNameFieldMappers smartMappers = mapperService.smartName(fieldName);
-            if (smartMappers == null || !smartMappers.hasMapper()) {
+        private static GeoPointFieldMapper.GeoPointFieldType getGeoPointFieldType(String fieldName, MapperService mapperService) {
+            MappedFieldType fieldType = mapperService.smartNameFieldType(fieldName);
+            if (fieldType == null) {
                 throw new IllegalArgumentException(String.format(Locale.ENGLISH, "column \"%s\" doesn't exist", fieldName));
             }
-            FieldMapper mapper = smartMappers.mapper();
-            if (!(mapper instanceof GeoPointFieldMapper)) {
+            if (!(fieldType instanceof GeoPointFieldMapper.GeoPointFieldType)) {
                 throw new IllegalArgumentException(String.format(Locale.ENGLISH, "column \"%s\" isn't of type geo_point", fieldName));
             }
-            return (GeoPointFieldMapper) mapper;
+            return (GeoPointFieldMapper.GeoPointFieldType) fieldType;
         }
 
         private static final EqQuery eqQuery = new EqQuery();
@@ -974,41 +1149,40 @@ public class LuceneQueryBuilder {
         private static final RangeQuery gteQuery = new RangeQuery("gte");
         private static final WithinQuery withinQuery = new WithinQuery();
         private final ImmutableMap<String, FunctionToQuery> functions =
-                ImmutableMap.<String, FunctionToQuery>builder()
-                        .put(WithinFunction.NAME, withinQuery)
-                        .put(AndOperator.NAME, new AndQuery())
-                        .put(OrOperator.NAME, new OrQuery())
-                        .put(EqOperator.NAME, eqQuery)
-                        .put(LtOperator.NAME, ltQuery)
-                        .put(LteOperator.NAME, lteQuery)
-                        .put(GteOperator.NAME, gteQuery)
-                        .put(GtOperator.NAME, gtQuery)
-                        .put(LikeOperator.NAME, new LikeQuery())
-                        .put(InOperator.NAME, new InQuery())
-                        .put(NotPredicate.NAME, new NotQuery())
-                        .put(IsNullPredicate.NAME, new IsNullQuery())
-                        .put(MatchPredicate.NAME, new ToMatchQuery())
-                        .put(AnyEqOperator.NAME, new AnyEqQuery())
-                        .put(AnyNeqOperator.NAME, new AnyNeqQuery())
-                        .put(AnyLtOperator.NAME, new AnyRangeQuery("gt", "lt"))
-                        .put(AnyLteOperator.NAME, new AnyRangeQuery("gte", "lte"))
-                        .put(AnyGteOperator.NAME, new AnyRangeQuery("lte", "gte"))
-                        .put(AnyGtOperator.NAME, new AnyRangeQuery("lt", "gt"))
-                        .put(AnyLikeOperator.NAME, new AnyLikeQuery())
-                        .put(AnyNotLikeOperator.NAME, new AnyNotLikeQuery())
-                        .put(RegexpMatchOperator.NAME, new RegexpMatchQuery())
-                        .put(RegexpMatchCaseInsensitiveOperator.NAME, new RegexMatchQueryCaseInsensitive())
-                        .build();
+            ImmutableMap.<String, FunctionToQuery>builder()
+                .put(WithinFunction.NAME, withinQuery)
+                .put(AndOperator.NAME, new AndQuery())
+                .put(OrOperator.NAME, new OrQuery())
+                .put(EqOperator.NAME, eqQuery)
+                .put(LtOperator.NAME, ltQuery)
+                .put(LteOperator.NAME, lteQuery)
+                .put(GteOperator.NAME, gteQuery)
+                .put(GtOperator.NAME, gtQuery)
+                .put(LikeOperator.NAME, new LikeQuery())
+                .put(NotPredicate.NAME, new NotQuery())
+                .put(IsNullPredicate.NAME, new IsNullQuery())
+                .put(MatchPredicate.NAME, new ToMatchQuery())
+                .put(AnyEqOperator.NAME, new AnyEqQuery())
+                .put(AnyNeqOperator.NAME, new AnyNeqQuery())
+                .put(AnyLtOperator.NAME, new AnyRangeQuery("gt", "lt"))
+                .put(AnyLteOperator.NAME, new AnyRangeQuery("gte", "lte"))
+                .put(AnyGteOperator.NAME, new AnyRangeQuery("lte", "gte"))
+                .put(AnyGtOperator.NAME, new AnyRangeQuery("lt", "gt"))
+                .put(AnyLikeOperator.NAME, new AnyLikeQuery())
+                .put(AnyNotLikeOperator.NAME, new AnyNotLikeQuery())
+                .put(RegexpMatchOperator.NAME, new RegexpMatchQuery())
+                .put(RegexpMatchCaseInsensitiveOperator.NAME, new RegexMatchQueryCaseInsensitive())
+                .build();
 
         private final ImmutableMap<String, InnerFunctionToQuery> innerFunctions =
-                ImmutableMap.<String, InnerFunctionToQuery>builder()
-                        .put(DistanceFunction.NAME, new DistanceQuery())
-                        .put(WithinFunction.NAME, withinQuery)
-                        .build();
+            ImmutableMap.<String, InnerFunctionToQuery>builder()
+                .put(DistanceFunction.NAME, new DistanceQuery())
+                .put(WithinFunction.NAME, withinQuery)
+                .build();
 
         @Override
         public Query visitFunction(Function function, Context context) {
-            assert function != null;
+            assert function != null : "function must not be null";
             if (fieldIgnored(function, context)) {
                 return Queries.newMatchAllQuery();
             }
@@ -1016,7 +1190,7 @@ public class LuceneQueryBuilder {
 
             FunctionToQuery toQuery = functions.get(function.info().ident().name());
             if (toQuery == null) {
-                return genericFunctionQuery(function, context);
+                return genericFunctionFilter(function, context);
             }
 
             Query query;
@@ -1025,12 +1199,12 @@ public class LuceneQueryBuilder {
             } catch (IOException e) {
                 throw ExceptionsHelper.convertToRuntime(e);
             } catch (UnsupportedOperationException e) {
-                return genericFunctionQuery(function, context);
+                return genericFunctionFilter(function, context);
             }
             if (query == null) {
                 query = queryFromInnerFunction(function, context);
                 if (query == null) {
-                    return genericFunctionQuery(function, context);
+                    return genericFunctionFilter(function, context);
                 }
             }
             return query;
@@ -1043,7 +1217,7 @@ public class LuceneQueryBuilder {
                     InnerFunctionToQuery functionToQuery = innerFunctions.get(functionName);
                     if (functionToQuery != null) {
                         try {
-                            Query query = functionToQuery.apply(function, (Function)symbol, context);
+                            Query query = functionToQuery.apply(function, (Function) symbol, context);
                             if (query != null) {
                                 return query;
                             }
@@ -1064,7 +1238,7 @@ public class LuceneQueryBuilder {
             Symbol left = function.arguments().get(0);
             Symbol right = function.arguments().get(1);
             if (left.symbolType() == SymbolType.REFERENCE && right.symbolType().isValueSymbol()) {
-                String columnName = ((Reference) left).info().ident().columnIdent().name();
+                String columnName = ((Reference) left).ident().columnIdent().name();
                 if (Context.FILTERED_FIELDS.contains(columnName)) {
                     context.filteredFieldValues.put(columnName, ((Input) right).value());
                     return true;
@@ -1084,13 +1258,12 @@ public class LuceneQueryBuilder {
                 Symbol right = function.arguments().get(1);
                 if (left.symbolType() == SymbolType.REFERENCE && right.symbolType().isValueSymbol()) {
                     Reference ref = (Reference) left;
-                    if (ref.info().ident().columnIdent().equals(DocSysColumns.ID)) {
-                        function.setArgument(0,
-                                new Reference(DocSysColumns.forTable(ref.ident().tableIdent(), DocSysColumns.UID)));
-                        function.setArgument(1, Literal.newLiteral(Uid.createUid(Constants.DEFAULT_MAPPING_TYPE,
-                                ValueSymbolVisitor.STRING.process(right))));
+                    if (ref.ident().columnIdent().equals(DocSysColumns.ID)) {
+                        function.setArgument(0, DocSysColumns.forTable(ref.ident().tableIdent(), DocSysColumns.UID));
+                        function.setArgument(1, Literal.of(Uid.createUid(Constants.DEFAULT_MAPPING_TYPE,
+                            ValueSymbolVisitor.STRING.process(right))));
                     } else {
-                        String unsupportedMessage = context.unsupportedMessage(ref.info().ident().columnIdent().name());
+                        String unsupportedMessage = context.unsupportedMessage(ref.ident().columnIdent().name());
                         if (unsupportedMessage != null) {
                             throw new UnsupportedFeatureException(unsupportedMessage);
                         }
@@ -1100,7 +1273,7 @@ public class LuceneQueryBuilder {
             return function;
         }
 
-        private static Filter genericFunctionFilter(Function function, Context context) {
+        private static Query genericFunctionFilter(Function function, Context context) {
             if (function.valueType() != DataTypes.BOOLEAN) {
                 raiseUnsupported(function);
             }
@@ -1108,114 +1281,38 @@ public class LuceneQueryBuilder {
             // reason1: analyzed columns or columns with index off wouldn't work
             //   substr(n, 1, 1) in the case of n => analyzed would throw an error because n would be an array
             // reason2: would have to load each value into the field cache
-            function = (Function)DocReferenceConverter.convertIf(function);
+            function = (Function) DocReferenceConverter.convertIf(function);
 
-            final CollectInputSymbolVisitor.Context ctx = context.inputSymbolVisitor.extractImplementations(function);
-            assert ctx.topLevelInputs().size() == 1;
+            final InputFactory.Context<? extends LuceneCollectorExpression<?>> ctx = context.docInputFactory.getCtx();
             @SuppressWarnings("unchecked")
-            final Input<Boolean> condition = (Input<Boolean>) ctx.topLevelInputs().get(0);
+            final Input<Boolean> condition = (Input<Boolean>) ctx.add(function);
             @SuppressWarnings("unchecked")
-            final List<LuceneCollectorExpression> expressions = ctx.docLevelExpressions();
+            final Collection<? extends LuceneCollectorExpression<?>> expressions = ctx.expressions();
             final CollectorContext collectorContext = new CollectorContext(
-                    context.mapperService,
-                    context.fieldDataService,
-                    new CollectorFieldsVisitor(expressions.size())
+                context.fieldDataService,
+                new CollectorFieldsVisitor(expressions.size())
             );
 
             for (LuceneCollectorExpression expression : expressions) {
                 expression.startCollect(collectorContext);
             }
-            return new FunctionFilter(expressions, collectorContext, condition);
-        }
-
-        private static Query genericFunctionQuery(Function function, Context context) {
-            return new FilteredQuery(Queries.newMatchAllQuery(), genericFunctionFilter(function, context));
-        }
-
-        public static class FunctionFilter extends Filter {
-            private final List<LuceneCollectorExpression> expressions;
-            private final CollectorContext collectorContext;
-            private final Input<Boolean> condition;
-
-            public FunctionFilter(List<LuceneCollectorExpression> expressions, CollectorContext collectorContext, Input<Boolean> condition) {
-                this.expressions = expressions;
-                this.collectorContext = collectorContext;
-                this.condition = condition;
-            }
-
-            @Override
-            public DocIdSet getDocIdSet(AtomicReaderContext context, Bits acceptDocs) throws IOException {
-                for (LuceneCollectorExpression expression : expressions) {
-                    expression.setNextReader(context.reader().getContext());
-                }
-                return BitsFilteredDocIdSet.wrap(
-                        new FunctionDocSet(
-                                context.reader(),
-                                collectorContext.visitor(),
-                                condition,
-                                expressions,
-                                context.reader().maxDoc(),
-                                acceptDocs
-                        ),
-                        acceptDocs
-                );
-            }
-        }
-
-        static class FunctionDocSet extends MatchDocIdSet {
-
-            private final AtomicReader reader;
-            private final CollectorFieldsVisitor fieldsVisitor;
-            private final Input<Boolean> condition;
-            private final List<LuceneCollectorExpression> expressions;
-            private final boolean fieldsVisitorEnabled;
-
-            protected FunctionDocSet(AtomicReader reader,
-                                     @Nullable CollectorFieldsVisitor fieldsVisitor,
-                                     Input<Boolean> condition,
-                                     List<LuceneCollectorExpression> expressions,
-                                     int maxDoc,
-                                     @Nullable Bits acceptDocs) {
-                super(maxDoc, acceptDocs);
-                this.reader = reader;
-                this.fieldsVisitor = fieldsVisitor;
-                //noinspection SimplifiableConditionalExpression
-                this.fieldsVisitorEnabled = fieldsVisitor == null ? false : fieldsVisitor.required();
-                this.condition = condition;
-                this.expressions = expressions;
-            }
-
-            @Override
-            protected boolean matchDoc(int doc) {
-                if (fieldsVisitorEnabled) {
-                    fieldsVisitor.reset();
-                    try {
-                        reader.document(doc, fieldsVisitor);
-                    } catch (IOException e) {
-                        throw Throwables.propagate(e);
-                    }
-                }
-                for (LuceneCollectorExpression expression : expressions) {
-                    expression.setNextDocId(doc);
-                }
-                Boolean value = condition.value();
-                if (value == null) {
-                    return false;
-                }
-                return value;
-            }
+            return new GenericFunctionQuery(function, expressions, collectorContext, condition);
         }
 
         private static Query raiseUnsupported(Function function) {
             throw new UnsupportedOperationException(
-                    SymbolFormatter.format("Cannot convert function %s into a query", function));
+                SymbolFormatter.format("Cannot convert function %s into a query", function));
         }
 
         @Override
         public Query visitReference(Reference symbol, Context context) {
             // called for queries like: where boolColumn
             if (symbol.valueType() == DataTypes.BOOLEAN) {
-                return QueryBuilderHelper.forType(DataTypes.BOOLEAN).eq(symbol.info().ident().columnIdent().fqn(), true);
+                MappedFieldType fieldType = context.getFieldTypeOrNull(symbol.ident().columnIdent().fqn());
+                if (fieldType == null) {
+                    return Queries.newMatchNoDocsQuery();
+                }
+                return fieldType.termQuery(true, null);
             }
             return super.visitReference(symbol, context);
         }
@@ -1223,17 +1320,17 @@ public class LuceneQueryBuilder {
         @Override
         protected Query visitSymbol(Symbol symbol, Context context) {
             throw new UnsupportedOperationException(
-                    SymbolFormatter.format("Can't build query from symbol %s", symbol));
+                SymbolFormatter.format("Can't build query from symbol %s", symbol));
         }
     }
 
-    static class FunctionLiteralPair {
+    private static class FunctionLiteralPair {
 
         private final String functionName;
         private final Function function;
         private final Input input;
 
-        FunctionLiteralPair(Function outerFunction) {
+        private FunctionLiteralPair(Function outerFunction) {
             assert outerFunction.arguments().size() == 2 : "function requires 2 arguments";
             Symbol left = outerFunction.arguments().get(0);
             Symbol right = outerFunction.arguments().get(1);
@@ -1257,25 +1354,25 @@ public class LuceneQueryBuilder {
             }
         }
 
-        public boolean isValid() {
+        private boolean isValid() {
             return input != null && function != null;
         }
 
-        public Input input() {
+        private Input input() {
             return input;
         }
 
-        public String functionName() {
+        private String functionName() {
             return functionName;
         }
     }
 
-    static class RefLiteralPair {
+    private static class RefLiteralPair {
 
         private final Reference reference;
         private final Input input;
 
-        RefLiteralPair(Function function) {
+        private RefLiteralPair(Function function) {
             assert function.arguments().size() == 2 : "function requires 2 arguments";
             Symbol left = function.arguments().get(0);
             Symbol right = function.arguments().get(1);
@@ -1297,38 +1394,16 @@ public class LuceneQueryBuilder {
             }
         }
 
-        public boolean isValid() {
+        private boolean isValid() {
             return input != null && reference != null;
         }
 
-        public Reference reference() {
+        private Reference reference() {
             return reference;
         }
 
-        public Input input() {
+        private Input input() {
             return input;
         }
-    }
-
-    @SuppressWarnings("unchecked")
-    private static BytesRef[] getBytesRefs(Object[] values, TermBuilder termBuilder) {
-        BytesRef[] terms = new BytesRef[values.length];
-        int i = 0;
-        for (Object value : values) {
-            terms[i] = termBuilder.term(value);
-            i++;
-        }
-        return terms;
-    }
-
-    @SuppressWarnings("unchecked")
-    private static BytesRef[] getBytesRefs(Collection values, TermBuilder termBuilder) {
-        BytesRef[] terms = new BytesRef[values.size()];
-        int i = 0;
-        for (Object value : values) {
-            terms[i] = termBuilder.term(value);
-            i++;
-        }
-        return terms;
     }
 }

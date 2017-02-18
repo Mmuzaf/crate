@@ -21,30 +21,28 @@
 
 package io.crate.integrationtests;
 
-import org.junit.Rule;
+import io.crate.action.sql.SQLActionException;
+import io.crate.testing.UseJdbc;
 import org.junit.Test;
-import org.junit.rules.ExpectedException;
 
 import static org.hamcrest.core.Is.is;
 
+@UseJdbc
 public class RegexpIntegrationTest extends SQLTransportIntegrationTest {
 
     private Setup setup = new Setup(sqlExecutor);
-
-    @Rule
-    public ExpectedException expectedException = ExpectedException.none();
 
     @Test
     public void testRegexpMatchesIsNull() throws Exception {
         execute("create table regex_test (i integer, s string) with (number_of_replicas=0)");
         ensureYellow();
         execute("insert into regex_test(i, s) values (?, ?)", new Object[][]{
-                new Object[]{1, "foo is first"},
-                new Object[]{2, "bar is second"},
-                new Object[]{3, "foobar is great"},
-                new Object[]{4, "crate is greater"},
-                new Object[]{5, "foo"},
-                new Object[]{6, null}
+            new Object[]{1, "foo is first"},
+            new Object[]{2, "bar is second"},
+            new Object[]{3, "foobar is great"},
+            new Object[]{4, "crate is greater"},
+            new Object[]{5, "foo"},
+            new Object[]{6, null}
         });
         refresh();
         execute("select i from regex_test where regexp_matches(s, 'is') is not null");
@@ -58,12 +56,12 @@ public class RegexpIntegrationTest extends SQLTransportIntegrationTest {
         execute("create table regex_test (i integer, s string) with (number_of_replicas=0)");
         ensureYellow();
         execute("insert into regex_test(i, s) values (?, ?)", new Object[][]{
-                new Object[]{1, "foo is first"},
-                new Object[]{2, "bar is second"},
-                new Object[]{3, "foobar is great"},
-                new Object[]{4, "crate is greater"},
-                new Object[]{5, "foo"},
-                new Object[]{6, null}
+            new Object[]{1, "foo is first"},
+            new Object[]{2, "bar is second"},
+            new Object[]{3, "foobar is great"},
+            new Object[]{4, "crate is greater"},
+            new Object[]{5, "foo"},
+            new Object[]{6, null}
         });
         refresh();
         execute("select i from regex_test where regexp_replace(s, 'is', 'was') is not null");
@@ -72,11 +70,27 @@ public class RegexpIntegrationTest extends SQLTransportIntegrationTest {
         assertThat(response.rowCount(), is(1L));
     }
 
+    @Test
+    public void testInvalidPatternSyntax() throws Exception {
+        expectedException.expect(SQLActionException.class);
+        expectedException.expectMessage(String.format("Dangling meta character '+' near index 0%n" +
+                "+1234567890%n" +
+                "^"));
+        execute("create table phone (phone string) with (number_of_replicas=0)");
+        ensureYellow();
+        execute("insert into phone (phone) values (?)", new Object[][]{
+            new Object[]{"+1234567890"}
+        });
+        refresh();
+        execute("select * from phone where phone ~* '+1234567890'");
+        ensureYellow();
+    }
+
     /**
      * Test querying using regular expressions based on RegexpQuery,
      * which in turn is based on the fast finite-state automata
      * regular expression engine implementation `dk.brics.automaton`.
-     *
+     * <p>
      * This engine is the default when using the regexp tilde operator `~`.
      *
      * @see {@link org.apache.lucene.search.RegexpQuery}
@@ -113,7 +127,7 @@ public class RegexpIntegrationTest extends SQLTransportIntegrationTest {
      * Test querying using regular expressions based on RegexQuery,
      * which in turn uses the regular expression engine of the
      * Java standard library.
-     *
+     * <p>
      * This engine is active when using the case-insensitive regexp tilde operator `~*`.
      *
      * @see {@link org.apache.lucene.sandbox.queries.regex.RegexQuery}
@@ -139,7 +153,7 @@ public class RegexpIntegrationTest extends SQLTransportIntegrationTest {
      * Test querying using regular expressions based on RegexQuery,
      * which in turn uses the regular expression engine of the
      * Java standard library.
-     *
+     * <p>
      * This engine is active when using the regular regexp tilde operator `~`,
      * but the pattern used contains PCRE features, which the fast regex
      * implementation {@link org.apache.lucene.util.automaton.RegExp}
@@ -222,9 +236,9 @@ public class RegexpIntegrationTest extends SQLTransportIntegrationTest {
         ensureGreen();
         refresh();
 
-        execute("select * from sys.shards where table_name ~ '(?i)LOCATIONS' order by table_name");
+        execute("select table_name, * from sys.shards where table_name ~ '(?i)LOCATIONS' order by table_name");
         assertThat(response.rowCount(), is(2L));
-        assertThat((String) response.rows()[0][11], is("locations"));
+        assertThat((String) response.rows()[0][0], is("locations"));
     }
 
     @Test
@@ -233,9 +247,9 @@ public class RegexpIntegrationTest extends SQLTransportIntegrationTest {
         ensureGreen();
         refresh();
 
-        execute("select * from sys.shards where table_name ~* 'LOCATIONS' order by table_name");
+        execute("select table_name, * from sys.shards where table_name ~* 'LOCATIONS' order by table_name");
         assertThat(response.rowCount(), is(2L));
-        assertThat((String) response.rows()[0][11], is("locations"));
+        assertThat((String) response.rows()[0][0], is("locations"));
     }
 
 }

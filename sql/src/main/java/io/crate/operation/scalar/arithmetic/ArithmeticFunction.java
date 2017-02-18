@@ -21,34 +21,22 @@
 
 package io.crate.operation.scalar.arithmetic;
 
-import com.google.common.base.Preconditions;
-import com.google.common.collect.Iterables;
 import com.google.common.collect.Sets;
-import io.crate.analyze.symbol.Function;
-import io.crate.analyze.symbol.Literal;
-import io.crate.analyze.symbol.Symbol;
-import io.crate.metadata.FunctionIdent;
-import io.crate.metadata.FunctionInfo;
-import io.crate.metadata.Scalar;
-import io.crate.operation.Input;
+import io.crate.metadata.*;
 import io.crate.types.DataType;
 import io.crate.types.DataTypes;
 
-import java.util.Arrays;
 import java.util.List;
 import java.util.Set;
 
 abstract class ArithmeticFunction extends Scalar<Number, Number> {
 
     private final static Set<DataType> NUMERIC_WITH_DECIMAL =
-            Sets.<DataType>newHashSet(DataTypes.FLOAT, DataTypes.DOUBLE);
-    private final static Set<DataType> ALLOWED_TYPES = Sets.newHashSet(
-            Iterables.concat(DataTypes.NUMERIC_PRIMITIVE_TYPES, Arrays.asList(DataTypes.TIMESTAMP))
-    );
+        Sets.newHashSet(DataTypes.FLOAT, DataTypes.DOUBLE);
 
     protected final FunctionInfo info;
 
-    public ArithmeticFunction(FunctionInfo info) {
+    ArithmeticFunction(FunctionInfo info) {
         this.info = info;
     }
 
@@ -57,33 +45,23 @@ abstract class ArithmeticFunction extends Scalar<Number, Number> {
         return info;
     }
 
-    protected static FunctionInfo genDoubleInfo(String functionName, List<DataType> dataTypes) {
-        return genDoubleInfo(functionName, dataTypes, false);
+    static FunctionInfo genDoubleInfo(String functionName, List<DataType> dataTypes) {
+        return genDoubleInfo(functionName, dataTypes, FunctionInfo.DETERMINISTIC_ONLY);
     }
 
-    protected static FunctionInfo genDoubleInfo(String functionName, List<DataType> dataTypes, boolean comparisonReplacementPossible) {
-        return new FunctionInfo(new FunctionIdent(functionName, dataTypes), DataTypes.DOUBLE, FunctionInfo.Type.SCALAR, true, comparisonReplacementPossible);
+    static FunctionInfo genDoubleInfo(String functionName, List<DataType> dataTypes, Set<FunctionInfo.Feature> features) {
+        return new FunctionInfo(new FunctionIdent(functionName, dataTypes), DataTypes.DOUBLE, FunctionInfo.Type.SCALAR, features);
     }
 
-    protected static FunctionInfo genLongInfo(String functionName, List<DataType> dataTypes) {
-        return genLongInfo(functionName, dataTypes, false);
+    static FunctionInfo genLongInfo(String functionName, List<DataType> dataTypes) {
+        return genLongInfo(functionName, dataTypes, FunctionInfo.DETERMINISTIC_ONLY);
     }
 
-    protected static FunctionInfo genLongInfo(String functionName, List<DataType> dataTypes, boolean comparisonReplacementPossible) {
-        return new FunctionInfo(new FunctionIdent(functionName, dataTypes), DataTypes.LONG, FunctionInfo.Type.SCALAR, true, comparisonReplacementPossible);
+    static FunctionInfo genLongInfo(String functionName, List<DataType> dataTypes, Set<FunctionInfo.Feature> features) {
+        return new FunctionInfo(new FunctionIdent(functionName, dataTypes), DataTypes.LONG, FunctionInfo.Type.SCALAR, features);
     }
 
-    protected static void validateTypes(List<DataType> dataTypes) {
-        Preconditions.checkArgument(dataTypes.size() == 2);
-        DataType leftType = dataTypes.get(0);
-        DataType rightType = dataTypes.get(1);
-        Preconditions.checkArgument(ALLOWED_TYPES.contains(leftType),
-                "invalid type %s of left argument", leftType.toString());
-        Preconditions.checkArgument(ALLOWED_TYPES.contains(rightType),
-                "invalid type %s of right argument", leftType.toString());
-    }
-
-    protected static boolean containsTypesWithDecimal(List<DataType> dataTypes) {
+    static boolean containsTypesWithDecimal(List<DataType> dataTypes) {
         for (DataType dataType : dataTypes) {
             if (NUMERIC_WITH_DECIMAL.contains(dataType)) {
                 return true;
@@ -92,4 +70,13 @@ abstract class ArithmeticFunction extends Scalar<Number, Number> {
         return false;
     }
 
+    static abstract class ArithmeticFunctionResolver extends BaseFunctionResolver {
+
+        private static final Signature.ArgMatcher ARITHMETIC_TYPE = Signature.ArgMatcher.of(
+            DataTypes.NUMERIC_PRIMITIVE_TYPES::contains, DataTypes.TIMESTAMP::equals);
+
+        ArithmeticFunctionResolver() {
+            super(Signature.of(ARITHMETIC_TYPE, ARITHMETIC_TYPE));
+        }
+    }
 }

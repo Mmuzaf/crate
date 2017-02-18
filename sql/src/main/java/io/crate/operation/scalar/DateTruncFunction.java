@@ -28,6 +28,7 @@ import io.crate.analyze.symbol.Symbol;
 import io.crate.metadata.FunctionIdent;
 import io.crate.metadata.FunctionInfo;
 import io.crate.metadata.Scalar;
+import io.crate.metadata.TransactionContext;
 import io.crate.operation.Input;
 import io.crate.types.DataType;
 import io.crate.types.DataTypes;
@@ -47,22 +48,22 @@ public class DateTruncFunction extends Scalar<Long, Object> {
 
     public static final String NAME = "date_trunc";
 
-    protected static final ImmutableMap<BytesRef, DateTimeUnit> DATE_FIELD_PARSERS = MapBuilder.<BytesRef, DateTimeUnit>newMapBuilder()
-            // we only store timestamps in milliseconds since epoch.
-            // therefore, we supporting 'milliseconds' and 'microseconds' wouldn't affect anything.
-            .put(new BytesRef("year"), DateTimeUnit.YEAR_OF_CENTURY)
-            .put(new BytesRef("quarter"), DateTimeUnit.QUARTER)
-            .put(new BytesRef("month"), DateTimeUnit.MONTH_OF_YEAR)
-            .put(new BytesRef("week"), DateTimeUnit.WEEK_OF_WEEKYEAR)
-            .put(new BytesRef("day"), DateTimeUnit.DAY_OF_MONTH)
-            .put(new BytesRef("hour"), DateTimeUnit.HOUR_OF_DAY)
-            .put(new BytesRef("minute"), DateTimeUnit.MINUTES_OF_HOUR)
-            .put(new BytesRef("second"), DateTimeUnit.SECOND_OF_MINUTE)
-            .immutableMap();
+    private static final ImmutableMap<BytesRef, DateTimeUnit> DATE_FIELD_PARSERS = MapBuilder.<BytesRef, DateTimeUnit>newMapBuilder()
+        // we only store timestamps in milliseconds since epoch.
+        // therefore, we supporting 'milliseconds' and 'microseconds' wouldn't affect anything.
+        .put(new BytesRef("year"), DateTimeUnit.YEAR_OF_CENTURY)
+        .put(new BytesRef("quarter"), DateTimeUnit.QUARTER)
+        .put(new BytesRef("month"), DateTimeUnit.MONTH_OF_YEAR)
+        .put(new BytesRef("week"), DateTimeUnit.WEEK_OF_WEEKYEAR)
+        .put(new BytesRef("day"), DateTimeUnit.DAY_OF_MONTH)
+        .put(new BytesRef("hour"), DateTimeUnit.HOUR_OF_DAY)
+        .put(new BytesRef("minute"), DateTimeUnit.MINUTES_OF_HOUR)
+        .put(new BytesRef("second"), DateTimeUnit.SECOND_OF_MINUTE)
+        .immutableMap();
 
     public static void register(ScalarFunctionModule module) {
-        List<DataType> supportedTimestampTypes = ImmutableList.<DataType>of(
-                DataTypes.TIMESTAMP, DataTypes.LONG, DataTypes.STRING);
+        List<DataType> supportedTimestampTypes = ImmutableList.of(
+            DataTypes.TIMESTAMP, DataTypes.LONG, DataTypes.STRING);
         for (DataType dataType : supportedTimestampTypes) {
             module.register(new DateTruncFunction(info(DataTypes.STRING, dataType)));
             // time zone aware variant
@@ -70,21 +71,21 @@ public class DateTruncFunction extends Scalar<Long, Object> {
         }
     }
 
-    private static FunctionInfo info(DataType ... types) {
+    private static FunctionInfo info(DataType... types) {
         return new FunctionInfo(
-                new FunctionIdent(NAME, Arrays.asList(types)),
-                DataTypes.TIMESTAMP, FunctionInfo.Type.SCALAR, true, true);
+            new FunctionIdent(NAME, Arrays.asList(types)),
+            DataTypes.TIMESTAMP, FunctionInfo.Type.SCALAR, FunctionInfo.DETERMINISTIC_AND_COMPARISON_REPLACEMENT);
     }
 
 
     private FunctionInfo info;
     private Rounding tzRounding;
 
-    public DateTruncFunction(FunctionInfo info) {
+    DateTruncFunction(FunctionInfo info) {
         this.info = info;
     }
 
-    public DateTruncFunction(FunctionInfo info, Rounding tzRounding) {
+    private DateTruncFunction(FunctionInfo info, Rounding tzRounding) {
         this(info);
         this.tzRounding = tzRounding;
     }
@@ -104,22 +105,21 @@ public class DateTruncFunction extends Scalar<Long, Object> {
         }
 
         // all validation is already done by {@link #normalizeSymbol()}
-        BytesRef interval = (BytesRef)((Input)arguments.get(0)).value();
+        BytesRef interval = (BytesRef) ((Input) arguments.get(0)).value();
+        if (interval == null) {
+            return this;
+        }
         BytesRef timeZone = TimeZoneParser.DEFAULT_TZ_BYTES_REF;
         if (arguments.size() == 3) {
-            timeZone = (BytesRef)((Input)arguments.get(1)).value();
+            timeZone = (BytesRef) ((Input) arguments.get(1)).value();
         }
 
         return new DateTruncFunction(this.info, rounding(interval, timeZone));
     }
 
     @Override
-    public Symbol normalizeSymbol(Function symbol) {
+    public Symbol normalizeSymbol(Function symbol, TransactionContext transactionContext) {
         assert symbol.arguments().size() > 1 && symbol.arguments().size() < 4 : "Invalid number of arguments";
-
-        if (containsNullLiteral(symbol.arguments())) {
-            return Literal.NULL;
-        }
 
         if (anyNonLiterals(symbol.arguments())) {
             return symbol;
@@ -131,15 +131,15 @@ public class DateTruncFunction extends Scalar<Long, Object> {
 
         if (symbol.arguments().size() == 2) {
             timezone = TimeZoneParser.DEFAULT_TZ_LITERAL;
-            tsSymbol = (Literal)symbol.arguments().get(1);
+            tsSymbol = (Literal) symbol.arguments().get(1);
         } else {
             timezone = (Literal) symbol.arguments().get(1);
-            tsSymbol = (Literal)symbol.arguments().get(2);
+            tsSymbol = (Literal) symbol.arguments().get(2);
         }
 
-        return Literal.newLiteral(
-                DataTypes.TIMESTAMP,
-                evaluate(new Input[]{interval, timezone, tsSymbol})
+        return Literal.of(
+            DataTypes.TIMESTAMP,
+            evaluate(new Input[]{interval, timezone, tsSymbol})
         );
     }
 
@@ -151,50 +151,52 @@ public class DateTruncFunction extends Scalar<Long, Object> {
         if (args.length == 2) {
             value = args[1].value();
         } else {
-            timeZone = (BytesRef)args[1].value();
+            timeZone = (BytesRef) args[1].value();
             value = args[2].value();
         }
         if (value == null) {
             return null;
         }
         if (tzRounding == null) {
-            BytesRef interval = (BytesRef)args[0].value();
+            BytesRef interval = (BytesRef) args[0].value();
+            if (interval == null) {
+                return null;
+            }
             return truncate(rounding(interval, timeZone), TimestampType.INSTANCE.value(value));
         }
         return truncate(tzRounding, TimestampType.INSTANCE.value(value));
     }
 
-    protected Rounding rounding(BytesRef interval, BytesRef timeZoneString) {
+    private Rounding rounding(BytesRef interval, BytesRef timeZoneString) {
         DateTimeUnit intervalAsUnit = intervalAsUnit(interval);
         DateTimeZone timeZone = TimeZoneParser.parseTimeZone(timeZoneString);
 
         TimeZoneRounding.Builder tzRoundingBuilder = TimeZoneRounding.builder(intervalAsUnit);
         return tzRoundingBuilder
-                .preZone(timeZone)
-                .preZoneAdjustLargeInterval(true)
-                .build();
+            .timeZone(timeZone)
+            .build();
     }
 
     /**
      * Truncates given <code>timestamp</code> down to the given <code>interval</code>.
      * The <code>timestamp</code> is expected to be in milliseconds.
      */
-    protected Long truncate(Rounding rounding, Long ts) {
+    private Long truncate(Rounding rounding, Long ts) {
         if (ts == null) {
             return null;
         }
         return rounding.round(ts);
     }
 
-    protected DateTimeUnit intervalAsUnit(BytesRef interval) {
+    private DateTimeUnit intervalAsUnit(BytesRef interval) {
         if (interval == null) {
             throw new IllegalArgumentException(String.format(Locale.ENGLISH,
-                    "invalid interval NULL for scalar '%s'", NAME));
+                "invalid interval NULL for scalar '%s'", NAME));
         }
         DateTimeUnit intervalAsUnit = DATE_FIELD_PARSERS.get(interval);
         if (intervalAsUnit == null) {
             throw new IllegalArgumentException(String.format(Locale.ENGLISH,
-                    "invalid interval '%s' for scalar '%s'", interval.utf8ToString(), NAME));
+                "invalid interval '%s' for scalar '%s'", interval.utf8ToString(), NAME));
         }
         return intervalAsUnit;
     }

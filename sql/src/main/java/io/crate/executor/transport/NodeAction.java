@@ -27,8 +27,5 @@ import org.elasticsearch.transport.TransportResponse;
 
 public interface NodeAction<TRequest extends TransportRequest, TResponse extends TransportResponse> {
 
-    String actionName();
-    String executorName();
     void nodeOperation(TRequest request, ActionListener<TResponse> listener);
-
 }

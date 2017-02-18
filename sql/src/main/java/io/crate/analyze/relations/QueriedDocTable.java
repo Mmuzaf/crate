@@ -21,11 +21,12 @@
 
 package io.crate.analyze.relations;
 
-import io.crate.analyze.AnalysisMetaData;
 import io.crate.analyze.QueriedTableRelation;
 import io.crate.analyze.QuerySpec;
 import io.crate.analyze.where.WhereClauseAnalyzer;
+import io.crate.metadata.Functions;
 import io.crate.metadata.Path;
+import io.crate.metadata.TransactionContext;
 
 import java.util.Collection;
 
@@ -44,11 +45,8 @@ public class QueriedDocTable extends QueriedTableRelation<DocTableRelation> {
         return visitor.visitQueriedDocTable(this, context);
     }
 
-    public void normalize(AnalysisMetaData analysisMetaData){
-        super.normalize(analysisMetaData);
-        WhereClauseAnalyzer whereClauseAnalyzer = new WhereClauseAnalyzer(analysisMetaData, tableRelation);
-        querySpec().where(whereClauseAnalyzer.analyze(querySpec().where()));
+    void analyzeWhereClause(Functions functions, TransactionContext transactionContext) {
+        WhereClauseAnalyzer whereClauseAnalyzer = new WhereClauseAnalyzer(functions, tableRelation());
+        querySpec().where(whereClauseAnalyzer.analyze(querySpec().where(), transactionContext));
     }
-
-
 }

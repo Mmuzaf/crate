@@ -22,11 +22,13 @@
 
 package io.crate.integrationtests;
 
+import io.crate.testing.SQLBulkResponse;
+import io.crate.testing.UseJdbc;
 import org.junit.Test;
 
-import static org.hamcrest.Matchers.greaterThanOrEqualTo;
 import static org.hamcrest.core.Is.is;
 
+@UseJdbc
 public class DeleteIntegrationTest extends SQLTransportIntegrationTest {
 
     private Setup setup = new Setup(sqlExecutor);
@@ -39,7 +41,6 @@ public class DeleteIntegrationTest extends SQLTransportIntegrationTest {
         refresh();
         execute("delete from test");
         assertEquals(1, response.rowCount());
-        assertThat(response.duration(), greaterThanOrEqualTo(0L));
         refresh();
         execute("select \"_id\" from test");
         assertEquals(0, response.rowCount());
@@ -78,13 +79,27 @@ public class DeleteIntegrationTest extends SQLTransportIntegrationTest {
     }
 
     @Test
+    public void testDeleteWithNullArg() throws Exception {
+        this.setup.createTestTableWithPrimaryKey();
+        execute("insert into test(pk_col) values (1), (2), (3)");
+        execute("refresh table test");
+
+        execute("delete from test where pk_col=?", new Object[]{null});
+        assertThat(response.rowCount(), is(0L));
+
+        execute("refresh table test");
+        execute("select pk_col FROM test");
+        assertThat(response.rowCount(), is(3L));
+    }
+
+    @Test
     public void testDeleteByIdWithMultiplePrimaryKey() throws Exception {
         execute("create table quotes (id integer primary key, author string primary key, " +
                 "quote string) with (number_of_replicas=0)");
         ensureYellow();
         execute("insert into quotes (id, author, quote) values (?, ?, ?), (?, ?, ?)",
-                new Object[]{1, "Ford", "I'd far rather be happy than right any day.",
-                        1, "Douglas", "Don't panic"}
+            new Object[]{1, "Ford", "I'd far rather be happy than right any day.",
+                1, "Douglas", "Don't panic"}
         );
         assertEquals(2L, response.rowCount());
         refresh();
@@ -103,8 +118,8 @@ public class DeleteIntegrationTest extends SQLTransportIntegrationTest {
                 "quote string) with (number_of_replicas=0)");
         ensureYellow();
         execute("insert into quotes (id, author, quote) values (?, ?, ?), (?, ?, ?)",
-                new Object[]{1, "Ford", "I'd far rather be happy than right any day.",
-                        1, "Douglas", "Don't panic"}
+            new Object[]{1, "Ford", "I'd far rather be happy than right any day.",
+                1, "Douglas", "Don't panic"}
         );
         assertEquals(2L, response.rowCount());
         refresh();
@@ -141,7 +156,6 @@ public class DeleteIntegrationTest extends SQLTransportIntegrationTest {
 
         execute("delete from test where pk_col='123'");
         assertEquals(1, response.rowCount());
-        assertThat(response.duration(), greaterThanOrEqualTo(0L));
         refresh();
 
         execute("select * from test where pk_col='123'");
@@ -158,7 +172,6 @@ public class DeleteIntegrationTest extends SQLTransportIntegrationTest {
         refresh();
 
         execute("DELETE FROM test WHERE pk_col IN (?, ?, ?)", new Object[]{"1", "2", "4"});
-        assertThat(response.duration(), greaterThanOrEqualTo(0L));
         refresh();
 
         execute("SELECT pk_col FROM test");
@@ -173,10 +186,32 @@ public class DeleteIntegrationTest extends SQLTransportIntegrationTest {
         execute("insert into test (pk_col, message) values ('1', 'foo'), ('2', 'bar'), ('3', 'baz')");
         refresh();
         execute("DELETE FROM test WHERE pk_col=? or pk_col=? or pk_col=?", new Object[]{"1", "2", "4"});
-        assertThat(response.duration(), greaterThanOrEqualTo(0L));
         refresh();
         execute("SELECT pk_col FROM test");
         assertThat(response.rowCount(), is(1L));
         assertEquals(response.rows()[0][0], "3");
+    }
+
+    @Test
+    public void testBulkDeleteNullAndSingleKey() throws Exception {
+        this.setup.createTestTableWithPrimaryKey();
+        execute("insert into test(pk_col) values (1), (2), (3)");
+        execute("refresh table test");
+
+        SQLBulkResponse.Result[] r = execute("delete from test where pk_col=?",
+            new Object[][]{{2}, {null}, {3}}).results();
+        assertThat(r.length, is(3));
+        assertThat(r[0].rowCount(), is(1L));
+        assertThat(r[1].rowCount(), is(0L));
+        assertThat(r[2].rowCount(), is(1L));
+
+        r = execute("delete from test where pk_col=?", new Object[][]{{null}}).results();
+        assertThat(r.length, is(1));
+        assertThat(r[0].rowCount(), is(0L));
+
+        execute("refresh table test");
+        execute("select pk_col FROM test");
+        assertThat(response.rowCount(), is(1L));
+        assertEquals(response.rows()[0][0], "1");
     }
 }

@@ -22,26 +22,24 @@
 package io.crate.operation.scalar;
 
 import com.google.common.base.Preconditions;
-import io.crate.analyze.symbol.Function;
-import io.crate.analyze.symbol.Literal;
-import io.crate.analyze.symbol.Symbol;
 import io.crate.metadata.*;
 import io.crate.operation.Input;
 import io.crate.types.ArrayType;
 import io.crate.types.DataType;
 import io.crate.types.DataTypes;
 
+import java.util.ArrayList;
 import java.util.List;
 import java.util.Locale;
 
-public class ArrayCatFunction extends Scalar<Object[], Object> {
+class ArrayCatFunction extends Scalar<Object[], Object> {
 
     public static final String NAME = "array_cat";
     private FunctionInfo functionInfo;
 
     public static FunctionInfo createInfo(List<DataType> types) {
         ArrayType arrayType = (ArrayType) types.get(0);
-        if(arrayType.innerType().equals(DataTypes.UNDEFINED)){
+        if (arrayType.innerType().equals(DataTypes.UNDEFINED)) {
             arrayType = (ArrayType) types.get(1);
         }
         return new FunctionInfo(new FunctionIdent(NAME, types), arrayType);
@@ -51,7 +49,7 @@ public class ArrayCatFunction extends Scalar<Object[], Object> {
         module.register(NAME, new Resolver());
     }
 
-    protected ArrayCatFunction(FunctionInfo functionInfo) {
+    ArrayCatFunction(FunctionInfo functionInfo) {
         this.functionInfo = functionInfo;
     }
 
@@ -62,55 +60,51 @@ public class ArrayCatFunction extends Scalar<Object[], Object> {
 
     @Override
     public Object[] evaluate(Input[] args) {
-        int counter = 0;
-        for(Input array : args){
-            if(array == null || array.value() == null){
-                continue;
-            }
-            Object[] arg = (Object[]) array.value();
-            counter += arg.length;
-        }
-
         DataType innerType = ((ArrayType) this.info().returnType()).innerType();
+        List<Object> resultList = new ArrayList<>();
 
-        Object[] resultArray = new Object[counter];
-        counter = 0;
-        for(Input array : args){
-            if(array == null || array.value() == null){
+        for (Input array : args) {
+            Object arrayValue = array.value();
+            if (arrayValue == null) {
                 continue;
             }
-            Object[] arg = (Object[]) array.value();
-            for(Object element: arg){
-                resultArray[counter++] = innerType.value(element);
+
+            Object[] arg = (Object[]) arrayValue;
+            for (Object element : arg) {
+                resultList.add(innerType.value(element));
             }
         }
 
-        return resultArray;
+        return resultList.toArray();
     }
 
 
-    private static class Resolver implements DynamicFunctionResolver {
+    private static class Resolver extends BaseFunctionResolver {
+
+        protected Resolver() {
+            // inner type differences are handled in getForTypes, so not strict varArgs
+            super(Signature.numArgs(2).and(Signature.withLenientVarArgs(Signature.ArgMatcher.ANY_ARRAY)));
+        }
 
         @Override
-        public FunctionImplementation<Function> getForTypes(List<DataType> dataTypes) throws IllegalArgumentException {
-            Preconditions.checkArgument(dataTypes.size() == 2, "array_cat function requires 2 arguments");
-
+        public FunctionImplementation getForTypes(List<DataType> dataTypes) throws IllegalArgumentException {
             for (int i = 0; i < dataTypes.size(); i++) {
                 Preconditions.checkArgument(dataTypes.get(i) instanceof ArrayType, String.format(Locale.ENGLISH,
-                        "Argument %d of the array_cat function cannot be converted to array", i + 1));
+                    "Argument %d of the array_cat function cannot be converted to array", i + 1));
             }
 
             DataType innerType0 = ((ArrayType) dataTypes.get(0)).innerType();
             DataType innerType1 = ((ArrayType) dataTypes.get(1)).innerType();
 
-            Preconditions.checkArgument(!innerType0.equals(DataTypes.UNDEFINED) || !innerType1.equals(DataTypes.UNDEFINED),
-                    "One of the arguments of the array_cat function can be of undefined inner type, but not both");
+            Preconditions.checkArgument(
+                !innerType0.equals(DataTypes.UNDEFINED) || !innerType1.equals(DataTypes.UNDEFINED),
+                "One of the arguments of the array_cat function can be of undefined inner type, but not both");
 
-            if(!innerType0.equals(DataTypes.UNDEFINED)){
+            if (!innerType0.equals(DataTypes.UNDEFINED)) {
                 Preconditions.checkArgument(innerType1.isConvertableTo(innerType0),
-                        String.format(Locale.ENGLISH,
-                                "Second argument's inner type (%s) of the array_cat function cannot be converted to the first argument's inner type (%s)",
-                                innerType1,innerType0));
+                    String.format(Locale.ENGLISH,
+                        "Second argument's inner type (%s) of the array_cat function cannot be converted to the first argument's inner type (%s)",
+                        innerType1, innerType0));
             }
 
             return new ArrayCatFunction(createInfo(dataTypes));

@@ -21,13 +21,15 @@
 
 package io.crate.integrationtests;
 
-import org.elasticsearch.test.ElasticsearchIntegrationTest;
+import io.crate.testing.UseJdbc;
+import org.elasticsearch.test.ESIntegTestCase;
 
-@ElasticsearchIntegrationTest.ClusterScope(numDataNodes = 1, numClientNodes = 0)
+@ESIntegTestCase.ClusterScope(numDataNodes = 1, numClientNodes = 0)
+@UseJdbc
 public class JoinSingleNodeIntegrationTest extends JoinIntegrationTest {
 
-    /**
-     * runs all tests from CrossJoinIntegrationTest but with numDataNodes fixed to always trigger
+    /*
+     * runs all tests from JoinIntegrationTest but with numDataNodes fixed to always trigger
      * SAME_NODE optimizations
      */
 }

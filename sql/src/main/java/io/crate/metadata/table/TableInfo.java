@@ -21,36 +21,47 @@
 
 package io.crate.metadata.table;
 
-import com.google.common.collect.ImmutableMap;
 import io.crate.analyze.WhereClause;
 import io.crate.metadata.*;
 
 import javax.annotation.Nullable;
 import java.util.Collection;
 import java.util.List;
+import java.util.Map;
+import java.util.Set;
 
-public interface TableInfo extends Iterable<ReferenceInfo> {
+public interface TableInfo extends Iterable<Reference> {
 
     /**
      * returns information about a column with the given ident.
      * returns null if this table contains no such column.
      */
     @Nullable
-    ReferenceInfo getReferenceInfo(ColumnIdent columnIdent);
+    Reference getReference(ColumnIdent columnIdent);
 
     /**
      * returns the top level columns of this table with predictable order
      */
-    Collection<ReferenceInfo> columns();
+    Collection<Reference> columns();
 
     RowGranularity rowGranularity();
 
     TableIdent ident();
 
+    /**
+     * Retrieve the routing for the table
+     * <p>
+     * The result of this method is non-deterministic for two reasons:
+     * <p>
+     * 1. Shard selection is randomized for load distribution.
+     * <p>
+     * 2. The underlying clusterState might change between calls.
+     */
     Routing getRouting(WhereClause whereClause, @Nullable String preference);
 
     List<ColumnIdent> primaryKey();
 
-    ImmutableMap<String, Object> tableParameters();
+    Map<String, Object> tableParameters();
 
+    Set<Operation> supportedOperations();
 }

@@ -21,7 +21,8 @@
 
 package io.crate.integrationtests;
 
-import io.crate.action.sql.SQLResponse;
+import io.crate.testing.SQLResponse;
+import io.crate.testing.UseJdbc;
 import org.elasticsearch.action.admin.indices.close.CloseIndexRequest;
 import org.hamcrest.Matchers;
 import org.junit.Test;
@@ -29,6 +30,7 @@ import org.junit.Test;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.atomic.AtomicReference;
 
+@UseJdbc
 public class InformationSchemaQueryTest extends SQLTransportIntegrationTest {
 
     @Test
@@ -43,7 +45,7 @@ public class InformationSchemaQueryTest extends SQLTransportIntegrationTest {
         ensureYellow();
         client().admin().indices().close(new CloseIndexRequest("t3")).actionGet();
 
-        execute("select * from information_schema.tables where schema_name = 'doc'");
+        execute("select * from information_schema.tables where table_schema = 'doc'");
         assertEquals(1L, response.rowCount());
         execute("select * from information_schema.columns where table_name = 't3'");
         assertEquals(0, response.rowCount());
@@ -55,7 +57,7 @@ public class InformationSchemaQueryTest extends SQLTransportIntegrationTest {
     @Test
     public void testConcurrentInformationSchemaQueries() throws Exception {
         final SQLResponse response = execute("select * from information_schema.columns " +
-                "order by schema_name, table_name, column_name");
+                                             "order by table_schema, table_name, column_name");
         final CountDownLatch latch = new CountDownLatch(40);
         final AtomicReference<AssertionError> lastAssertionError = new AtomicReference<>();
 
@@ -64,7 +66,7 @@ public class InformationSchemaQueryTest extends SQLTransportIntegrationTest {
                 @Override
                 public void run() {
                     SQLResponse resp = execute("select * from information_schema.columns " +
-                            "order by schema_name, table_name, column_name");
+                                               "order by table_schema, table_name, column_name");
                     try {
                         assertThat(resp.rows(), Matchers.equalTo(response.rows()));
                     } catch (AssertionError e) {

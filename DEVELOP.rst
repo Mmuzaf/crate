@@ -10,18 +10,6 @@ using `Oracle's Java`_ and OpenJDK_ on Linux Systems.
 
 It is recommended to use a recent Java 8 version.
 
-Writing Documentation
-=====================
-
-The documentation is written as `reStructuredText`_ (aka ``rst``) and is built
-using Sphinx_. The line length shall not exceed 80 characters. Most text
-editors support automatic line breaks at a certain line width if you don't want
-to insert line break manually ;)
-
-Sphinx_ requires Python_ 2.7 or 3 to be installed in addition to Java_. Make
-sure that there is a python executable called ``python`` in the global system
-``$PATH`` (most distributions do that by default if Python is installed).
-
 Git checkout and submodules
 ===========================
 
@@ -40,31 +28,45 @@ automatically, therefore there is no need to install gradle on the system.
 Writing Documentation
 =====================
 
-The documentation is maintained under the ``docs`` directory and
-written in ReStructuredText_ and processed with Sphinx_.
+The documentation is maintained under the ``docs`` directory and written as
+`reStructuredText`_ (aka ``rst``) and is built using Sphinx_. The line length
+shall not exceed 80 characters. Most text editors support automatic line breaks
+at a certain line width if you don't want to insert line break manually ;)
 
 Normally the documentation is built by `Read the Docs`_ and isn't part of the
-Crate distribution. However if you work on the documentation you can run
-sphinx directly, which can be done by just running ``bin/sphinx`` in the
-``docs`` directory. The output can then be found in the ``out/html`` and
-``out/text`` directories.
+Crate distribution. However if you work on the documentation you can run sphinx
+directly, which can be done by just running ``bin/sphinx`` in the ``blackbox``
+directory. The output can then be found in the ``docs/out/html`` and
+``docs/out/text`` directories.
 
-Before you can run ``bin/sphinx`` you need to setup a development environment
-by running `bootstrap.py` inside the ``docs`` directory::
+Sphinx_ requires Python_ 3 to be installed in addition to Java_. Make
+sure that there is a python executable called ``python3`` in the global system
+``$PATH`` (most distributions do that by default if Python is installed).
 
-    python bootstrap.py
+Before you can build the documentation, you need to setup a development
+environment by running `bootstrap.sh` inside the ``blackbox`` directory::
 
-And afterwards run buildout::
+    $ cd blackbox
+    $ ./bootstrap.sh
 
-    ./bin/buildout -N
+To build the HTML and text documentation, run::
+
+    $ ./bin/sphinx
+
+If you're editing the docs and want live rebuilds, run::
+
+    $ ./bin/sphinx dev
+
+This command watches the file system for changes and rebuilds the docs, refreshing your
+open browser tab, as needed.
 
 To test that all examples in the documentation execute correctly run::
 
-    ./bin/test
+    $ ./bin/test
 
 Or if you want to test that a specific file executes correctly run::
 
-    ./bin/test -1vt <filename>
+    $ ./bin/test -1vt <filename>
 
 There is also a gradle task called ``itest`` which will execute all of the
 above steps.
@@ -113,16 +115,33 @@ And start Crate::
 
     ./app/build/install/crate/bin/crate
 
+Other common tasks are::
 
-Other common tasks are:
+    ./gradlew --parallel -PtestForks=2 :sql:test
 
- - Running tests during development::
+    ./gradlew itest
 
-    ./gradlew --parallel :sql:test -PtestForks=2 itest gtest
-
- - Run a single test::
+    ./gradlew -PtestLogging :sql:test
 
     ./gradlew test -Dtest.single='YourTestClass'
+
+    ./gradlew test --tests '*ClassName.testMethodName'
+
+    ./gradlew :sql:test -Dtests.seed=8352BE0120F826A9
+
+    ./gradlew :sql:test -Dtests.iters=20
+
+Use ``@TestLogging(["<packageName1>:<logLevel1>", ...])`` on your
+test class or test method to enable more detailed logging.
+
+Example::
+
+    @TestLogging("io.crate:DEBUG","io.crate.planner.consumer.NestedLoopConsumer:TRACE")
+
+Alternatively you could use this configuration in command line but then it's applied
+to all tests that are run with the command::
+
+    ./gradlew -PtestLogging -Dtests.loggers.levels=io.crate:DEBUG,io.crate.planner.consumer.NestedLoopConsumer:TRACE :sql:test
 
  - Building a tarball (which will be under ``app/build/distributions``)::
 
@@ -131,7 +150,6 @@ Other common tasks are:
 To get a full list of all available tasks run::
 
     ./gradlew tasks
-
 
 Finding your way around in the Crate source code
 ------------------------------------------------
@@ -195,6 +213,13 @@ The findbugs check will also be executed when running::
 
     ./gradlew check
 
+Forbidden APIs
+--------------
+
+Run `Forbidden APIs`_::
+
+    ./gradlew forbiddenApisMain
+
 Benchmark
 =========
 
@@ -232,10 +257,17 @@ Jmh
 
 `JMH`_ benchmarks can be executed using ``gradle``::
 
-    $ ./gradlew jmh
+    $ ./gradlew :core:jmh
+    $ ./gradlew :sql:jmh
 
 By default this will look for benchmarks inside ``<module>/src/jmh/java`` and
 execute them.
+
+If you want to execute specific benchmarks you can use the jar::
+
+    $ ./gradlew :sql:jmhJar
+    $ java -jar sql/build/libs/crate-sql-jmh.jar <benchmarkMethodName>
+
 
 Results will be generated into ``$buildDir/reports/jmh``.
 
@@ -280,7 +312,6 @@ the grammar changed::
 
     ./gradlew :sql-parser:compileJava
 
-
 .. _Jenkins: http://jenkins-ci.org/
 
 .. _Python: http://www.python.org/
@@ -312,3 +343,5 @@ the grammar changed::
 .. _`JMH introduction`: http://java-performance.info/jmh/
 
 .. _`JMH samples`: http://hg.openjdk.java.net/code-tools/jmh/file/tip/jmh-samples/src/main/java/org/openjdk/jmh/samples/
+
+.. _`Forbidden APIs`: https://github.com/policeman-tools/forbidden-apis

@@ -25,22 +25,19 @@
 package io.crate.plugin;
 
 
+import io.crate.module.AdminUIModule;
 import io.crate.rest.action.admin.AdminUIFrontpageAction;
-import org.elasticsearch.common.settings.Settings;
-import org.elasticsearch.plugins.AbstractPlugin;
+import org.elasticsearch.common.inject.Module;
+import org.elasticsearch.plugins.Plugin;
 import org.elasticsearch.rest.RestModule;
+
+import java.util.Collection;
+import java.util.Collections;
 
 /**
  * Crate Admin-UI Plugin
- *
  */
-public class AdminUIPlugin extends AbstractPlugin {
-
-    private final Settings settings;
-
-    public AdminUIPlugin(Settings settings) {
-        this.settings = settings;
-    }
+public class AdminUIPlugin extends Plugin {
 
     @Override
     public String name() {
@@ -56,4 +53,8 @@ public class AdminUIPlugin extends AbstractPlugin {
         restModule.addRestAction(AdminUIFrontpageAction.class);
     }
 
+    @Override
+    public Collection<Module> nodeModules() {
+        return Collections.<Module>singletonList(new AdminUIModule());
+    }
 }

@@ -23,7 +23,8 @@ package io.crate.executor.transport;
 
 import com.carrotsearch.hppc.IntArrayList;
 import com.carrotsearch.hppc.IntContainer;
-import com.carrotsearch.hppc.IntObjectOpenHashMap;
+import com.carrotsearch.hppc.IntObjectHashMap;
+import com.carrotsearch.hppc.IntObjectMap;
 import com.carrotsearch.hppc.cursors.IntCursor;
 import com.carrotsearch.hppc.cursors.IntObjectCursor;
 import org.elasticsearch.common.Nullable;
@@ -38,16 +39,21 @@ public class NodeFetchRequest extends TransportRequest {
 
     private UUID jobId;
     private int fetchPhaseId;
+    private boolean closeContext;
 
     @Nullable
-    private IntObjectOpenHashMap<IntContainer> toFetch;
+    private IntObjectMap<? extends IntContainer> toFetch;
 
     public NodeFetchRequest() {
     }
 
-    public NodeFetchRequest(UUID jobId, int fetchPhaseId, IntObjectOpenHashMap<IntContainer> toFetch) {
+    public NodeFetchRequest(UUID jobId,
+                            int fetchPhaseId,
+                            boolean closeContext,
+                            IntObjectMap<? extends IntContainer> toFetch) {
         this.jobId = jobId;
         this.fetchPhaseId = fetchPhaseId;
+        this.closeContext = closeContext;
         if (!toFetch.isEmpty()) {
             this.toFetch = toFetch;
         }
@@ -61,8 +67,12 @@ public class NodeFetchRequest extends TransportRequest {
         return fetchPhaseId;
     }
 
+    public boolean isCloseContext() {
+        return closeContext;
+    }
+
     @Nullable
-    public IntObjectOpenHashMap<IntContainer> toFetch() {
+    public IntObjectMap<? extends IntContainer> toFetch() {
         return toFetch;
     }
 
@@ -71,9 +81,10 @@ public class NodeFetchRequest extends TransportRequest {
         super.readFrom(in);
         jobId = new UUID(in.readLong(), in.readLong());
         fetchPhaseId = in.readVInt();
+        closeContext = in.readBoolean();
         int numReaders = in.readVInt();
         if (numReaders > 0) {
-            toFetch = new IntObjectOpenHashMap<>(numReaders);
+            IntObjectHashMap<IntArrayList> toFetch = new IntObjectHashMap<>(numReaders);
             for (int i = 0; i < numReaders; i++) {
                 int readerId = in.readVInt();
                 int numDocs = in.readVInt();
@@ -82,6 +93,7 @@ public class NodeFetchRequest extends TransportRequest {
                 for (int j = 0; j < numDocs; j++) {
                     docs.add(in.readInt());
                 }
+                this.toFetch = toFetch;
             }
         }
     }
@@ -92,11 +104,12 @@ public class NodeFetchRequest extends TransportRequest {
         out.writeLong(jobId.getMostSignificantBits());
         out.writeLong(jobId.getLeastSignificantBits());
         out.writeVInt(fetchPhaseId);
+        out.writeBoolean(closeContext);
         if (toFetch == null) {
             out.writeVInt(0);
         } else {
             out.writeVInt(toFetch.size());
-            for (IntObjectCursor<IntContainer> toFetchCursor : toFetch) {
+            for (IntObjectCursor<? extends IntContainer> toFetchCursor : toFetch) {
                 out.writeVInt(toFetchCursor.key);
                 out.writeVInt(toFetchCursor.value.size());
                 for (IntCursor docCursor : toFetchCursor.value) {

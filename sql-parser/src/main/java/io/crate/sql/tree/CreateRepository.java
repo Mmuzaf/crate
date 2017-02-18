@@ -23,11 +23,10 @@ package io.crate.sql.tree;
 
 import com.google.common.base.MoreObjects;
 import com.google.common.base.Objects;
-import com.google.common.base.Optional;
 
-import javax.annotation.Nullable;
+import java.util.Optional;
 
-public class CreateRepository extends Statement{
+public class CreateRepository extends Statement {
 
     private final String repository;
     private final String type;
@@ -35,10 +34,10 @@ public class CreateRepository extends Statement{
 
     public CreateRepository(String repository,
                             String type,
-                            @Nullable GenericProperties genericProperties) {
+                            Optional<GenericProperties> genericProperties) {
         this.repository = repository;
         this.type = type;
-        this.properties = Optional.fromNullable(genericProperties);
+        this.properties = genericProperties;
     }
 
     public String repository() {
@@ -63,7 +62,7 @@ public class CreateRepository extends Statement{
         if (this == obj) return true;
         if (obj == null || getClass() != obj.getClass()) return false;
 
-        CreateRepository that = (CreateRepository)obj;
+        CreateRepository that = (CreateRepository) obj;
         if (!repository.equals(that.repository)) return false;
         if (!type.equals(that.type)) return false;
         if (!properties.equals(that.properties)) return false;
@@ -73,9 +72,9 @@ public class CreateRepository extends Statement{
     @Override
     public String toString() {
         return MoreObjects.toStringHelper(this)
-                .add("repository", repository)
-                .add("type", type)
-                .add("properties", properties).toString();
+            .add("repository", repository)
+            .add("type", type)
+            .add("properties", properties).toString();
     }
 
     @Override

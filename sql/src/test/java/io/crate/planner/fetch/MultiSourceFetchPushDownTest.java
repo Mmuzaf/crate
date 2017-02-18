@@ -22,48 +22,35 @@
 
 package io.crate.planner.fetch;
 
-import io.crate.analyze.BaseAnalyzerTest;
 import io.crate.analyze.MultiSourceSelect;
 import io.crate.analyze.QuerySpec;
 import io.crate.analyze.SelectAnalyzedStatement;
-import io.crate.operation.scalar.ScalarFunctionModule;
 import io.crate.sql.tree.QualifiedName;
-import io.crate.testing.MockedClusterServiceModule;
-import io.crate.testing.T3;
-import org.elasticsearch.common.inject.Module;
+import io.crate.test.integration.CrateUnitTest;
+import io.crate.testing.SQLExecutor;
+import org.elasticsearch.test.cluster.NoopClusterService;
 import org.junit.Test;
-
-import java.util.Arrays;
-import java.util.List;
 
 import static io.crate.testing.TestingHelpers.isSQL;
 import static org.hamcrest.Matchers.instanceOf;
 import static org.hamcrest.core.Is.is;
 
-public class MultiSourceFetchPushDownTest extends BaseAnalyzerTest {
+public class MultiSourceFetchPushDownTest extends CrateUnitTest {
 
     private MultiSourceSelect mss;
     private MultiSourceFetchPushDown pd;
 
-    @Override
-    protected List<Module> getModules() {
-        List<Module> modules = super.getModules();
-        modules.addAll(Arrays.<Module>asList(
-                new MockedClusterServiceModule(),
-                T3.META_DATA_MODULE,
-                new ScalarFunctionModule()
-        ));
-        return modules;
-    }
+    private SQLExecutor e = SQLExecutor.builder(new NoopClusterService()).enableDefaultTables().build();
 
     private void pushDown(String stmt) {
-        SelectAnalyzedStatement a = analyze(stmt);
+        SelectAnalyzedStatement a = e.analyze(stmt);
         assertThat(a.relation(), instanceOf(MultiSourceSelect.class));
         mss = (MultiSourceSelect) a.relation();
-        pd = MultiSourceFetchPushDown.pushDown(mss);
+        pd = new MultiSourceFetchPushDown(mss);
+        pd.process();
     }
 
-    private QuerySpec srcSpec(String tableName){
+    private QuerySpec srcSpec(String tableName) {
         return mss.sources().get(QualifiedName.of("doc", tableName)).querySpec();
     }
 
@@ -88,13 +75,4 @@ public class MultiSourceFetchPushDownTest extends BaseAnalyzerTest {
         assertThat(srcSpec("t2"), isSQL("SELECT doc.t2.b ORDER BY doc.t2.b"));
     }
 
-    @Test
-    public void testPushDownWithMultiRelationOrder() throws Exception {
-        pushDown("select a, b from t1, t2 order by x - y");
-        assertThat(srcSpec("t1"), isSQL("SELECT doc.t1._docid, doc.t1.x"));
-        assertThat(srcSpec("t2"), isSQL("SELECT doc.t2._docid, doc.t2.y"));
-        assertThat(mss.querySpec(), isSQL("SELECT RELCOL(doc.t1, 0), RELCOL(doc.t1, 1), RELCOL(doc.t2, 0), RELCOL(doc.t2, 1), subtract(RELCOL(doc.t1, 1), RELCOL(doc.t2, 1)) ORDER BY subtract(RELCOL(doc.t1, 1), RELCOL(doc.t2, 1))"));
-        assertThat(pd.remainingOutputs(), isSQL("FETCH(INPUT(0), doc.t1._doc['a']), FETCH(INPUT(2), doc.t2._doc['b'])"));
-        assertThat(mss.remainingOrderBy().get().orderBySymbols(), isSQL("subtract(RELCOL(doc.t1, 1), RELCOL(doc.t2, 1))"));
-    }
 }

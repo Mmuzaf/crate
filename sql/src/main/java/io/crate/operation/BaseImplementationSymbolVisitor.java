@@ -39,14 +39,10 @@ public class BaseImplementationSymbolVisitor<C> extends SymbolVisitor<C, Input<?
         this.functions = functions;
     }
 
-    public Functions functions() {
-        return functions;
-    }
-
     @Override
     public Input<?> visitFunction(Function function, C context) {
         final FunctionImplementation functionImplementation = functions.get(function.info().ident());
-        if (functionImplementation != null && functionImplementation instanceof Scalar<?, ?>) {
+        if (functionImplementation instanceof Scalar<?, ?>) {
             List<Symbol> arguments = function.arguments();
             Scalar<?, ?> scalarImpl = ((Scalar) functionImplementation).compile(arguments);
             Input[] argumentInputs = new Input[arguments.size()];
@@ -57,7 +53,7 @@ public class BaseImplementationSymbolVisitor<C> extends SymbolVisitor<C, Input<?
             return new FunctionExpression<>(scalarImpl, argumentInputs);
         } else {
             throw new IllegalArgumentException(
-                    SymbolFormatter.format("Cannot find implementation for function %s", function));
+                SymbolFormatter.format("Cannot find implementation for function %s", function));
         }
     }
 

@@ -1,11 +1,16 @@
-apply plugin: 'java'
+apply from: "$rootDir/gradle/javaModule.gradle"
 
 archivesBaseName = 'crate-dns-discovery'
 group = 'io.crate'
 
 dependencies {
-    compile project(':es')
     compile project(':core')
     compile 'dnsjava:dnsjava:2.1.7'
-    testCompile project(':testing')
+    testCompile project(':integration-testing')
+}
+
+sourceSets {
+    main {
+        output.resourcesDir = null
+    }
 }

@@ -21,86 +21,38 @@
 
 package io.crate.executor.transport.task;
 
-import com.google.common.collect.ImmutableList;
-import com.google.common.util.concurrent.ListenableFuture;
-import com.google.common.util.concurrent.SettableFuture;
+import com.google.common.base.Function;
+import io.crate.data.Row;
+import io.crate.data.Row1;
 import io.crate.executor.JobTask;
-import io.crate.executor.RowCountResult;
-import io.crate.executor.TaskResult;
+import io.crate.executor.transport.OneRowActionListener;
 import io.crate.executor.transport.kill.KillAllRequest;
 import io.crate.executor.transport.kill.KillResponse;
 import io.crate.executor.transport.kill.TransportKillAllNodeAction;
-import org.elasticsearch.action.ActionListener;
-import org.elasticsearch.cluster.ClusterService;
-import org.elasticsearch.cluster.node.DiscoveryNode;
-import org.elasticsearch.cluster.node.DiscoveryNodes;
+import io.crate.operation.projectors.RowReceiver;
 
-import java.util.List;
+import javax.annotation.Nullable;
 import java.util.UUID;
-import java.util.concurrent.atomic.AtomicInteger;
-import java.util.concurrent.atomic.AtomicLong;
-import java.util.concurrent.atomic.AtomicReference;
 
 public class KillTask extends JobTask {
 
-    private final SettableFuture<TaskResult> result;
-    private final List<ListenableFuture<TaskResult>> results;
-    private ClusterService clusterService;
-    private TransportKillAllNodeAction nodeAction;
-
-    public KillTask(ClusterService clusterService,
-                    TransportKillAllNodeAction nodeAction,
-                    UUID jobId) {
-        super(jobId);
-        this.clusterService = clusterService;
-        this.nodeAction = nodeAction;
-        result = SettableFuture.create();
-        results = ImmutableList.of((ListenableFuture<TaskResult>) result);
-    }
-
-    @Override
-    public void start() {
-        DiscoveryNodes nodes = clusterService.state().nodes();
-        KillAllRequest request = new KillAllRequest();
-        final AtomicInteger counter = new AtomicInteger(nodes.size());
-        final AtomicLong numKilled = new AtomicLong(0);
-        final AtomicReference<Throwable> lastThrowable = new AtomicReference<>();
-
-        for (DiscoveryNode node : nodes) {
-            nodeAction.execute(node.id(), request, new ActionListener<KillResponse>() {
-                @Override
-                public void onResponse(KillResponse killResponse) {
-                    numKilled.addAndGet(killResponse.numKilled());
-                    countdown();
-                }
-
-                @Override
-                public void onFailure(Throwable e) {
-                    lastThrowable.set(e);
-                    countdown();
-                }
-
-                private void countdown() {
-                    if (counter.decrementAndGet() == 0) {
-                        Throwable throwable = lastThrowable.get();
-                        if (throwable == null) {
-                            result.set(new RowCountResult(numKilled.get()));
-                        } else {
-                            result.setException(throwable);
-                        }
-                    }
-                }
-            });
+    static final Function<KillResponse, Row> KILL_RESPONSE_TO_ROW_FUNCTION = new Function<KillResponse, Row>() {
+        @Nullable
+        @Override
+        public Row apply(@Nullable KillResponse input) {
+            return new Row1(input == null ? -1 : input.numKilled());
         }
+    };
+    private final TransportKillAllNodeAction nodeAction;
+
+    public KillTask(TransportKillAllNodeAction nodeAction, UUID jobId) {
+        super(jobId);
+        this.nodeAction = nodeAction;
     }
 
     @Override
-    public List<ListenableFuture<TaskResult>> result() {
-        return results;
-    }
-
-    @Override
-    public void upstreamResult(List<? extends ListenableFuture<TaskResult>> result) {
-        // ignore
+    public void execute(RowReceiver rowReceiver, Row parameters) {
+        nodeAction.broadcast(new KillAllRequest(),
+            new OneRowActionListener<>(rowReceiver, KILL_RESPONSE_TO_ROW_FUNCTION));
     }
 }

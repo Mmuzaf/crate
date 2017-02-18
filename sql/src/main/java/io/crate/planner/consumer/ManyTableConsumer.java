@@ -23,35 +23,35 @@
 package io.crate.planner.consumer;
 
 import com.google.common.base.Function;
-import com.google.common.base.Optional;
 import com.google.common.base.Predicate;
 import com.google.common.collect.*;
 import io.crate.analyze.*;
-import io.crate.analyze.relations.AnalyzedRelation;
-import io.crate.analyze.relations.PlannedAnalyzedRelation;
-import io.crate.analyze.relations.QuerySplitter;
-import io.crate.analyze.symbol.DefaultTraversalSymbolVisitor;
-import io.crate.analyze.symbol.Field;
-import io.crate.analyze.symbol.RelationColumn;
-import io.crate.analyze.symbol.Symbol;
+import io.crate.analyze.relations.*;
+import io.crate.analyze.symbol.*;
 import io.crate.exceptions.ValidationException;
+import io.crate.metadata.ReplaceMode;
 import io.crate.metadata.ReplacingSymbolVisitor;
 import io.crate.operation.operator.AndOperator;
+import io.crate.planner.Plan;
 import io.crate.sql.tree.QualifiedName;
+import org.elasticsearch.common.logging.ESLogger;
+import org.elasticsearch.common.logging.Loggers;
 
 import javax.annotation.Nullable;
 import java.util.*;
 
 public class ManyTableConsumer implements Consumer {
 
+    private static final ESLogger LOGGER = Loggers.getLogger(ManyTableConsumer.class);
+
     private final Visitor visitor;
 
-    public ManyTableConsumer(ConsumingPlanner consumingPlanner) {
-        this.visitor = new Visitor(consumingPlanner);
+    ManyTableConsumer() {
+        this.visitor = new Visitor();
     }
 
     @Override
-    public PlannedAnalyzedRelation consume(AnalyzedRelation relation, ConsumerContext context) {
+    public Plan consume(AnalyzedRelation relation, ConsumerContext context) {
         return visitor.process(relation, context);
     }
 
@@ -59,19 +59,20 @@ public class ManyTableConsumer implements Consumer {
      * returns a new collection with the same items as relations contains but in an order which
      * allows the most join condition push downs (assuming that a left-based tree is built later on)
      *
-     *
-     * @param relations all relations, e.g. [t1, t2, t3, t3]
-     * @param joinedRelations contains all relations that have a join condition e.g. {{t1, t2}, {t2, t3}}
-     * @param preSorted a ordered subset of the relations. The result will start with those relations.
-     *                  E.g. [t3] - This would cause the result to start with [t3]
+     * @param relations               all relations, e.g. [t1, t2, t3, t3]
+     * @param implicitJoinedRelations contains all relations that have a join condition e.g. {{t1, t2}, {t2, t3}}
+     * @param joinPairs               contains a list of {@link JoinPair}.
+     * @param preSorted               a ordered subset of the relations. The result will start with those relations.
+     *                                E.g. [t3] - This would cause the result to start with [t3]
      */
     static Collection<QualifiedName> orderByJoinConditions(Collection<QualifiedName> relations,
-                                                           Set<? extends Set<QualifiedName>> joinedRelations,
+                                                           Set<? extends Set<QualifiedName>> implicitJoinedRelations,
+                                                           List<JoinPair> joinPairs,
                                                            Collection<QualifiedName> preSorted) {
         if (relations.size() == preSorted.size()) {
             return preSorted;
         }
-        if (relations.size() == 2 || joinedRelations.isEmpty()) {
+        if (relations.size() == 2 || (joinPairs.isEmpty() && implicitJoinedRelations.isEmpty())) {
             LinkedHashSet<QualifiedName> qualifiedNames = new LinkedHashSet<>(preSorted);
             qualifiedNames.addAll(relations);
             return qualifiedNames;
@@ -80,8 +81,10 @@ public class ManyTableConsumer implements Consumer {
         // Create a Copy to ensure equals works correctly for the subList check below.
         preSorted = ImmutableList.copyOf(preSorted);
         Set<QualifiedName> pair = new HashSet<>(2);
+        Set<QualifiedName> outerJoinRelations = JoinPairs.outerJoinRelations(joinPairs);
         Collection<QualifiedName> bestOrder = null;
         int best = -1;
+        outerloop:
         for (List<QualifiedName> permutation : Collections2.permutations(relations)) {
             if (!preSorted.equals(permutation.subList(0, preSorted.size()))) {
                 continue;
@@ -91,10 +94,22 @@ public class ManyTableConsumer implements Consumer {
                 QualifiedName a = permutation.get(i);
                 QualifiedName b = permutation.get(i + 1);
 
-                pair.clear();
-                pair.add(a);
-                pair.add(b);
-                joinPushDowns += joinedRelations.contains(pair) ? 1 : 0;
+                JoinPair joinPair = JoinPairs.ofRelations(a, b, joinPairs, false);
+                if (joinPair == null) {
+                    // relations are not directly joined, lets check if they are part of an outer join
+                    if (outerJoinRelations.contains(a) || outerJoinRelations.contains(b)) {
+                        // part of an outer join, don't change pairs, permutation not possible
+                        continue outerloop;
+                    } else {
+                        pair.clear();
+                        pair.add(a);
+                        pair.add(b);
+                        joinPushDowns += implicitJoinedRelations.contains(pair) ? 1 : 0;
+                    }
+                } else {
+                    // relations are directly joined
+                    joinPushDowns += 1;
+                }
             }
             if (joinPushDowns == relations.size() - 1) {
                 return permutation;
@@ -103,6 +118,9 @@ public class ManyTableConsumer implements Consumer {
                 best = joinPushDowns;
                 bestOrder = permutation;
             }
+        }
+        if (bestOrder == null) {
+            bestOrder = relations;
         }
         return bestOrder;
     }
@@ -121,45 +139,46 @@ public class ManyTableConsumer implements Consumer {
     private static Collection<QualifiedName> getOrderedRelationNames(MultiSourceSelect statement,
                                                                      Set<? extends Set<QualifiedName>> relationPairs) {
         Collection<QualifiedName> orderedRelations = ImmutableList.of();
-        if (statement.querySpec().orderBy().isPresent()) {
-            orderedRelations = getNamesFromOrderBy(statement.querySpec().orderBy().get());
+        Optional<OrderBy> orderBy = statement.querySpec().orderBy();
+        if (orderBy.isPresent()) {
+            orderedRelations = getNamesFromOrderBy(orderBy.get());
         }
-        return orderByJoinConditions(statement.sources().keySet(), relationPairs, orderedRelations);
+        return orderByJoinConditions(statement.sources().keySet(), relationPairs, statement.joinPairs(), orderedRelations);
     }
 
     /**
      * build a TwoTableJoin tree.
      * E.g. given a MSS with 3 tables:
      * <code>
-     *     select t1.a, t2.b, t3.c from t1, t2, t3
+     * select t1.a, t2.b, t3.c from t1, t2, t3
      * </code>
-     *
+     * <p>
      * a TwoTableJoin tree is built:
-     *
+     * <p>
      * </code>
-     *      join(
-     *          join(t1, t2),
-     *          t3
-     *      )
+     * join(
+     * join(t1, t2),
+     * t3
+     * )
      * </code>
-     *
+     * <p>
      * Where:
      * <code>
-     *      join(t1, t2)
-     *      has:
-     *       QS: [ RC(t1, 0), RC(t2, 0) ]
-     *       t1: select a from t1
-     *       t2: select b from t2
+     * join(t1, t2)
+     * has:
+     * QS: [ RC(t1, 0), RC(t2, 0) ]
+     * t1: select a from t1
+     * t2: select b from t2
      * </code>
-     *
+     * <p>
      * and
      * <code>
-     *      join(join(t1, t2), t3)
+     * join(join(t1, t2), t3)
      * has:
-     *      QS: [ RC(join(t1, t2), 0), RC(join(t1, t2), 1),  RC(t3, 0) ]
-     *      join(t1, t2) -
-     *      t3: select c from t3
-     *
+     * QS: [ RC(join(t1, t2), 0), RC(join(t1, t2), 1),  RC(t3, 0) ]
+     * join(t1, t2) -
+     * t3: select c from t3
+     * <p>
      * </code>
      */
     static TwoTableJoin buildTwoTableJoinTree(MultiSourceSelect mss) {
@@ -168,65 +187,103 @@ public class ManyTableConsumer implements Consumer {
             splitQuery = QuerySplitter.split(mss.querySpec().where().query());
             mss.querySpec().where(WhereClause.MATCH_ALL);
         }
+
         Collection<QualifiedName> orderedRelationNames = getOrderedRelationNames(mss, splitQuery.keySet());
         Iterator<QualifiedName> it = orderedRelationNames.iterator();
+        if (LOGGER.isTraceEnabled()) {
+            LOGGER.trace("relations={} orderedRelations={}", mss.sources().keySet(), orderedRelationNames);
+        }
 
         QualifiedName leftName = it.next();
         QuerySpec rootQuerySpec = mss.querySpec();
-        MultiSourceSelect.Source leftSource = mss.sources().get(leftName);
+        RelationSource leftSource = mss.sources().get(leftName);
         AnalyzedRelation leftRelation = leftSource.relation();
         QuerySpec leftQuerySpec = leftSource.querySpec();
-        Optional<OrderBy> remainingOrderBy = mss.remainingOrderBy();
+        Optional<RemainingOrderBy> remainingOrderBy = mss.remainingOrderBy();
+        List<JoinPair> joinPairs = mss.joinPairs();
+        List<TwoTableJoin> twoTableJoinList = new ArrayList<>(orderedRelationNames.size());
 
         QualifiedName rightName;
-        MultiSourceSelect.Source rightSource;
+        RelationSource rightSource;
         while (it.hasNext()) {
             rightName = it.next();
             rightSource = mss.sources().get(rightName);
 
+            // process where clause
             Set<QualifiedName> names = Sets.newHashSet(leftName, rightName);
             Predicate<Symbol> predicate = new SubSetOfQualifiedNamesPredicate(names);
-
             QuerySpec newQuerySpec = rootQuerySpec.subset(predicate, it.hasNext());
             if (splitQuery.containsKey(names)) {
                 Symbol symbol = splitQuery.remove(names);
                 newQuerySpec.where(new WhereClause(symbol));
             }
+
+            Optional<OrderBy> remainingOrderByToApply = Optional.empty();
+            if (remainingOrderBy.isPresent() && remainingOrderBy.get().validForRelations(names)) {
+                remainingOrderByToApply = Optional.of(remainingOrderBy.get().orderBy());
+                remainingOrderBy = Optional.empty();
+            }
+
+            // get explicit join definition
+            JoinPair joinPair = JoinPairs.ofRelationsWithMergedConditions(leftName, rightName, joinPairs, true);
+
+            JoinPairs.removeOrderByOnOuterRelation(leftName, rightName, leftQuerySpec, rightSource.querySpec(), joinPair);
+
+            // NestedLoop will add NULL rows - so order by needs to be applied after the NestedLoop
             TwoTableJoin join = new TwoTableJoin(
-                    newQuerySpec,
-                    leftName,
-                    new MultiSourceSelect.Source(leftRelation, leftQuerySpec),
-                    rightName,
-                    rightSource,
-                    remainingOrderBy
+                newQuerySpec,
+                new RelationSource(leftName, leftRelation, leftQuerySpec),
+                rightSource,
+                remainingOrderByToApply,
+                joinPair
             );
 
-            assert leftQuerySpec != null;
+            assert leftQuerySpec != null : "leftQuerySpec must not be null";
             final RelationColumnReWriteCtx reWriteCtx = new RelationColumnReWriteCtx(join);
             Function<? super Symbol, Symbol> replaceFunction = new Function<Symbol, Symbol>() {
                 @Nullable
                 @Override
                 public Symbol apply(@Nullable Symbol input) {
+                    if (input == null) {
+                        return null;
+                    }
                     return RelationColumnReWriter.INSTANCE.process(input, reWriteCtx);
                 }
             };
 
-            splitQuery = rewriteSplitQueryNames(splitQuery, leftName, rightName, join.name(), replaceFunction);
-
             /**
-             * create a new query spec where all RelationColumn symbols with a QualifiedName
-             * of {@link RelationColumnReWriteCtx#left} or {@link RelationColumnReWriteCtx#right}
+             * Rewrite where, join and order by clauses and create a new query spec, where all RelationColumn symbols
+             * with a QualifiedName of {@link RelationColumnReWriteCtx#left} or {@link RelationColumnReWriteCtx#right}
              * are replaced with a RelationColumn with QualifiedName of {@link RelationColumnReWriteCtx#newName}
              */
+            splitQuery = rewriteSplitQueryNames(splitQuery, leftName, rightName, join.name(), replaceFunction);
+            JoinPairs.rewriteNames(leftName, rightName, join.name(), replaceFunction, joinPairs);
+            rewriteOrderByNames(remainingOrderBy, leftName, rightName, join.name(), replaceFunction);
             rootQuerySpec = rootQuerySpec.copyAndReplace(replaceFunction);
             leftQuerySpec = newQuerySpec.copyAndReplace(replaceFunction);
             leftRelation = join;
             leftName = join.name();
+            twoTableJoinList.add(join);
         }
         TwoTableJoin join = (TwoTableJoin) leftRelation;
         if (!splitQuery.isEmpty()) {
             join.querySpec().where(new WhereClause(AndOperator.join(splitQuery.values())));
         }
+
+        // Find the last join pair that contains a filtering
+        int index = 0;
+        for (int i = twoTableJoinList.size() - 1; i >=0; i--) {
+            index = i;
+            WhereClause where = twoTableJoinList.get(i).querySpec().where();
+            if (where.hasQuery() && !(where.query() instanceof Literal)) {
+                break;
+            }
+        }
+        // Remove limit from all join pairs before the last filtered one
+        for (int i = 0; i < index; i++) {
+            twoTableJoinList.get(i).querySpec().limit(Optional.empty());
+        }
+
         return join;
     }
 
@@ -249,6 +306,19 @@ public class ManyTableConsumer implements Consumer {
         return newMap;
     }
 
+    private static void rewriteOrderByNames(Optional<RemainingOrderBy> remainingOrderBy,
+                                            QualifiedName leftName,
+                                            QualifiedName rightName,
+                                            QualifiedName newName,
+                                            Function<? super Symbol, Symbol> replaceFunction) {
+        if (remainingOrderBy.isPresent()) {
+            Set<QualifiedName> relations = remainingOrderBy.get().relations();
+            replace(leftName, newName, relations);
+            replace(rightName, newName, relations);
+            remainingOrderBy.get().orderBy().replace(replaceFunction);
+        }
+    }
+
     private static void replace(QualifiedName oldName, QualifiedName newName, Set<QualifiedName> s) {
         if (s.contains(oldName)) {
             s.remove(oldName);
@@ -256,65 +326,59 @@ public class ManyTableConsumer implements Consumer {
         }
     }
 
-
-    private static TwoTableJoin twoTableJoin(MultiSourceSelect mss) {
-        assert mss.sources().size() == 2;
-        Iterator<QualifiedName> it = getOrderedRelationNames(mss, ImmutableSet.<Set<QualifiedName>>of()).iterator();
+    static TwoTableJoin twoTableJoin(MultiSourceSelect mss) {
+        assert mss.sources().size() == 2 : "number of mss.sources() must be 2";
+        Iterator<QualifiedName> it = getOrderedRelationNames(mss, ImmutableSet.of()).iterator();
         QualifiedName left = it.next();
         QualifiedName right = it.next();
+        JoinPair joinPair = JoinPairs.ofRelationsWithMergedConditions(left, right, mss.joinPairs(), true);
+        RelationSource leftSource = mss.sources().get(left);
+        RelationSource rightSource = mss.sources().get(right);
+
+        JoinPairs.removeOrderByOnOuterRelation(left, right, leftSource.querySpec(), rightSource.querySpec(), joinPair);
+
+        Optional<OrderBy> remainingOrderByToApply = Optional.empty();
+        if (mss.remainingOrderBy().isPresent() &&
+            mss.remainingOrderBy().get().validForRelations(Sets.newHashSet(left, right))) {
+            remainingOrderByToApply = Optional.of(mss.remainingOrderBy().get().orderBy());
+        }
 
         return new TwoTableJoin(
-                mss.querySpec(),
-                left,
-                mss.sources().get(left),
-                right,
-                mss.sources().get(right),
-                mss.remainingOrderBy()
+            mss.querySpec(),
+            leftSource,
+            rightSource,
+            remainingOrderByToApply,
+            joinPair
         );
     }
 
     private static class Visitor extends RelationPlanningVisitor {
 
-        private final ConsumingPlanner consumingPlanner;
-
-        public Visitor(ConsumingPlanner consumingPlanner) {
-            this.consumingPlanner = consumingPlanner;
-        }
-
         @Override
-        public PlannedAnalyzedRelation visitMultiSourceSelect(MultiSourceSelect mss, ConsumerContext context) {
+        public Plan visitMultiSourceSelect(MultiSourceSelect mss, ConsumerContext context) {
             if (isUnsupportedStatement(mss, context)) return null;
+            replaceFieldsWithRelationColumns(mss);
             if (mss.sources().size() == 2) {
-                replaceFieldsWithRelationColumns(mss);
                 return planSubRelation(context, twoTableJoin(mss));
             }
-            if (mss.remainingOrderBy().isPresent()) {
-                context.validationException(new ValidationException(
-                        "One Order by expression must not contain symbols from more than one table"));
-                return null;
-            }
-            replaceFieldsWithRelationColumns(mss);
             return planSubRelation(context, buildTwoTableJoinTree(mss));
         }
 
 
         private static boolean isUnsupportedStatement(MultiSourceSelect statement, ConsumerContext context) {
             if (statement.querySpec().groupBy().isPresent()) {
-                context.validationException(new ValidationException("GROUP BY on CROSS JOIN is not supported"));
+                context.validationException(new ValidationException("GROUP BY on JOINS is not supported"));
                 return true;
             }
             if (statement.querySpec().hasAggregates()) {
-                context.validationException(new ValidationException("AGGREGATIONS on CROSS JOIN is not supported"));
+                context.validationException(new ValidationException("AGGREGATIONS on JOINS are not supported"));
                 return true;
             }
 
             return false;
         }
 
-        private PlannedAnalyzedRelation planSubRelation(ConsumerContext context, AnalyzedRelation relation) {
-            if (context.isRoot()) {
-                return consumingPlanner.plan(relation, context);
-            }
+        private Plan planSubRelation(ConsumerContext context, AnalyzedRelation relation) {
             return context.plannerContext().planSubRelation(relation, context);
         }
 
@@ -322,20 +386,31 @@ public class ManyTableConsumer implements Consumer {
 
     static void replaceFieldsWithRelationColumns(MultiSourceSelect mss) {
         final FieldToRelationColumnCtx ctx = new FieldToRelationColumnCtx(mss);
-        mss.querySpec().replace(new Function<Symbol, Symbol>() {
+        Function<Symbol, Symbol> replaceFunction = new Function<Symbol, Symbol>() {
             @Nullable
             @Override
             public Symbol apply(@Nullable Symbol input) {
+                if (input == null) {
+                    return null;
+                }
                 return FieldToRelationColumnVisitor.INSTANCE.process(input, ctx);
             }
-        });
+        };
+
+        if (mss.remainingOrderBy().isPresent()) {
+            mss.remainingOrderBy().get().orderBy().replace(replaceFunction);
+        }
+        for (JoinPair joinPair : mss.joinPairs()) {
+            joinPair.replaceCondition(replaceFunction);
+        }
+        mss.querySpec().replace(replaceFunction);
     }
 
     private static class SubSetOfQualifiedNamesPredicate implements Predicate<Symbol> {
         private final Set<QualifiedName> qualifiedNames;
         private final HashSet<QualifiedName> foundNames;
 
-        public SubSetOfQualifiedNamesPredicate(Set<QualifiedName> qualifiedNames) {
+        SubSetOfQualifiedNamesPredicate(Set<QualifiedName> qualifiedNames) {
             this.qualifiedNames = qualifiedNames;
             foundNames = new HashSet<>();
         }
@@ -359,6 +434,12 @@ public class ManyTableConsumer implements Consumer {
             context.add(relationColumn.relationName());
             return null;
         }
+
+        @Override
+        public Void visitField(Field field, Set<QualifiedName> context) {
+            context.add(field.relation().getQualifiedName());
+            return null;
+        }
     }
 
     private static class RelationColumnReWriteCtx {
@@ -367,11 +448,11 @@ public class ManyTableConsumer implements Consumer {
         private final QualifiedName right;
         private final int rightOffset;
 
-        public RelationColumnReWriteCtx(TwoTableJoin join) {
+        RelationColumnReWriteCtx(TwoTableJoin join) {
             this(join.name(), join.leftName(), join.rightName(), join.left().querySpec().outputs().size());
         }
 
-        public RelationColumnReWriteCtx(QualifiedName newName, QualifiedName left, QualifiedName right, int rightOffset) {
+        RelationColumnReWriteCtx(QualifiedName newName, QualifiedName left, QualifiedName right, int rightOffset) {
             this.newName = newName;
             this.left = left;
             this.right = right;
@@ -381,10 +462,10 @@ public class ManyTableConsumer implements Consumer {
 
     private static class RelationColumnReWriter extends ReplacingSymbolVisitor<RelationColumnReWriteCtx> {
 
-        private static final RelationColumnReWriter INSTANCE = new RelationColumnReWriter(false);
+        private static final RelationColumnReWriter INSTANCE = new RelationColumnReWriter(ReplaceMode.COPY);
 
-        public RelationColumnReWriter(boolean inPlace) {
-            super(inPlace);
+        RelationColumnReWriter(ReplaceMode mode) {
+            super(mode);
         }
 
         @Override
@@ -393,7 +474,8 @@ public class ManyTableConsumer implements Consumer {
                 return new RelationColumn(context.newName, relationColumn.index(), relationColumn.valueType());
             }
             if (relationColumn.relationName().equals(context.right)) {
-                return new RelationColumn(context.newName, relationColumn.index() + context.rightOffset, relationColumn.valueType());
+                return new RelationColumn(context.newName,
+                    relationColumn.index() + context.rightOffset, relationColumn.valueType());
             }
             return super.visitRelationColumn(relationColumn, context);
         }
@@ -403,9 +485,9 @@ public class ManyTableConsumer implements Consumer {
         private final Map<AnalyzedRelation, QualifiedName> relationToName;
         private final MultiSourceSelect mss;
 
-        public FieldToRelationColumnCtx(MultiSourceSelect mss) {
+        FieldToRelationColumnCtx(MultiSourceSelect mss) {
             relationToName = new IdentityHashMap<>(mss.sources().size());
-            for (Map.Entry<QualifiedName, MultiSourceSelect.Source> entry : mss.sources().entrySet()) {
+            for (Map.Entry<QualifiedName, RelationSource> entry : mss.sources().entrySet()) {
                 relationToName.put(entry.getValue().relation(), entry.getKey());
             }
             this.mss = mss;
@@ -414,10 +496,10 @@ public class ManyTableConsumer implements Consumer {
 
     private static class FieldToRelationColumnVisitor extends ReplacingSymbolVisitor<FieldToRelationColumnCtx> {
 
-        private static final FieldToRelationColumnVisitor INSTANCE = new FieldToRelationColumnVisitor(true);
+        private static final FieldToRelationColumnVisitor INSTANCE = new FieldToRelationColumnVisitor(ReplaceMode.COPY);
 
-        public FieldToRelationColumnVisitor(boolean inPlace) {
-            super(inPlace);
+        FieldToRelationColumnVisitor(ReplaceMode mode) {
+            super(mode);
         }
 
         @Override

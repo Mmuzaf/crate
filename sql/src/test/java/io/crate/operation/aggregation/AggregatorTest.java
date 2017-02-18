@@ -28,34 +28,31 @@ import io.crate.breaker.RamAccountingContext;
 import io.crate.metadata.FunctionIdent;
 import io.crate.metadata.Functions;
 import io.crate.operation.Input;
-import io.crate.operation.aggregation.impl.AggregationImplModule;
 import io.crate.operation.aggregation.impl.CountAggregation;
 import io.crate.test.integration.CrateUnitTest;
 import io.crate.types.DataType;
 import io.crate.types.DataTypes;
 import org.elasticsearch.common.breaker.CircuitBreaker;
 import org.elasticsearch.common.breaker.NoopCircuitBreaker;
-import org.elasticsearch.common.inject.Injector;
-import org.elasticsearch.common.inject.ModulesBuilder;
 import org.junit.Before;
 import org.junit.Test;
 
 import java.util.Arrays;
 import java.util.Collections;
 
+import static io.crate.testing.TestingHelpers.getFunctions;
 import static org.hamcrest.core.Is.is;
 
 public class AggregatorTest extends CrateUnitTest {
 
     protected static final RamAccountingContext RAM_ACCOUNTING_CONTEXT =
-            new RamAccountingContext("dummy", new NoopCircuitBreaker(CircuitBreaker.Name.FIELDDATA));
+        new RamAccountingContext("dummy", new NoopCircuitBreaker(CircuitBreaker.FIELDDATA));
 
     private AggregationFunction countImpl;
 
     @Before
     public void setUpFunctions() {
-        Injector injector = new ModulesBuilder().add(new AggregationImplModule()).createInjector();
-        Functions functions = injector.getInstance(Functions.class);
+        Functions functions = getFunctions();
         FunctionIdent countAggIdent = new FunctionIdent(CountAggregation.NAME, Arrays.<DataType>asList(DataTypes.STRING));
         countImpl = (AggregationFunction) functions.get(countAggIdent);
     }
@@ -63,12 +60,12 @@ public class AggregatorTest extends CrateUnitTest {
     @Test
     public void testAggregationFromPartial() {
         Aggregation aggregation = Aggregation.finalAggregation(
-                countImpl.info(),
-                Collections.<Symbol>singletonList(new InputColumn(0)),
-                Aggregation.Step.PARTIAL
+            countImpl.info(),
+            Collections.<Symbol>singletonList(new InputColumn(0)),
+            Aggregation.Step.PARTIAL
         );
         Input dummyInput = new Input() {
-            Long state = 10L;
+            CountAggregation.LongState state = new CountAggregation.LongState(10L);
 
 
             @Override
@@ -83,15 +80,15 @@ public class AggregatorTest extends CrateUnitTest {
         state = aggregator.processRow(state);
         Object result = aggregator.finishCollect(state);
 
-        assertThat((Long)result, is(20L));
+        assertThat((Long) result, is(20L));
     }
 
     @Test
     public void testAggregationFromIterToFinal() {
         Aggregation aggregation = Aggregation.finalAggregation(
-                countImpl.info(),
-                Collections.<Symbol>singletonList(new InputColumn(0)),
-                Aggregation.Step.ITER
+            countImpl.info(),
+            Collections.<Symbol>singletonList(new InputColumn(0)),
+            Aggregation.Step.ITER
         );
 
         Input dummyInput = new Input() {
@@ -108,7 +105,7 @@ public class AggregatorTest extends CrateUnitTest {
             state = collector.processRow(state);
         }
 
-        long result = (Long)collector.finishCollect(state);
+        long result = (Long) collector.finishCollect(state);
         assertThat(result, is(5L));
     }
 }

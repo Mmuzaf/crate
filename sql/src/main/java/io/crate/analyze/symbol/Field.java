@@ -33,24 +33,19 @@ import java.io.IOException;
 
 public class Field extends Symbol {
 
-    public static final SymbolFactory<Field> FACTORY = new SymbolFactory<Field>() {
-        @Override
-        public Field newInstance() {
-            return new Field();
-        }
-    };
-
     private AnalyzedRelation relation;
     private Path path;
     private DataType valueType;
+
+    public Field(StreamInput in) {
+        throw new UnsupportedOperationException("Field is not streamable");
+    }
 
     public Field(AnalyzedRelation relation, Path path, DataType valueType) {
         this.relation = relation;
         this.path = path;
         this.valueType = valueType;
     }
-
-    private Field() {}
 
     public Path path() {
         return path;
@@ -76,11 +71,6 @@ public class Field extends Symbol {
     }
 
     @Override
-    public void readFrom(StreamInput in) throws IOException {
-        throw new UnsupportedOperationException("Field is not streamable");
-    }
-
-    @Override
     public void writeTo(StreamOutput out) throws IOException {
         throw new UnsupportedOperationException("Field is not streamable");
     }
@@ -88,9 +78,9 @@ public class Field extends Symbol {
     @Override
     public String toString() {
         return MoreObjects.toStringHelper(Field.class)
-                .add("path", path)
-                .add("valueType", valueType)
-                .add("relation", relation).toString();
+            .add("path", path)
+            .add("valueType", valueType)
+            .add("relation", relation).toString();
     }
 
     @Override
@@ -119,18 +109,17 @@ public class Field extends Symbol {
     /**
      * @return the position of the field in its relation
      */
-    public int index(){
-        int idx = -1;
-        assert path != null;
-        assert relation != null;
+    public int index() {
+        int idx;
+        assert path != null : "path must not be null";
+        assert relation != null : "relation must not be null";
         // TODO: consider adding an indexOf method to relations or another way to efficiently get the index
-        if (path instanceof ColumnIndex){
+        if (path instanceof ColumnIndex) {
             idx = ((ColumnIndex) path).index();
         } else {
             idx = relation.fields().indexOf(this);
         }
-        assert idx >= 0;
+        assert idx >= 0 : "idx must be >= 0";
         return idx;
     }
-
 }

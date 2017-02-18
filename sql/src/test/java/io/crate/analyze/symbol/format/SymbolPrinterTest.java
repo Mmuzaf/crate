@@ -24,7 +24,6 @@ package io.crate.analyze.symbol.format;
 
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
-import com.google.common.collect.ImmutableSet;
 import io.crate.analyze.relations.AbstractTableRelation;
 import io.crate.analyze.relations.AnalyzedRelation;
 import io.crate.analyze.relations.TableRelation;
@@ -33,14 +32,12 @@ import io.crate.metadata.*;
 import io.crate.metadata.doc.DocSchemaInfo;
 import io.crate.metadata.doc.DocTableInfo;
 import io.crate.metadata.table.TestingTableInfo;
-import io.crate.operation.operator.InOperator;
 import io.crate.sql.tree.QualifiedName;
 import io.crate.test.integration.CrateUnitTest;
 import io.crate.testing.SqlExpressions;
 import io.crate.types.ArrayType;
 import io.crate.types.DataType;
 import io.crate.types.DataTypes;
-import io.crate.types.SetType;
 import org.apache.lucene.util.BytesRef;
 import org.junit.Before;
 import org.junit.Test;
@@ -54,26 +51,26 @@ import static org.hamcrest.Matchers.is;
 
 public class SymbolPrinterTest extends CrateUnitTest {
 
-    SqlExpressions sqlExpressions;
-    SymbolPrinter printer;
+    private SqlExpressions sqlExpressions;
+    private SymbolPrinter printer;
 
-    public static final String TABLE_NAME = "formatter";
+    private static final String TABLE_NAME = "formatter";
 
     @Before
     public void prepare() throws Exception {
         DocTableInfo tableInfo = TestingTableInfo.builder(new TableIdent(DocSchemaInfo.NAME, TABLE_NAME), null)
-                .add("foo", DataTypes.STRING)
-                .add("bar", DataTypes.LONG)
-                .add("CraZy", DataTypes.IP)
-                .add("select", DataTypes.BYTE)
-                .add("idx", DataTypes.INTEGER)
-                .add("s_arr", new ArrayType(DataTypes.STRING))
-                .build();
+            .add("foo", DataTypes.STRING)
+            .add("bar", DataTypes.LONG)
+            .add("CraZy", DataTypes.IP)
+            .add("select", DataTypes.BYTE)
+            .add("idx", DataTypes.INTEGER)
+            .add("s_arr", new ArrayType(DataTypes.STRING))
+            .build();
         Map<QualifiedName, AnalyzedRelation> sources = ImmutableMap.<QualifiedName, AnalyzedRelation>builder()
-                .put(QualifiedName.of(TABLE_NAME), new TableRelation(tableInfo))
-                .build();
+            .put(QualifiedName.of(TABLE_NAME), new TableRelation(tableInfo))
+            .build();
         sqlExpressions = new SqlExpressions(sources);
-        printer = new SymbolPrinter(sqlExpressions.analysisMD().functions());
+        printer = new SymbolPrinter(sqlExpressions.functions());
     }
 
     private void assertPrint(Symbol s, String formatted) {
@@ -106,92 +103,91 @@ public class SymbolPrinterTest extends CrateUnitTest {
     @Test
     public void testFormatFunction() throws Exception {
         Function f = new Function(new FunctionInfo(
-                new FunctionIdent("foo", Arrays.<DataType>asList(DataTypes.STRING, DataTypes.DOUBLE)), DataTypes.DOUBLE),
-                Arrays.<Symbol>asList(Literal.newLiteral("bar"), Literal.newLiteral(3.4)));
+            new FunctionIdent("foo", Arrays.<DataType>asList(DataTypes.STRING, DataTypes.DOUBLE)), DataTypes.DOUBLE),
+            Arrays.<Symbol>asList(Literal.of("bar"), Literal.of(3.4)));
         assertPrint(f, "foo('bar', 3.4)");
     }
 
     @Test
     public void testFormatFunctionWithoutArgs() throws Exception {
         Function f = new Function(new FunctionInfo(
-                new FunctionIdent("baz", ImmutableList.<DataType>of()), DataTypes.DOUBLE),
-                ImmutableList.<Symbol>of());
+            new FunctionIdent("baz", ImmutableList.<DataType>of()), DataTypes.DOUBLE),
+            ImmutableList.<Symbol>of());
         assertPrint(f, "baz()");
     }
 
     @Test
     public void testSubstrFunction() throws Exception {
         Function f = new Function(new FunctionInfo(
-                new FunctionIdent("substr", Arrays.<DataType>asList(DataTypes.STRING, DataTypes.LONG)), DataTypes.STRING),
-                Arrays.<Symbol>asList(Literal.newLiteral("foobar"), Literal.newLiteral(4)));
+            new FunctionIdent("substr", Arrays.<DataType>asList(DataTypes.STRING, DataTypes.LONG)), DataTypes.STRING),
+            Arrays.<Symbol>asList(Literal.of("foobar"), Literal.of(4)));
         assertPrint(f, "substr('foobar', 4)");
     }
 
     @Test
     public void testSubstrFunctionWithLength() throws Exception {
         Function f = new Function(new FunctionInfo(
-                new FunctionIdent("substr", Arrays.<DataType>asList(DataTypes.STRING, DataTypes.LONG, DataTypes.LONG)), DataTypes.STRING),
-                Arrays.<Symbol>asList(Literal.newLiteral("foobar"), Literal.newLiteral(4), Literal.newLiteral(1)));
+            new FunctionIdent("substr", Arrays.<DataType>asList(DataTypes.STRING, DataTypes.LONG, DataTypes.LONG)), DataTypes.STRING),
+            Arrays.<Symbol>asList(Literal.of("foobar"), Literal.of(4), Literal.of(1)));
         assertPrint(f, "substr('foobar', 4, 1)");
     }
 
     @Test
     public void testFormatAggregation() throws Exception {
         Aggregation a = Aggregation.partialAggregation(new FunctionInfo(
-                new FunctionIdent("agg", Collections.<DataType>singletonList(DataTypes.INTEGER)), DataTypes.LONG, FunctionInfo.Type.AGGREGATE
-        ), DataTypes.LONG, Collections.<Symbol>singletonList(Literal.newLiteral(-127)));
+            new FunctionIdent("agg", Collections.<DataType>singletonList(DataTypes.INTEGER)), DataTypes.LONG, FunctionInfo.Type.AGGREGATE
+        ), DataTypes.LONG, Collections.<Symbol>singletonList(Literal.of(-127)));
 
         assertPrint(a, "agg(-127)");
     }
 
     @Test
     public void testReference() throws Exception {
-        Reference r = new Reference(new ReferenceInfo(new ReferenceIdent(
-                new TableIdent("sys", "table"),
-                new ColumnIdent("column", Arrays.asList("path", "nested"))),
-                RowGranularity.DOC, DataTypes.STRING));
+        Reference r = new Reference(new ReferenceIdent(
+            new TableIdent("sys", "table"),
+            new ColumnIdent("column", Arrays.asList("path", "nested"))),
+            RowGranularity.DOC, DataTypes.STRING);
         assertPrint(r, "sys.\"table\".\"column\"['path']['nested']");
     }
 
     @Test
     public void testDocReference() throws Exception {
-        Reference r = new Reference(new ReferenceInfo(new ReferenceIdent(
-                new TableIdent("doc", "table"),
-                new ColumnIdent("column", Arrays.asList("path", "nested"))),
-                RowGranularity.DOC, DataTypes.STRING));
+        Reference r = new Reference(new ReferenceIdent(
+            new TableIdent("doc", "table"),
+            new ColumnIdent("column", Arrays.asList("path", "nested"))),
+            RowGranularity.DOC, DataTypes.STRING);
         assertPrint(r, "doc.\"table\".\"column\"['path']['nested']");
     }
 
     @Test
     public void testDynamicReference() throws Exception {
-        Reference r = new DynamicReference(new ReferenceInfo(new ReferenceIdent(
-                new TableIdent("schema", "table"),
-                new ColumnIdent("column", Arrays.asList("path", "nested"))),
-                RowGranularity.DOC, DataTypes.STRING));
+        Reference r = new DynamicReference(
+            new ReferenceIdent(new TableIdent("schema", "table"), new ColumnIdent("column", Arrays.asList("path", "nested"))),
+            RowGranularity.DOC);
         assertPrint(r, "schema.\"table\".\"column\"['path']['nested']");
     }
 
     @Test
     public void testReferenceEscaped() throws Exception {
-        Reference r = new Reference(new ReferenceInfo(new ReferenceIdent(
-                new TableIdent("doc", "table"),
-                new ColumnIdent("colum\"n")),
-                RowGranularity.DOC, DataTypes.STRING));
+        Reference r = new Reference(new ReferenceIdent(
+            new TableIdent("doc", "table"),
+            new ColumnIdent("colum\"n")),
+            RowGranularity.DOC, DataTypes.STRING);
         assertPrint(r, "doc.\"table\".\"colum\"\"n\"");
     }
 
     @Test
     public void testLiteralEscaped() throws Exception {
-        assertPrint(Literal.newLiteral("bla'bla"), "'bla''bla'");
+        assertPrint(Literal.of("bla'bla"), "'bla''bla'");
 
     }
 
     @Test
     public void testObjectLiteral() throws Exception {
-        Literal<Map<String, Object>> l = Literal.newLiteral(new HashMap<String, Object>(){{
+        Literal<Map<String, Object>> l = Literal.of(new HashMap<String, Object>() {{
             put("field", "value");
-            put("array", new Integer[]{1,2,3});
-            put("nestedMap", new HashMap<String, Object>(){{
+            put("array", new Integer[]{1, 2, 3});
+            put("nestedMap", new HashMap<String, Object>() {{
                 put("inner", -0.00005d);
             }});
         }});
@@ -200,30 +196,30 @@ public class SymbolPrinterTest extends CrateUnitTest {
 
     @Test
     public void testBooleanLiteral() throws Exception {
-        Literal<Boolean> f = Literal.newLiteral(false);
+        Literal<Boolean> f = Literal.of(false);
         assertPrint(f, "false");
-        Literal<Boolean> t = Literal.newLiteral(true);
+        Literal<Boolean> t = Literal.of(true);
         assertPrint(t, "true");
     }
 
     @Test
     public void visitStringLiteral() throws Exception {
-        Literal<BytesRef> l = Literal.newLiteral("fooBar");
+        Literal<BytesRef> l = Literal.of("fooBar");
         assertPrint(l, "'fooBar'");
     }
 
     @Test
     public void visitDoubleLiteral() throws Exception {
-        Literal<Double> d = Literal.newLiteral(-500.88765d);
+        Literal<Double> d = Literal.of(-500.88765d);
         assertPrint(d, "-500.88765");
     }
 
     @Test
     public void visitFloatLiteral() throws Exception {
-        Literal<Float> f = Literal.newLiteral(500.887f);
+        Literal<Float> f = Literal.of(500.887f);
         assertPrint(f, "500.887");
     }
-    
+
     @Test
     public void testExtract() throws Exception {
         assertPrintIsParseable("extract(century from '1970-01-01')");
@@ -251,19 +247,21 @@ public class SymbolPrinterTest extends CrateUnitTest {
 
     @Test
     public void testNull() throws Exception {
-        assertPrint(Literal.newLiteral(DataTypes.UNDEFINED, null) , "NULL");
+        assertPrint(Literal.of(DataTypes.UNDEFINED, null), "NULL");
     }
 
     @Test
     public void testNullKey() throws Exception {
-        assertPrint(Literal.newLiteral(new HashMap<String, Object>(){{ put("null", null);}}), "{\"null\"=NULL}");
+        assertPrint(Literal.of(new HashMap<String, Object>() {{
+            put("null", null);
+        }}), "{\"null\"=NULL}");
     }
 
     @Test
     public void testNativeArray() throws Exception {
         assertPrint(
-                Literal.newLiteral(DataTypes.GEO_SHAPE, ImmutableMap.of("type", "Point", "coordinates", new double[]{1.0d, 2.0d})),
-                "{\"coordinates\"=[1.0, 2.0], \"type\"='Point'}");
+            Literal.of(DataTypes.GEO_SHAPE, ImmutableMap.of("type", "Point", "coordinates", new double[]{1.0d, 2.0d})),
+            "{\"coordinates\"=[1.0, 2.0], \"type\"='Point'}");
     }
 
     @Test
@@ -302,15 +300,15 @@ public class SymbolPrinterTest extends CrateUnitTest {
         Symbol comparisonOperator = sqlExpressions.asSymbol("bar = 1 and foo = 2");
         String printed = SymbolPrinter.INSTANCE.printFullQualified(comparisonOperator);
         assertThat(
-                printed,
-                is("((doc.formatter.bar = 1) AND (doc.formatter.foo = '2'))")
+            printed,
+            is("((doc.formatter.bar = 1) AND (doc.formatter.foo = '2'))")
         );
     }
 
     @Test
     public void testPrintFetchRefs() throws Exception {
-        Field field = (Field)sqlExpressions.asSymbol("bar");
-        Reference reference = ((AbstractTableRelation)field.relation()).resolveField(field);
+        Field field = (Field) sqlExpressions.asSymbol("bar");
+        Reference reference = ((AbstractTableRelation) field.relation()).resolveField(field);
         Symbol fetchRef = new FetchReference(sqlExpressions.asSymbol("1"), reference);
         assertPrint(fetchRef, "FETCH(1, doc.formatter.bar)");
     }
@@ -328,18 +326,6 @@ public class SymbolPrinterTest extends CrateUnitTest {
     }
 
     @Test
-    public void testPrintInOperator() throws Exception {
-        Symbol inQuery = sqlExpressions.asSymbol("bar in (1)");
-        assertPrint(inQuery, "(doc.formatter.bar = ANY([1]))"); // internal in is rewritten to ANY
-        FunctionImplementation impl = sqlExpressions.analysisMD().functions().getSafe(new FunctionIdent(InOperator.NAME, Arrays.<DataType>asList(DataTypes.LONG, new SetType(DataTypes.LONG))));
-        Function fn = new Function(impl.info(), Arrays.asList(sqlExpressions.asSymbol("bar"), Literal.newLiteral(new SetType(DataTypes.LONG), ImmutableSet.of(1L, 2L))));
-        assertPrint(fn, "(doc.formatter.bar IN (1, 2))");
-        inQuery = sqlExpressions.asSymbol("bar in (1, abs(-10), 9)");
-        assertPrint(inQuery, "(doc.formatter.bar = ANY([1, 9, 10]))");
-        assertPrintStatic(inQuery, "(doc.formatter.bar = ANY([1, 9, 10]))");
-    }
-
-    @Test
     public void testPrintLikeOperator() throws Exception {
         Symbol likeQuery = sqlExpressions.asSymbol("foo like '%bla%'");
         assertPrint(likeQuery, "(doc.formatter.foo LIKE '%bla%')");
@@ -349,13 +335,13 @@ public class SymbolPrinterTest extends CrateUnitTest {
 
     @Test
     public void testPrintAnyEqOperator() throws Exception {
-        assertPrintingRoundTrip("foo = ANY (['a', 'b', 'c'])", "(doc.formatter.foo = ANY(['a', 'b', 'c']))");
+        assertPrintingRoundTrip("foo = ANY (['a', 'b', 'c'])", "(doc.formatter.foo = ANY(_array('a', 'b', 'c')))");
         assertPrintingRoundTrip("foo = ANY(s_arr)", "(doc.formatter.foo = ANY(doc.formatter.s_arr))");
     }
 
     @Test
     public void testAnyNeqOperator() throws Exception {
-        assertPrintingRoundTrip("not foo != ANY (['a', 'b', 'c'])", "(NOT (doc.formatter.foo <> ANY(['a', 'b', 'c'])))");
+        assertPrintingRoundTrip("not foo != ANY (['a', 'b', 'c'])", "(NOT (doc.formatter.foo <> ANY(_array('a', 'b', 'c'))))");
         assertPrintingRoundTrip("not foo != ANY(s_arr)", "(NOT (doc.formatter.foo <> ANY(doc.formatter.s_arr)))");
     }
 
@@ -367,6 +353,6 @@ public class SymbolPrinterTest extends CrateUnitTest {
     @Test
     public void testAnyLikeOperator() throws Exception {
         assertPrintingRoundTrip("foo LIKE ANY (s_arr)", "(doc.formatter.foo LIKE ANY(doc.formatter.s_arr))");
-        assertPrintingRoundTrip("foo NOT LIKE ANY (['a', 'b', 'c'])", "(doc.formatter.foo NOT LIKE ANY(['a', 'b', 'c']))");
+        assertPrintingRoundTrip("foo NOT LIKE ANY (['a', 'b', 'c'])", "(doc.formatter.foo NOT LIKE ANY(_array('a', 'b', 'c')))");
     }
 }

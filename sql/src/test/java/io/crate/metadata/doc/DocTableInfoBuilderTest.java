@@ -30,11 +30,15 @@ import io.crate.metadata.PartitionName;
 import io.crate.metadata.TableIdent;
 import io.crate.test.integration.CrateUnitTest;
 import org.apache.lucene.util.BytesRef;
+import org.elasticsearch.Version;
 import org.elasticsearch.action.admin.indices.template.put.TransportPutIndexTemplateAction;
-import org.elasticsearch.cluster.ClusterService;
+import org.elasticsearch.cluster.ClusterName;
 import org.elasticsearch.cluster.ClusterState;
 import org.elasticsearch.cluster.metadata.IndexMetaData;
+import org.elasticsearch.cluster.metadata.IndexNameExpressionResolver;
 import org.elasticsearch.cluster.metadata.MetaData;
+import org.elasticsearch.common.settings.Settings;
+import org.elasticsearch.test.cluster.NoopClusterService;
 import org.junit.Before;
 import org.junit.Test;
 import org.mockito.Mock;
@@ -44,7 +48,6 @@ import java.util.Locale;
 import java.util.concurrent.ExecutorService;
 
 import static org.mockito.Mockito.mock;
-import static org.mockito.Mockito.when;
 
 public class DocTableInfoBuilderTest extends CrateUnitTest {
 
@@ -68,42 +71,42 @@ public class DocTableInfoBuilderTest extends CrateUnitTest {
 
     @Test
     public void testNoTableInfoFromOrphanedPartition() throws Exception {
-        ClusterService clusterService = mock(ClusterService.class);
-        ClusterState clusterState = mock(ClusterState.class);
-        when(clusterService.state()).thenReturn(clusterState);
         String schemaName = randomSchema();
         PartitionName partitionName = new PartitionName(schemaName, "test", Collections.singletonList(new BytesRef("boo")));
         IndexMetaData.Builder indexMetaDataBuilder = IndexMetaData.builder(partitionName.asIndexName())
-                .numberOfReplicas(0)
-                .numberOfShards(5)
-                .putMapping(Constants.DEFAULT_MAPPING_TYPE,
-                        "{" +
-                        "  \"default\": {" +
-                        "    \"properties\":{" +
-                        "      \"id\": {" +
-                        "         \"type\": \"integer\"," +
-                        "         \"index\": \"not_analyzed\"" +
-                        "      }" +
-                        "    }" +
-                        "  }" +
-                        "}");
+            .settings(Settings.builder().put("index.version.created", Version.CURRENT).build())
+            .numberOfReplicas(0)
+            .numberOfShards(5)
+            .putMapping(Constants.DEFAULT_MAPPING_TYPE,
+                "{" +
+                "  \"default\": {" +
+                "    \"properties\":{" +
+                "      \"id\": {" +
+                "         \"type\": \"integer\"," +
+                "         \"index\": \"not_analyzed\"" +
+                "      }" +
+                "    }" +
+                "  }" +
+                "}");
         MetaData metaData = MetaData.builder()
-                .put(indexMetaDataBuilder)
-                .build();
-        when(clusterState.metaData()).thenReturn(metaData);
+            .put(indexMetaDataBuilder)
+            .build();
+
+        NoopClusterService clusterService =
+            new NoopClusterService(ClusterState.builder(ClusterName.DEFAULT).metaData(metaData).build());
 
         DocTableInfoBuilder builder = new DocTableInfoBuilder(
-                functions,
-                new TableIdent(schemaName, "test"),
-                clusterService,
-                mock(TransportPutIndexTemplateAction.class),
-                executorService,
-                false
+            functions,
+            new TableIdent(schemaName, "test"),
+            clusterService,
+            new IndexNameExpressionResolver(Settings.EMPTY),
+            mock(TransportPutIndexTemplateAction.class),
+            executorService,
+            false
         );
 
         expectedException.expect(TableUnknownException.class);
         expectedException.expectMessage(String.format(Locale.ENGLISH, "Table '%s.test' unknown", schemaName));
         builder.build();
-
     }
 }

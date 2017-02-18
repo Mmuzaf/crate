@@ -21,19 +21,36 @@
 
 package io.crate.analyze.symbol;
 
+import com.google.common.collect.ImmutableList;
+import io.crate.metadata.GeneratedReference;
+import io.crate.metadata.GeoReference;
+import io.crate.metadata.IndexReference;
+import io.crate.metadata.Reference;
+import org.elasticsearch.common.io.stream.StreamInput;
+
+import java.io.IOException;
+import java.util.List;
+
 public enum SymbolType {
 
-    AGGREGATION(Aggregation.FACTORY),
-    REFERENCE(Reference.FACTORY),
-    RELATION_OUTPUT(Field.FACTORY),
-    FUNCTION(Function.FACTORY),
-    LITERAL(Literal.FACTORY),
-    INPUT_COLUMN(InputColumn.FACTORY),
-    DYNAMIC_REFERENCE(DynamicReference.FACTORY),
-    VALUE(Value.FACTORY),
-    MATCH_PREDICATE(MatchPredicate.FACTORY),
+    AGGREGATION(Aggregation::new),
+    REFERENCE(Reference::new),
+    RELATION_OUTPUT(Field::new),
+    FUNCTION(Function::new),
+    LITERAL(Literal::new),
+    INPUT_COLUMN(InputColumn::new),
+    DYNAMIC_REFERENCE(DynamicReference::new),
+    VALUE(Value::new),
+    MATCH_PREDICATE(null),
     FETCH_REFERENCE(null),
-    RELATION_COLUMN(RelationColumn.FACTORY);
+    RELATION_COLUMN(RelationColumn::new),
+    INDEX_REFERENCE(IndexReference::new),
+    GEO_REFERENCE(GeoReference::new),
+    GENERATED_REFERENCE(GeneratedReference::new),
+    PARAMETER(ParameterSymbol::new),
+    SELECT_SYMBOL(SelectSymbol::new);
+
+    public static final List<SymbolType> VALUES = ImmutableList.copyOf(values());
 
     private final Symbol.SymbolFactory factory;
 
@@ -41,8 +58,8 @@ public enum SymbolType {
         this.factory = factory;
     }
 
-    public Symbol newInstance() {
-        return factory.newInstance();
+    public Symbol newInstance(StreamInput in) throws IOException {
+        return factory.newInstance(in);
     }
 
     public boolean isValueSymbol() {

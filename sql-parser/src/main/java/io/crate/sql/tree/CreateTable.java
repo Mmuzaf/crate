@@ -23,11 +23,9 @@ package io.crate.sql.tree;
 
 import com.google.common.base.MoreObjects;
 import com.google.common.base.Objects;
-import com.google.common.base.Optional;
-import com.google.common.collect.ImmutableList;
 
-import javax.annotation.Nullable;
 import java.util.List;
+import java.util.Optional;
 
 public class CreateTable extends Statement {
 
@@ -39,15 +37,14 @@ public class CreateTable extends Statement {
 
     public CreateTable(Table name,
                        List<TableElement> tableElements,
-                       @Nullable List<CrateTableOption> crateTableOptions,
-                       @Nullable GenericProperties genericProperties,
-                       boolean ifNotExists)
-    {
+                       List<CrateTableOption> crateTableOptions,
+                       Optional<GenericProperties> genericProperties,
+                       boolean ifNotExists) {
         this.name = name;
         this.tableElements = tableElements;
         this.ifNotExists = ifNotExists;
-        this.crateTableOptions = crateTableOptions != null ? crateTableOptions : ImmutableList.<CrateTableOption>of();
-        this.properties = Optional.fromNullable(genericProperties);
+        this.crateTableOptions = crateTableOptions;
+        this.properties = genericProperties;
     }
 
     public boolean ifNotExists() {
@@ -71,14 +68,12 @@ public class CreateTable extends Statement {
     }
 
     @Override
-    public <R, C> R accept(AstVisitor<R, C> visitor, C context)
-    {
+    public <R, C> R accept(AstVisitor<R, C> visitor, C context) {
         return visitor.visitCreateTable(this, context);
     }
 
     @Override
-    public int hashCode()
-    {
+    public int hashCode() {
         return Objects.hashCode(name, tableElements, crateTableOptions, properties, ifNotExists);
     }
 
@@ -99,13 +94,12 @@ public class CreateTable extends Statement {
     }
 
     @Override
-    public String toString()
-    {
+    public String toString() {
         return MoreObjects.toStringHelper(this)
-                .add("name", name)
-                .add("tableElements", tableElements)
-                .add("crateTableOptions", crateTableOptions)
-                .add("ifNotExists", ifNotExists)
-                .add("properties", properties).toString();
+            .add("name", name)
+            .add("tableElements", tableElements)
+            .add("crateTableOptions", crateTableOptions)
+            .add("ifNotExists", ifNotExists)
+            .add("properties", properties).toString();
     }
 }

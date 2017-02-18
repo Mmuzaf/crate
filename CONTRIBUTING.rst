@@ -15,11 +15,9 @@ documentation.
 For more information on how to do that please refer to the documentation
 section in the ``DEVELOP.rst``.
 
-If you have any questions don't hesitate to ask us in our public room on 
-HipChat_.
+If you have any questions don't hesitate to ask us on Slack_.
 
-.. _HipChat: https://www.hipchat.com/g7Pc2CYwi
-
+.. _Slack: https://crate.io/docs/support/slackin/
 
 Reporting an issue
 ------------------
@@ -38,7 +36,6 @@ Reporting an issue
     an error)
 
   - Steps to reproduce.
-
 
 Pull requests
 -------------
@@ -61,7 +58,6 @@ CLA_. Once that is done, we suggest to continue as follows:
 
 .. _CLA: https://crate.io/community/contribute/agreements/
 
-
 Rebase
 ------
 
@@ -75,7 +71,6 @@ This will apply all commits on your feature branch on top of the master branch.
 Any conflicts can be resolved just the same as if ``git merge`` was used. After
 the conflict has been resolved use ``git rebase --continue`` to continue the
 rebase process.
-
 
 Squash
 ------

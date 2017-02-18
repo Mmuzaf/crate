@@ -21,18 +21,20 @@
 
 package io.crate.integrationtests;
 
-import io.crate.action.sql.SQLResponse;
+import io.crate.testing.SQLResponse;
+import io.crate.testing.UseJdbc;
 import org.elasticsearch.action.search.SearchRequest;
 import org.elasticsearch.action.search.SearchResponse;
 import org.elasticsearch.common.xcontent.XContentFactory;
 import org.junit.Test;
 
+@UseJdbc
 public class MappingDefaultsTest extends SQLTransportIntegrationTest {
 
     @Test
     public void testAllFieldsDisabled() throws Exception {
         execute("create table test (col1 string)");
-        ensureGreen();
+        ensureYellow();
 
         SQLResponse sqlResponse = execute("insert into test (col1) values ('foo')");
         assertEquals(1, sqlResponse.rowCount());
@@ -40,13 +42,13 @@ public class MappingDefaultsTest extends SQLTransportIntegrationTest {
 
 
         byte[] searchSource = XContentFactory.jsonBuilder()
-                .startObject()
-                .startObject("query")
-                    .startObject("query_string")
-                        .field("query", "foo")
-                    .endObject()
-                .endObject()
-                .endObject().bytes().toBytes();
+            .startObject()
+            .startObject("query")
+            .startObject("query_string")
+            .field("query", "foo")
+            .endObject()
+            .endObject()
+            .endObject().bytes().toBytes();
 
         SearchRequest searchRequest = new SearchRequest("test");
         searchRequest.source(searchSource);

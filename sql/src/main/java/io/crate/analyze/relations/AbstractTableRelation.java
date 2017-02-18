@@ -22,42 +22,42 @@
 package io.crate.analyze.relations;
 
 import com.google.common.base.MoreObjects;
-import com.google.common.base.Optional;
 import com.google.common.base.Predicate;
 import io.crate.analyze.OrderBy;
 import io.crate.analyze.symbol.Field;
-import io.crate.analyze.symbol.Reference;
-import io.crate.exceptions.ColumnUnknownException;
 import io.crate.metadata.ColumnIdent;
 import io.crate.metadata.Path;
-import io.crate.metadata.ReferenceInfo;
+import io.crate.metadata.Reference;
 import io.crate.metadata.table.TableInfo;
+import io.crate.sql.tree.QualifiedName;
 import io.crate.types.ArrayType;
+import io.crate.types.DataType;
 import io.crate.types.DataTypes;
+import io.crate.types.ObjectType;
 
+import javax.annotation.Nonnull;
 import javax.annotation.Nullable;
-import java.util.ArrayList;
-import java.util.HashMap;
-import java.util.List;
-import java.util.Map;
+import java.util.*;
 
 public abstract class AbstractTableRelation<T extends TableInfo> implements AnalyzedRelation, FieldResolver {
 
-    private static final Predicate<ReferenceInfo> IS_OBJECT_ARRAY = new Predicate<ReferenceInfo>() {
+    private static final Predicate<Reference> IS_OBJECT_ARRAY = new Predicate<Reference>() {
         @Override
-        public boolean apply(@Nullable ReferenceInfo input) {
+        public boolean apply(@Nullable Reference input) {
             return input != null
-                    && input.type().id() == ArrayType.ID
-                    && ((ArrayType) input.type()).innerType().equals(DataTypes.OBJECT);
+                   && input.valueType().id() == ArrayType.ID
+                   && ((ArrayType) input.valueType()).innerType().equals(DataTypes.OBJECT);
         }
     };
 
     protected T tableInfo;
     private List<Field> outputs;
     private Map<Path, Reference> allocatedFields = new HashMap<>();
+    private QualifiedName qualifiedName;
 
     public AbstractTableRelation(T tableInfo) {
         this.tableInfo = tableInfo;
+        qualifiedName = new QualifiedName(Arrays.asList(tableInfo.ident().schema(), tableInfo.ident().name()));
     }
 
     public T tableInfo() {
@@ -65,42 +65,53 @@ public abstract class AbstractTableRelation<T extends TableInfo> implements Anal
     }
 
     @Nullable
-    @Override
     public Field getField(Path path) {
         ColumnIdent ci = toColumnIdent(path);
-        ReferenceInfo referenceInfo = tableInfo.getReferenceInfo(ci);
-        if (referenceInfo == null) {
+        Reference reference = tableInfo.getReference(ci);
+        if (reference == null) {
             return null;
         }
-        referenceInfo = checkNestedArray(ci, referenceInfo);
-        return allocate(ci, new Reference(referenceInfo));
+        reference = checkNestedArray(ci, reference);
+        return allocate(ci, reference);
 
     }
 
-    protected ReferenceInfo checkNestedArray(ColumnIdent ci, ReferenceInfo referenceInfo) {
+    protected Reference checkNestedArray(ColumnIdent ci, Reference reference) {
         // TODO: build type correctly as array when the tableInfo is created and remove the conversion here
-        if (!ci.isColumn() && hasMatchingParent(referenceInfo, IS_OBJECT_ARRAY)) {
-            if (DataTypes.isCollectionType(referenceInfo.type())) {
+        DataType dataType = null;
+        ColumnIdent tmpCI = ci;
+        Reference tmpRI = reference;
+
+        while (!tmpCI.isColumn() && hasMatchingParent(tmpRI, IS_OBJECT_ARRAY)) {
+            if (DataTypes.isCollectionType(reference.valueType())) {
                 // TODO: remove this limitation with next type refactoring
                 throw new UnsupportedOperationException("cannot query for arrays inside object arrays explicitly");
             }
+
             // for child fields of object arrays
             // return references of primitive types as array
-            referenceInfo = new ReferenceInfo.Builder()
-                    .ident(referenceInfo.ident())
-                    .columnPolicy(referenceInfo.columnPolicy())
-                    .granularity(referenceInfo.granularity())
-                    .type(new ArrayType(referenceInfo.type()))
-                    .build();
+            if (dataType == null) {
+                dataType = new ArrayType(reference.valueType());
+                if (hasNestedObjectReference(tmpRI)) break;
+            } else {
+                dataType = new ArrayType(dataType);
+            }
+            tmpCI = tmpCI.getParent();
+            tmpRI = tableInfo.getReference(tmpCI);
         }
-        return referenceInfo;
-    }
 
-    @Override
-    public Field getWritableField(Path path) throws ColumnUnknownException {
-        throw new UnsupportedOperationException("getWritableField() not implemented on TableRelation");
+        if (dataType != null) {
+            return new Reference(
+                reference.ident(),
+                reference.granularity(),
+                dataType,
+                reference.columnPolicy(),
+                reference.indexType(),
+                reference.isNullable());
+        } else {
+            return reference;
+        }
     }
-
 
     protected static ColumnIdent toColumnIdent(Path path) {
         try {
@@ -119,15 +130,25 @@ public abstract class AbstractTableRelation<T extends TableInfo> implements Anal
     public List<Field> fields() {
         if (outputs == null) {
             outputs = new ArrayList<>(tableInfo.columns().size());
-            for (ReferenceInfo referenceInfo : tableInfo.columns()) {
-                if (referenceInfo.type().equals(DataTypes.NOT_SUPPORTED)) {
+            for (Reference reference : tableInfo.columns()) {
+                if (reference.valueType().equals(DataTypes.NOT_SUPPORTED)) {
                     continue;
                 }
-                ColumnIdent columnIdent = referenceInfo.ident().columnIdent();
+                ColumnIdent columnIdent = reference.ident().columnIdent();
                 outputs.add(getField(columnIdent));
             }
         }
         return outputs;
+    }
+
+    @Override
+    public QualifiedName getQualifiedName() {
+        return qualifiedName;
+    }
+
+    @Override
+    public void setQualifiedName(@Nonnull QualifiedName qualifiedName) {
+        this.qualifiedName = qualifiedName;
     }
 
     /**
@@ -135,14 +156,25 @@ public abstract class AbstractTableRelation<T extends TableInfo> implements Anal
      * returns true for a parent column of this one.
      * returns false if info has no parent column.
      */
-    private boolean hasMatchingParent(ReferenceInfo info, Predicate<ReferenceInfo> parentMatchPredicate) {
+    private boolean hasMatchingParent(Reference info, Predicate<Reference> parentMatchPredicate) {
         ColumnIdent parent = info.ident().columnIdent().getParent();
         while (parent != null) {
-            ReferenceInfo parentInfo = tableInfo.getReferenceInfo(parent);
+            Reference parentInfo = tableInfo.getReference(parent);
             if (parentMatchPredicate.apply(parentInfo)) {
                 return true;
             }
             parent = parent.getParent();
+        }
+        return false;
+    }
+
+    private boolean hasNestedObjectReference(Reference info) {
+        ColumnIdent parent = info.ident().columnIdent().getParent();
+        if (parent != null) {
+            Reference parentRef = tableInfo.getReference(parent);
+            if (parentRef.valueType().id() == ObjectType.ID) {
+                return hasMatchingParent(parentRef, IS_OBJECT_ARRAY);
+            }
         }
         return false;
     }

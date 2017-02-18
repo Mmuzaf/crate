@@ -1,6 +1,6 @@
 package io.crate.metadata.shard.unassigned;
 
-import io.crate.blob.v2.BlobIndices;
+import io.crate.blob.v2.BlobIndex;
 import io.crate.metadata.PartitionName;
 import io.crate.metadata.Schemas;
 import io.crate.metadata.blob.BlobSchemaInfo;
@@ -13,15 +13,15 @@ import java.util.regex.Matcher;
 
 /**
  * This class represents an unassigned shard
- *
+ * <p>
  * An UnassignedShard is a shard that is not yet assigned to any node and therefore doesn't really exist anywhere.
- *
+ * <p>
  * The {@link io.crate.metadata.sys.SysShardsTableInfo} will encode any shards that aren't assigned to a node
  * by negating them using {@link #markUnassigned(int)}
- *
+ * <p>
  * The {@link io.crate.operation.collect.sources.ShardCollectSource} will then collect UnassignedShard
  * instances for all shardIds that are negative.
- *
+ * <p>
  * This is only for "select ... from sys.shards" queries.
  */
 public class UnassignedShard {
@@ -33,7 +33,7 @@ public class UnassignedShard {
     /**
      * valid shard ids are vom 0 to int.max
      * this method negates a shard id (0 becomes -1, 1 becomes -2, etc.)
-     *
+     * <p>
      * if the given id is already negative it is returned as is
      */
     public static int markUnassigned(int id) {
@@ -71,12 +71,12 @@ public class UnassignedShard {
                            Boolean primary,
                            ShardRoutingState state) {
         String index = shardId.index().name();
-        boolean isBlobIndex = BlobIndices.isBlobIndex(index);
+        boolean isBlobIndex = BlobIndex.isBlobIndex(index);
         String tableName;
         String ident = "";
         if (isBlobIndex) {
             this.schemaName = BlobSchemaInfo.NAME;
-            tableName = BlobIndices.STRIP_PREFIX.apply(index);
+            tableName = BlobIndex.stripPrefix(index);
         } else if (PartitionName.isPartition(index)) {
             PartitionName partitionName = PartitionName.fromIndexOrTemplate(index);
             schemaName = partitionName.tableIdent().schema();

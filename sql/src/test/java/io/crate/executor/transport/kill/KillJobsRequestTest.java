@@ -24,8 +24,8 @@ package io.crate.executor.transport.kill;
 
 import com.google.common.collect.ImmutableList;
 import io.crate.test.integration.CrateUnitTest;
-import org.elasticsearch.common.io.stream.BytesStreamInput;
 import org.elasticsearch.common.io.stream.BytesStreamOutput;
+import org.elasticsearch.common.io.stream.StreamInput;
 import org.junit.Test;
 
 import java.util.UUID;
@@ -42,7 +42,7 @@ public class KillJobsRequestTest extends CrateUnitTest {
         BytesStreamOutput out = new BytesStreamOutput();
         r.writeTo(out);
 
-        BytesStreamInput in = new BytesStreamInput(out.bytes());
+        StreamInput in = StreamInput.wrap(out.bytes());
         KillJobsRequest r2 = new KillJobsRequest();
         r2.readFrom(in);
 

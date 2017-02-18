@@ -23,7 +23,7 @@
 package io.crate.operation.reference.sys.snapshot;
 
 import com.google.common.collect.ImmutableMap;
-import io.crate.operation.reference.sys.repositories.SysRepositories;
+import io.crate.operation.reference.sys.repositories.SysRepositoriesService;
 import io.crate.operation.reference.sys.repositories.SysRepository;
 import io.crate.test.integration.CrateUnitTest;
 import org.elasticsearch.snapshots.SnapshotsService;
@@ -34,6 +34,7 @@ import org.mockito.stubbing.Answer;
 import java.util.Collections;
 
 import static org.hamcrest.core.Is.is;
+import static org.mockito.Matchers.anyBoolean;
 import static org.mockito.Matchers.anyString;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.when;
@@ -42,11 +43,11 @@ public class SysSnapshotsTest extends CrateUnitTest {
 
     @Test
     public void testErrorsOnRetrievingSnapshotsAreIgnored() throws Exception {
-        SysRepositories sysRepos = mock(SysRepositories.class);
+        SysRepositoriesService sysRepos = mock(SysRepositoriesService.class);
 
         final Iterable<?> objects =
-                Collections.singletonList((Object) new SysRepository("foo", "url", ImmutableMap.<String, Object>of()));
-        when(sysRepos.get()).then(new Answer<Object>() {
+            Collections.singletonList((Object) new SysRepository("foo", "url", ImmutableMap.<String, Object>of()));
+        when(sysRepos.repositoriesGetter()).then(new Answer<Object>() {
             @Override
             public Object answer(InvocationOnMock invocation) throws Throwable {
                 return objects;
@@ -54,8 +55,8 @@ public class SysSnapshotsTest extends CrateUnitTest {
         });
 
         SnapshotsService snapshotService = mock(SnapshotsService.class);
-        when(snapshotService.snapshots(anyString())).thenThrow(new IllegalStateException("dummy"));
+        when(snapshotService.snapshots(anyString(), anyBoolean())).thenThrow(new IllegalStateException("dummy"));
         SysSnapshots sysSnapshots = new SysSnapshots(sysRepos, snapshotService);
-        assertThat(sysSnapshots.get().iterator().hasNext(), is(false));
+        assertThat(sysSnapshots.snapshotsGetter().iterator().hasNext(), is(false));
     }
 }

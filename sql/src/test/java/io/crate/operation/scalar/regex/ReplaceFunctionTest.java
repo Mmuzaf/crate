@@ -25,25 +25,26 @@ import io.crate.analyze.symbol.Literal;
 import io.crate.operation.scalar.AbstractScalarFunctionsTest;
 import org.junit.Test;
 
-import static io.crate.testing.TestingHelpers.isFunction;
-import static io.crate.testing.TestingHelpers.isLiteral;
+import static io.crate.testing.SymbolMatchers.isFunction;
+import static io.crate.testing.SymbolMatchers.isLiteral;
+
 
 public class ReplaceFunctionTest extends AbstractScalarFunctionsTest {
 
     @Test
     public void testEvaluate() throws Exception {
         assertEvaluate(
-                "regexp_replace(name, '(ba)', 'Crate')",
-                "fooCraterbequebaz bar",
-                Literal.newLiteral("foobarbequebaz bar"));
+            "regexp_replace(name, '(ba)', 'Crate')",
+            "fooCraterbequebaz bar",
+            Literal.of("foobarbequebaz bar"));
     }
 
     @Test
     public void testEvaluateWithFlags() throws Exception {
         assertEvaluate(
-                "regexp_replace(name, '(ba)', 'Crate', 'usn g')",
-                "fooCraterbequebaz bar",
-                Literal.newLiteral("foobarbequebaz bar"));
+            "regexp_replace(name, '(ba)', 'Crate', 'usn g')",
+            "fooCraterbequebaz bar",
+            Literal.of("foobarbequebaz bar"));
     }
 
     @Test
@@ -60,7 +61,7 @@ public class ReplaceFunctionTest extends AbstractScalarFunctionsTest {
     @Test
     public void testNormalizeSymbolWithInvalidFlags() throws Exception {
         expectedException.expect(UnsupportedOperationException.class);
-        expectedException.expectMessage("flags must be of type string");
+        expectedException.expectMessage("unknown function: regexp_replace(string, string, string, long)");
 
         assertNormalize("regexp_replace('foobar', 'foo', 'bar', 1)", isLiteral(""));
     }
@@ -74,7 +75,7 @@ public class ReplaceFunctionTest extends AbstractScalarFunctionsTest {
     @Test
     public void testNormalizeSymbolWithInvalidArgumentType() throws Exception {
         expectedException.expect(UnsupportedOperationException.class);
-        expectedException.expectMessage("replace argument must be of type string");
+        expectedException.expectMessage("unknown function: regexp_replace(string, string, long)");
 
         assertNormalize("regexp_replace('foobar', '.*', 1)", isLiteral(""));
     }

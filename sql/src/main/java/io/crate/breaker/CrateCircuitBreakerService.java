@@ -21,6 +21,7 @@
 
 package io.crate.breaker;
 
+import com.google.common.collect.ArrayListMultimap;
 import org.elasticsearch.common.breaker.CircuitBreaker;
 import org.elasticsearch.common.inject.Inject;
 import org.elasticsearch.common.settings.Settings;
@@ -33,22 +34,34 @@ import org.elasticsearch.node.settings.NodeSettingsService;
 
 import java.util.Locale;
 
+import static org.elasticsearch.common.breaker.CircuitBreaker.Type;
+
 public class CrateCircuitBreakerService extends CircuitBreakerService {
 
+    public static final String QUERY = "query";
     public static final String QUERY_CIRCUIT_BREAKER_LIMIT_SETTING = "indices.breaker.query.limit";
+    public static final String DEFAULT_QUERY_CIRCUIT_BREAKER_LIMIT= "60%";
     public static final String QUERY_CIRCUIT_BREAKER_OVERHEAD_SETTING = "indices.breaker.query.overhead";
-    public static final String QUERY_CIRCUIT_BREAKER_TYPE_SETTING = "indices.breaker.query.type";
-    public static final String DEFAULT_QUERY_CIRCUIT_BREAKER_LIMIT = "60%";
     public static final double DEFAULT_QUERY_CIRCUIT_BREAKER_OVERHEAD_CONSTANT = 1.09;
-    public static final String DEFAULT_QUERY_CIRCUIT_BREAKER_TYPE = "memory";
 
-    public static final CircuitBreaker.Name QUERY_BREAKER = CircuitBreaker.Name.register(3, "query");
+    public static final String JOBS_LOG = "jobs_log";
+    public static final String JOBS_LOG_CIRCUIT_BREAKER_LIMIT_SETTING = "stats.breaker.log.jobs.limit";
+    public static final String DEFAULT_JOBS_LOG_CIRCUIT_BREAKER_LIMIT = "5%";
+    public static final String JOBS_LOG_CIRCUIT_BREAKER_OVERHEAD_SETTING = "stats.breaker.log.jobs.overhead";
 
-    public static final String BREAKING_EXCEPTION_MESSAGE =
-            "[query] Data too large, data for [%s] would be larger than limit of [%d/%s]";
+    public static final String OPERATIONS_LOG = "operations_log";
+    public static final String OPERATIONS_LOG_CIRCUIT_BREAKER_LIMIT_SETTING = "stats.breaker.log.operations.limit";
+    public static final String DEFAULT_OPERATIONS_LOG_CIRCUIT_BREAKER_LIMIT= "5%";
+    public static final String OPERATIONS_LOG_CIRCUIT_BREAKER_OVERHEAD_SETTING = "stats.breaker.log.operations.overhead";
+
+    public static final double DEFAULT_LOG_CIRCUIT_BREAKER_OVERHEAD_CONSTANT = 1.0;
+
+    static final String BREAKING_EXCEPTION_MESSAGE =
+        "[query] Data too large, data for [%s] would be larger than limit of [%d/%s]";
 
     private final CircuitBreakerService esCircuitBreakerService;
-    private BreakerSettings queryBreakerSettings;
+
+    private final ArrayListMultimap<String, Listener> listeners = ArrayListMultimap.create();
 
     @Inject
     public CrateCircuitBreakerService(Settings settings,
@@ -57,19 +70,38 @@ public class CrateCircuitBreakerService extends CircuitBreakerService {
         super(settings);
         this.esCircuitBreakerService = esCircuitBreakerService;
 
-        long memoryLimit = settings.getAsMemory(
+        BreakerSettings breakerSettings;
+
+        breakerSettings = new BreakerSettings(QUERY,
+            settings.getAsMemory(
                 QUERY_CIRCUIT_BREAKER_LIMIT_SETTING,
-                DEFAULT_QUERY_CIRCUIT_BREAKER_LIMIT).bytes();
-        double overhead = settings.getAsDouble(
+                DEFAULT_QUERY_CIRCUIT_BREAKER_LIMIT).getBytes(),
+            settings.getAsDouble(
                 QUERY_CIRCUIT_BREAKER_OVERHEAD_SETTING,
-                DEFAULT_QUERY_CIRCUIT_BREAKER_OVERHEAD_CONSTANT);
+                DEFAULT_QUERY_CIRCUIT_BREAKER_OVERHEAD_CONSTANT),
+            Type.MEMORY);
+        registerBreaker(breakerSettings);
 
-        queryBreakerSettings = new BreakerSettings(QUERY_BREAKER, memoryLimit, overhead,
-                CircuitBreaker.Type.parseValue(
-                        settings.get(QUERY_CIRCUIT_BREAKER_TYPE_SETTING,
-                        DEFAULT_QUERY_CIRCUIT_BREAKER_TYPE)));
+        breakerSettings = new BreakerSettings(JOBS_LOG,
+            settings.getAsMemory(
+                JOBS_LOG_CIRCUIT_BREAKER_LIMIT_SETTING,
+                DEFAULT_JOBS_LOG_CIRCUIT_BREAKER_LIMIT).getBytes(),
+            settings.getAsDouble(
+                JOBS_LOG_CIRCUIT_BREAKER_OVERHEAD_SETTING,
+                DEFAULT_LOG_CIRCUIT_BREAKER_OVERHEAD_CONSTANT),
+            Type.MEMORY);
+        registerBreaker(breakerSettings);
 
-        registerBreaker(queryBreakerSettings);
+        breakerSettings = new BreakerSettings(OPERATIONS_LOG,
+            settings.getAsMemory(
+                OPERATIONS_LOG_CIRCUIT_BREAKER_LIMIT_SETTING,
+                DEFAULT_OPERATIONS_LOG_CIRCUIT_BREAKER_LIMIT).getBytes(),
+            settings.getAsDouble(
+                OPERATIONS_LOG_CIRCUIT_BREAKER_OVERHEAD_SETTING,
+                DEFAULT_LOG_CIRCUIT_BREAKER_OVERHEAD_CONSTANT),
+            Type.MEMORY);
+        registerBreaker(breakerSettings);
+
         nodeSettingsService.addListener(new ApplySettings());
     }
 
@@ -79,7 +111,7 @@ public class CrateCircuitBreakerService extends CircuitBreakerService {
     }
 
     @Override
-    public CircuitBreaker getBreaker(CircuitBreaker.Name name) {
+    public CircuitBreaker getBreaker(String name) {
         return esCircuitBreakerService.getBreaker(name);
     }
 
@@ -89,42 +121,88 @@ public class CrateCircuitBreakerService extends CircuitBreakerService {
     }
 
     @Override
-    public CircuitBreakerStats stats(CircuitBreaker.Name name) {
+    public CircuitBreakerStats stats(String name) {
         return esCircuitBreakerService.stats(name);
     }
 
     public static String breakingExceptionMessage(String label, long limit) {
         return String.format(Locale.ENGLISH, BREAKING_EXCEPTION_MESSAGE, label,
-                limit, new ByteSizeValue(limit));
+            limit, new ByteSizeValue(limit));
     }
 
-    public class ApplySettings implements NodeSettingsService.Listener {
+    private class ApplySettings implements NodeSettingsService.Listener {
 
         @Override
         public void onRefreshSettings(Settings settings) {
-
             // Query breaker settings
-            long newQueryMax = settings.getAsMemory(
-                    QUERY_CIRCUIT_BREAKER_LIMIT_SETTING,
-                    CrateCircuitBreakerService.this.settings.getAsMemory(
-                            QUERY_CIRCUIT_BREAKER_LIMIT_SETTING,
-                            DEFAULT_QUERY_CIRCUIT_BREAKER_LIMIT
-                    ).toString()).bytes();
-            Double newQueryOverhead = settings.getAsDouble(
-                    QUERY_CIRCUIT_BREAKER_OVERHEAD_SETTING,
-                    CrateCircuitBreakerService.this.settings.getAsDouble(
-                            QUERY_CIRCUIT_BREAKER_OVERHEAD_SETTING,
-                            DEFAULT_QUERY_CIRCUIT_BREAKER_OVERHEAD_CONSTANT
-                    ));
-            if (newQueryMax != CrateCircuitBreakerService.this.queryBreakerSettings.getLimit()
-                    || newQueryOverhead != CrateCircuitBreakerService.this.queryBreakerSettings.getOverhead()) {
+            registerBreakerSettings(QUERY,
+                settings,
+                QUERY_CIRCUIT_BREAKER_LIMIT_SETTING,
+                DEFAULT_QUERY_CIRCUIT_BREAKER_LIMIT,
+                QUERY_CIRCUIT_BREAKER_OVERHEAD_SETTING,
+                DEFAULT_QUERY_CIRCUIT_BREAKER_OVERHEAD_CONSTANT);
 
-                BreakerSettings newQuerySettings = new BreakerSettings(
-                        QUERY_BREAKER, newQueryMax, newQueryOverhead,
-                        CrateCircuitBreakerService.this.queryBreakerSettings.getType());
-                registerBreaker(newQuerySettings);
+            // Jobs log breaker settings
+            registerBreakerSettings(JOBS_LOG,
+                settings,
+                JOBS_LOG_CIRCUIT_BREAKER_LIMIT_SETTING,
+                DEFAULT_JOBS_LOG_CIRCUIT_BREAKER_LIMIT,
+                JOBS_LOG_CIRCUIT_BREAKER_OVERHEAD_SETTING,
+                DEFAULT_LOG_CIRCUIT_BREAKER_OVERHEAD_CONSTANT);
+
+            // Operations log breaker settings
+            registerBreakerSettings(OPERATIONS_LOG,
+                settings,
+                OPERATIONS_LOG_CIRCUIT_BREAKER_LIMIT_SETTING,
+                DEFAULT_OPERATIONS_LOG_CIRCUIT_BREAKER_LIMIT,
+                OPERATIONS_LOG_CIRCUIT_BREAKER_OVERHEAD_SETTING,
+                DEFAULT_LOG_CIRCUIT_BREAKER_OVERHEAD_CONSTANT);
+        }
+
+        private void registerBreakerSettings(String name,
+                                             Settings newSettings,
+                                             String limitSettingName,
+                                             String defaultLimit,
+                                             String overheadSettingName,
+                                             double defaultOverhead) {
+            CircuitBreaker currentBreaker = getBreaker(name);
+
+            long initialLimit = CrateCircuitBreakerService.this.settings.getAsMemory(
+                limitSettingName, defaultLimit
+            ).getBytes();
+            long limit = newSettings.getAsMemory(
+                limitSettingName, String.format(Locale.ENGLISH, "%db", initialLimit) // we need to pass exact bytes value with `b` suffix in order not to get into rounding issues
+            ).getBytes();
+            double initialOverhead = CrateCircuitBreakerService.this.settings.getAsDouble(
+                overheadSettingName, defaultOverhead
+            );
+            double overhead = newSettings.getAsDouble(
+                overheadSettingName, initialOverhead
+            );
+            if (limit != currentBreaker.getLimit() || overhead != currentBreaker.getOverhead()) {
+                BreakerSettings newBreakerSettings = new BreakerSettings(name, limit, overhead, Type.MEMORY);
+                registerBreaker(newBreakerSettings);
+                // inform listeners about the change
+                for (Listener listener : listeners.get(name)) {
+                    listener.onBreakerChanged(getBreaker(name));
+                }
             }
         }
     }
 
+    /**
+     * Add listener to a certain breaker
+     * in order to get informed whenever the breaker settings change.
+     * This is not thread-safe.
+     */
+    public void addBreakerChangeListener(String name, CrateCircuitBreakerService.Listener listener) {
+        listeners.put(name, listener);
+    }
+
+    public interface Listener {
+        /**
+         * Callback that is called whenever the settings of a breaker had changed.
+         */
+        void onBreakerChanged(CircuitBreaker breaker);
+    }
 }

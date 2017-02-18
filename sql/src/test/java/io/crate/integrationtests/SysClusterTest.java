@@ -21,6 +21,8 @@
 
 package io.crate.integrationtests;
 
+import io.crate.action.sql.SQLActionException;
+import io.crate.testing.UseJdbc;
 import org.junit.Test;
 
 import java.util.ArrayList;
@@ -29,11 +31,12 @@ import java.util.Map;
 
 import static org.hamcrest.Matchers.is;
 
+@UseJdbc
 public class SysClusterTest extends SQLTransportIntegrationTest {
 
     @Test
     public void testSysCluster() throws Exception {
-        execute("select id from sys.cluster");
+        execute("select id");
         assertThat(response.rowCount(), is(1L));
         assertThat(((String) response.rows()[0][0]).length(), is(36)); // looks like a uuid
     }
@@ -53,8 +56,16 @@ public class SysClusterTest extends SQLTransportIntegrationTest {
 
     @Test
     public void testExplainSysCluster() throws Exception {
-        execute("explain select * from sys.cluster");
+        execute("explain select * from sys.cluster limit 2"); // using limit to test projection serialization as well
         assertThat(response.rowCount(), is(1L));
-        assertThat((String) ((Map<String, Object>) response.rows()[0][0]).get("planType"), is("CollectAndMerge"));
+        Map<String, Object> map = (Map<String, Object>) response.rows()[0][0];
+        assertThat(map.get("planType"), is("Collect"));
+    }
+
+    @Test
+    public void testScalarEvaluatesInErrorOnSysCluster() throws Exception {
+        expectedException.expect(SQLActionException.class);
+        expectedException.expectMessage(" / by zero");
+        execute("select 1/0 from sys.cluster");
     }
 }

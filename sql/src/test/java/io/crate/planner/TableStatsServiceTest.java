@@ -22,38 +22,40 @@
 
 package io.crate.planner;
 
-import com.google.common.collect.ImmutableSet;
-import io.crate.action.sql.SQLRequest;
-import io.crate.action.sql.SQLResponse;
-import io.crate.action.sql.TransportSQLAction;
-import io.crate.analyze.Analyzer;
-import io.crate.executor.transport.kill.TransportKillJobsNodeAction;
+import com.carrotsearch.hppc.ObjectLongMap;
+import io.crate.action.sql.Option;
+import io.crate.action.sql.SQLOperations;
+import io.crate.data.RowN;
 import io.crate.metadata.TableIdent;
-import io.crate.operation.collect.StatsTables;
+import io.crate.metadata.settings.CrateSettings;
+import io.crate.protocols.postgres.FormatCodes;
 import io.crate.test.integration.CrateUnitTest;
 import io.crate.types.DataType;
-import io.crate.types.DataTypes;
-import org.elasticsearch.action.ActionListener;
-import org.elasticsearch.action.support.ActionFilter;
-import org.elasticsearch.action.support.ActionFilters;
 import org.elasticsearch.cluster.ClusterService;
-import org.elasticsearch.common.inject.Provider;
-import org.elasticsearch.common.settings.ImmutableSettings;
+import org.elasticsearch.cluster.node.DiscoveryNode;
+import org.elasticsearch.common.settings.Settings;
 import org.elasticsearch.common.unit.TimeValue;
+import org.elasticsearch.node.settings.NodeSettingsService;
 import org.elasticsearch.threadpool.ThreadPool;
-import org.elasticsearch.transport.TransportService;
-import org.hamcrest.Matchers;
 import org.junit.After;
 import org.junit.Before;
 import org.junit.Test;
+import org.mockito.Answers;
+import org.mockito.Mockito;
 
+import java.util.Collections;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.ExecutionException;
 import java.util.concurrent.TimeUnit;
-import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.TimeoutException;
 
 import static org.hamcrest.Matchers.is;
-import static org.mockito.Mockito.mock;
+import static org.hamcrest.Matchers.nullValue;
+import static org.hamcrest.core.IsNull.notNullValue;
+import static org.mockito.Matchers.anyString;
+import static org.mockito.Mockito.*;
 
-public class TableStatsServiceTest extends CrateUnitTest  {
+public class TableStatsServiceTest extends CrateUnitTest {
 
     private ThreadPool threadPool;
 
@@ -69,59 +71,129 @@ public class TableStatsServiceTest extends CrateUnitTest  {
     }
 
     @Test
-    public void testNumDocs() throws Exception {
-        final AtomicInteger numRequests = new AtomicInteger(0);
-        final TransportSQLAction transportSQLAction = new TransportSQLAction(
-                mock(ClusterService.class),
-                ImmutableSettings.EMPTY,
-                threadPool,
-                mock(Analyzer.class),
-                mock(Planner.class),
-                mock(Provider.class),
-                mock(TransportService.class),
-                mock(StatsTables.class),
-                new ActionFilters(ImmutableSet.<ActionFilter>of()),
-                mock(TransportKillJobsNodeAction.class)
-        ) {
-            @Override
-            protected void doExecute(SQLRequest request, ActionListener<SQLResponse> listener) {
-                Object[] row;
-                if (numRequests.get() == 0) {
-                    row = new Object[] { 2L, "foo", "bar"};
-                } else {
-                    row = new Object[] { 4L, "foo", "bar"};
-                }
-                listener.onResponse(new SQLResponse(
-                        new String[] {"cast(sum(num_docs) as long)", "schema_name", "table_name"},
-                        new Object[][] { row },
-                        new DataType[] {DataTypes.LONG, DataTypes.STRING, DataTypes.STRING},
-                        1L,
-                        1L,
-                        false
-                ));
-                numRequests.incrementAndGet();
-            }
-        };
+    public void testSettingsChanges() {
+        ClusterService clusterService = mock(ClusterService.class);
+
+        // Initially disabled
+        TableStatsService statsService = new TableStatsService(
+            Settings.builder().put(CrateSettings.STATS_SERVICE_REFRESH_INTERVAL.settingName(), 0).build(),
+            threadPool,
+            clusterService,
+            new TableStats(),
+            new NodeSettingsService(Settings.EMPTY),
+            mock(SQLOperations.class, Answers.RETURNS_MOCKS.get()));
+
+        assertThat(statsService.lastRefreshInterval,
+            is(TimeValue.timeValueMinutes(0)));
+        assertThat(statsService.refreshScheduledTask, is(nullValue()));
+
+        // Default setting
+        statsService = new TableStatsService(
+            Settings.EMPTY,
+            threadPool,
+            clusterService,
+            new TableStats(),
+            new NodeSettingsService(Settings.EMPTY),
+            mock(SQLOperations.class, Answers.RETURNS_MOCKS.get()));
+
+        assertThat(statsService.lastRefreshInterval,
+            is(CrateSettings.STATS_SERVICE_REFRESH_INTERVAL.defaultValue()));
+        assertThat(statsService.refreshScheduledTask, is(notNullValue()));
+
+        // Update setting
+        statsService.onRefreshSettings(Settings.builder()
+            .put(CrateSettings.STATS_SERVICE_REFRESH_INTERVAL.settingName(), "10m").build());
+
+        assertThat(statsService.lastRefreshInterval, is(TimeValue.timeValueMinutes(10)));
+        assertThat(statsService.refreshScheduledTask,
+            is(notNullValue()));
+
+        // Disable
+        statsService.onRefreshSettings(Settings.builder()
+            .put(CrateSettings.STATS_SERVICE_REFRESH_INTERVAL.settingName(), 0).build());
+
+        assertThat(statsService.lastRefreshInterval, is(TimeValue.timeValueMillis(0)));
+        assertThat(statsService.refreshScheduledTask,
+            is(nullValue()));
+
+        // Reset setting
+        statsService.onRefreshSettings(Settings.builder().build());
+
+        assertThat(statsService.lastRefreshInterval,
+            is(CrateSettings.STATS_SERVICE_REFRESH_INTERVAL.defaultValue()));
+        assertThat(statsService.refreshScheduledTask, is(notNullValue()));
+    }
+
+    @Test
+    public void testRowsToTableStatConversion() throws InterruptedException, ExecutionException, TimeoutException {
+        CompletableFuture<ObjectLongMap<TableIdent>> statsFuture = new CompletableFuture<>();
+        TableStatsService.TableStatsResultReceiver receiver =
+            new TableStatsService.TableStatsResultReceiver(statsFuture::complete);
+
+        receiver.setNextRow(new RowN(new Object[]{1L, "custom", "foo"}));
+        receiver.setNextRow(new RowN(new Object[]{2L, "doc", "foo"}));
+        receiver.setNextRow(new RowN(new Object[]{3L, "bar", "foo"}));
+        receiver.allFinished(false);
+
+        ObjectLongMap<TableIdent> stats = statsFuture.get(10, TimeUnit.SECONDS);
+        assertThat(stats.size(), is(3));
+        assertThat(stats.get(new TableIdent("bar", "foo")), is(3L));
+    }
+
+    @Test
+    public void testStatsQueriesCorrectly() throws Exception {
+        ClusterService clusterService = mock(ClusterService.class);
+        when(clusterService.localNode()).thenReturn(mock(DiscoveryNode.class));
+        final SQLOperations sqlOperations = mock(SQLOperations.class);
+        SQLOperations.Session session = mock(SQLOperations.Session.class);
+        when(sqlOperations.createSession(eq("sys"), eq(Option.NONE), eq(TableStatsService.DEFAULT_SOFT_LIMIT)))
+            .thenReturn(session);
 
         TableStatsService statsService = new TableStatsService(
-                ImmutableSettings.EMPTY, threadPool, TimeValue.timeValueMillis(100), new Provider<TransportSQLAction>() {
-            @Override
-            public TransportSQLAction get() {
-                return transportSQLAction;
-            }
-        });
+            Settings.EMPTY,
+            threadPool,
+            clusterService,
+            new TableStats(),
+            new NodeSettingsService(Settings.EMPTY),
+            sqlOperations
+        );
+        statsService.run();
 
-        assertThat(statsService.numDocs(new TableIdent("foo", "bar")), is(2L)); // first call triggers request
-        assertThat(statsService.numDocs(new TableIdent("foo", "bar")), is(2L)); // second call hits cache
-        int slept = 0;
-        while (numRequests.get() < 2 && slept < 1000) {
-            Thread.sleep(50);
-            slept += 50;
-        }
-        // periodic update happened
-        assertThat(numRequests.get(), Matchers.greaterThanOrEqualTo(2));
-        assertThat(statsService.numDocs(new TableIdent("foo", "bar")), is(4L));
+        verify(session, times(1)).parse(
+            eq(TableStatsService.TABLE_STATS),
+            eq(TableStatsService.STMT),
+            eq(Collections.<DataType>emptyList()));
+        verify(session, times(1)).bind(
+            eq(TableStatsService.TABLE_STATS),
+            eq(TableStatsService.TABLE_STATS),
+            eq(Collections.emptyList()),
+            isNull(FormatCodes.FormatCode[].class));
+        verify(session, times(1)).execute(
+            eq(TableStatsService.TABLE_STATS),
+            eq(0),
+            any(TableStatsService.TableStatsResultReceiver.class));
+        verify(session, times(1)).sync();
+    }
 
-        assertThat(statsService.numDocs(new TableIdent("unknown", "table")), is(-1L));
+    @Test
+    public void testNoUpdateIfLocalNodeNotAvailable() throws Exception {
+        final ClusterService clusterService = mock(ClusterService.class);
+        when(clusterService.localNode()).thenReturn(null);
+        SQLOperations sqlOperations = mock(SQLOperations.class);
+        SQLOperations.Session session = mock(SQLOperations.Session.class);
+        when(sqlOperations.createSession(anyString(), any(), anyInt())).thenReturn(session);
+
+
+        TableStatsService statsService = new TableStatsService(
+            Settings.EMPTY,
+            threadPool,
+            clusterService,
+            new TableStats(),
+            new NodeSettingsService(Settings.EMPTY),
+            sqlOperations
+        );
+
+        statsService.run();
+        Mockito.verify(session, times(0)).sync();
     }
 }

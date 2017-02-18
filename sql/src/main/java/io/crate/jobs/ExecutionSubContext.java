@@ -21,73 +21,40 @@
 
 package io.crate.jobs;
 
-import com.google.common.base.Predicate;
+import io.crate.concurrent.CompletionListenable;
 
 import javax.annotation.Nullable;
+import java.util.concurrent.CompletableFuture;
 
-public interface ExecutionSubContext {
+public interface ExecutionSubContext extends CompletionListenable {
 
-    public static final Predicate<ExecutionSubContext> IS_ACTIVE_PREDICATE = new Predicate<ExecutionSubContext>() {
-        @Override
-        public boolean apply(@Nullable ExecutionSubContext input) {
-            return input != null && input.subContextMode() == SubContextMode.ACTIVE;
-        }
-    };
-
-    /**
-     * enum for the current mode of a ExecutionSubContext.
-     * Might be static or changing dynamically
-     * (e.g. becoming active when a data was received and is currently consumed).
-     */
-    public static enum SubContextMode {
-        /**
-         * an active subcontext is active itself,
-         * keeping its execution context alive.
-         */
-        ACTIVE,
-        /**
-         * a passive subcontext usually idles waiting for data.
-         * it might need external keep alives in order to not be shut down.
-         */
-        PASSIVE
-    }
-
-    /**
-     * Set the {@link KeepAliveListener} on this subcontext. This is required to be set before
-     * any of the other methods are called.
-     */
-    void keepAliveListener(KeepAliveListener listener);
 
     /**
      * In the prepare phase implementations of this interface can allocate any resources.
-     *
-     * In this phase failures must not be propagated to downstream phases directly, but instead are required to be set on the
-     * {@link ExecutionSubContext#future()}.
+     * Exception are required to be thrown directly and must not be set on the downstream.
      */
-    void prepare();
+    void prepare() throws Exception;
 
     /**
      * In the start phase implementations of this interface are required to start any executors.
-     *
-     * In this phase failures must not be propagated to downstream phases directly, but instead are required to be
-     * set on the {@link ExecutionSubContext#future()}.
-     *
+     * <p>
+     * In this phase failures must not be propagated to downstream phases directly.
+     * <p>
      * However, it is ok for the started executors to use their downstreams to propagate failures.
      */
     void start();
-
-    void close();
 
     void kill(@Nullable Throwable throwable);
 
     String name();
 
-    SubExecutionContextFuture future();
-
     int id();
 
     /**
-     * get the current state in respect to keep-alive handling
+     * Hook to cleanup the resources of this context. This might be called at any time in the lifecycle of the context.
      */
-    SubContextMode subContextMode();
+    void cleanup();
+
+    @Override
+    CompletableFuture<CompletionState> completionFuture();
 }

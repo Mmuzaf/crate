@@ -25,12 +25,14 @@ import com.google.common.collect.ImmutableList;
 import io.crate.analyze.relations.AnalyzedRelation;
 import io.crate.analyze.relations.AnalyzedRelationVisitor;
 import io.crate.analyze.symbol.Field;
-import io.crate.analyze.symbol.Reference;
 import io.crate.analyze.symbol.Symbol;
 import io.crate.exceptions.ColumnUnknownException;
 import io.crate.metadata.Path;
+import io.crate.metadata.Reference;
+import io.crate.metadata.table.Operation;
+import io.crate.sql.tree.QualifiedName;
 
-import javax.annotation.Nullable;
+import javax.annotation.Nonnull;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Locale;
@@ -79,7 +81,7 @@ public class UpdateAnalyzedStatement implements AnalyzedRelation, AnalyzedStatem
 
         public void addAssignment(Reference reference, Symbol value) {
             if (assignments.containsKey(reference)) {
-                throw new IllegalArgumentException(String.format(Locale.ENGLISH, "reference repeated %s", reference.info().ident().columnIdent().sqlFqn()));
+                throw new IllegalArgumentException(String.format(Locale.ENGLISH, "reference repeated %s", reference.ident().columnIdent().sqlFqn()));
             }
             assignments.put(reference, value);
         }
@@ -90,19 +92,28 @@ public class UpdateAnalyzedStatement implements AnalyzedRelation, AnalyzedStatem
         return visitor.visitUpdateAnalyzedStatement(this, context);
     }
 
-    @Nullable
     @Override
-    public Field getField(Path path) {
+    public Field getField(Path path, Operation operation) throws UnsupportedOperationException, ColumnUnknownException {
         throw new UnsupportedOperationException("getField on UpdateAnalyzedStatement is not implemented");
-    }
-
-    @Override
-    public Field getWritableField(Path path) throws UnsupportedOperationException, ColumnUnknownException {
-        throw new UnsupportedOperationException("UpdateAnalyzedStatement is not writable");
     }
 
     @Override
     public List<Field> fields() {
         return ImmutableList.of();
+    }
+
+    @Override
+    public boolean isWriteOperation() {
+        return true;
+    }
+
+    @Override
+    public QualifiedName getQualifiedName() {
+        throw new UnsupportedOperationException("method not supported");
+    }
+
+    @Override
+    public void setQualifiedName(@Nonnull QualifiedName qualifiedName) {
+        throw new UnsupportedOperationException("method not supported");
     }
 }

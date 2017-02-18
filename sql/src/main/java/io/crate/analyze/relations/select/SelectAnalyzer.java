@@ -21,8 +21,6 @@
 
 package io.crate.analyze.relations.select;
 
-import com.google.common.collect.HashMultimap;
-import com.google.common.collect.Multimap;
 import io.crate.analyze.OutputNameFormatter;
 import io.crate.analyze.expressions.ExpressionAnalysisContext;
 import io.crate.analyze.expressions.ExpressionAnalyzer;
@@ -32,10 +30,8 @@ import io.crate.analyze.symbol.Field;
 import io.crate.analyze.symbol.Symbol;
 import io.crate.analyze.validator.SelectSymbolValidator;
 import io.crate.metadata.OutputName;
-import io.crate.metadata.Path;
 import io.crate.sql.tree.*;
 
-import java.util.ArrayList;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
@@ -45,54 +41,13 @@ public class SelectAnalyzer {
     private static final InnerVisitor INSTANCE = new InnerVisitor();
 
     public static SelectAnalysis analyzeSelect(Select select,
-                                               RelationAnalysisContext context){
-        SelectAnalysis selectAnalysis = new SelectAnalysis(context);
+                                               RelationAnalysisContext context,
+                                               ExpressionAnalyzer expressionAnalyzer,
+                                               ExpressionAnalysisContext expressionAnalysisContext) {
+        SelectAnalysis selectAnalysis = new SelectAnalysis(context, expressionAnalyzer, expressionAnalysisContext);
         INSTANCE.process(select, selectAnalysis);
-        SelectSymbolValidator.validate(selectAnalysis.outputSymbols);
+        SelectSymbolValidator.validate(selectAnalysis.outputSymbols());
         return selectAnalysis;
-    }
-
-    public static class SelectAnalysis {
-
-        private Map<QualifiedName, AnalyzedRelation> sources;
-        private ExpressionAnalyzer expressionAnalyzer;
-        private ExpressionAnalysisContext expressionAnalysisContext;
-        private List<Path> outputNames = new ArrayList<>();
-        private List<Symbol> outputSymbols = new ArrayList<>();
-        private Multimap<String, Symbol> outputMultiMap = HashMultimap.create();
-
-        private SelectAnalysis(RelationAnalysisContext context) {
-            this.sources = context.sources();
-            this.expressionAnalyzer = context.expressionAnalyzer();
-            this.expressionAnalysisContext = context.expressionAnalysisContext();
-        }
-
-        public List<Path> outputNames() {
-            return outputNames;
-        }
-
-        public List<Symbol> outputSymbols() {
-            return outputSymbols;
-        }
-
-        Symbol toSymbol(Expression expression) {
-            return expressionAnalyzer.convert(expression, expressionAnalysisContext);
-        }
-
-        /**
-         * multiMap containing outputNames() as keys and outputSymbols() as values.
-         * Can be used to resolve expressions in ORDER BY or GROUP BY where it is important to know
-         * if a outputName is unique
-         */
-        public Multimap<String, Symbol> outputMultiMap() {
-            return outputMultiMap;
-        }
-
-        void add(Path path, Symbol symbol) {
-            outputNames.add(path);
-            outputSymbols.add(symbol);
-            outputMultiMap.put(path.outputName(), symbol);
-        }
     }
 
     private static class InnerVisitor extends DefaultTraversalVisitor<Void, SelectAnalysis> {
@@ -114,7 +69,7 @@ public class SelectAnalyzer {
                 // prefix is either: <tableOrAlias>.* or <schema>.<table>
 
                 QualifiedName prefix = node.getPrefix().get();
-                AnalyzedRelation relation = context.sources.get(prefix);
+                AnalyzedRelation relation = context.sources().get(prefix);
                 if (relation != null) {
                     addAllFieldsFromRelation(context, relation);
                     return null;
@@ -125,7 +80,7 @@ public class SelectAnalyzer {
                     // e.g.  select mytable.* from foo.mytable; prefix is mytable, source is [foo, mytable]
                     // if prefix matches second part of qualified name this is okay
                     String prefixName = prefix.getParts().get(0);
-                    for (Map.Entry<QualifiedName, AnalyzedRelation> entry : context.sources.entrySet()) {
+                    for (Map.Entry<QualifiedName, AnalyzedRelation> entry : context.sources().entrySet()) {
                         List<String> parts = entry.getKey().getParts();
                         // schema.table
                         if (parts.size() == 2 && prefixName.equals(parts.get(1))) {
@@ -144,7 +99,7 @@ public class SelectAnalyzer {
                         throw new IllegalArgumentException(String.format(Locale.ENGLISH, "referenced relation \"%s\" is ambiguous", prefix));
                 }
             } else {
-                for (AnalyzedRelation relation : context.sources.values()) {
+                for (AnalyzedRelation relation : context.sources().values()) {
                     addAllFieldsFromRelation(context, relation);
                 }
             }

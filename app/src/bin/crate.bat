@@ -45,9 +45,6 @@ set JAVA_OPTS=%JAVA_OPTS% -XX:+UseConcMarkSweepGC
 set JAVA_OPTS=%JAVA_OPTS% -XX:CMSInitiatingOccupancyFraction=75
 set JAVA_OPTS=%JAVA_OPTS% -XX:+UseCMSInitiatingOccupancyOnly
 
-REM When running under Java 7
-REM JAVA_OPTS=%JAVA_OPTS% -XX:+UseCondCardMark
-
 REM GC logging options -- uncomment to enable
 REM JAVA_OPTS=%JAVA_OPTS% -XX:+PrintGCDetails
 REM JAVA_OPTS=%JAVA_OPTS% -XX:+PrintGCTimeStamps
@@ -56,27 +53,40 @@ REM JAVA_OPTS=%JAVA_OPTS% -XX:+PrintTenuringDistribution
 REM JAVA_OPTS=%JAVA_OPTS% -XX:+PrintGCApplicationStoppedTime
 REM JAVA_OPTS=%JAVA_OPTS% -Xloggc:/var/log/crate/gc.log
 
-REM Causes the JVM to dump its heap on OutOfMemory.
-set JAVA_OPTS=%JAVA_OPTS% -XX:+HeapDumpOnOutOfMemoryError
-REM The path to the heap dump location, note directory must exists and have enough
-REM space for a full heap dump.
-REM JAVA_OPTS=%JAVA_OPTS% -XX:HeapDumpPath=$CRATE_HOME/logs/heapdump.hprof
-
 REM Ensure UTF-8 encoding by default (e.g. filenames)
 set JAVA_OPTS=%JAVA_OPTS% -Dfile.encoding=UTF-8
 
 if "%CRATE_CLASSPATH%" == "" (
-    set CRATE_CLASSPATH=%CRATE_HOME%/lib/crate-app-@version@.jar;%CRATE_HOME%/lib/*;%CRATE_HOME%/lib/sigar/*
+    set CRATE_CLASSPATH=%CRATE_HOME%/lib/crate-app-@version@.jar;%CRATE_HOME%/lib/*;%CRATE_HOME%/plugins/sigar/lib/*
 ) else (
     ECHO Error: Don't modify the classpath with CRATE_CLASSPATH. 1>&2
     ECHO Add plugins and their dependencies into the plugins/ folder instead. 1>&2
     EXIT /B 1
 )
-set CRATE_PARAMS=-Dcrate -Des.path.home="%CRATE_HOME%" -Des.config="%CRATE_HOME%/config/crate.yml"
+set CRATE_PARAMS=-Dcrate -Des.path.home="%CRATE_HOME%"
 
-"%JAVA_HOME%\bin\java" %JAVA_OPTS% %CRATE_JAVA_OPTS% %CRATE_PARAMS% %* -cp "%CRATE_CLASSPATH%" "io.crate.bootstrap.CrateF"
+setlocal enabledelayedexpansion
+set params='%*'
+
+for /F "usebackq tokens=* delims= " %%A in (!params!) do (
+    set param=%%A
+
+    if "!param:~0,5!" equ "-Des." (
+        echo "Setting Crate specific settings with the -D option and the es prefix has been deprecated."
+        echo "Please use the -C option to configure Crate."
+    ) else if "!param:~0,2!" equ "-C" (
+        set param=!param:-C=-Des.!
+    )
+
+    if "x!newparams!" neq "x" (
+        set newparams=!newparams! !param!
+    ) else (
+        set newparams=!param!
+    )
+)
+
+"%JAVA_HOME%\bin\java" %JAVA_OPTS% %CRATE_JAVA_OPTS% %CRATE_PARAMS% !newparams! -cp "%CRATE_CLASSPATH%" "io.crate.bootstrap.CrateDB"
 goto finally
-
 
 :err
 echo JAVA_HOME environment variable must be set!

@@ -24,6 +24,7 @@ package io.crate.metadata.sys;
 import com.google.common.collect.ImmutableMap;
 import io.crate.metadata.table.SchemaInfo;
 import io.crate.metadata.table.TableInfo;
+import org.elasticsearch.cluster.ClusterChangedEvent;
 import org.elasticsearch.cluster.ClusterService;
 import org.elasticsearch.common.inject.Inject;
 import org.elasticsearch.common.inject.Singleton;
@@ -43,17 +44,19 @@ public class SysSchemaInfo implements SchemaInfo {
         SysNodesTableInfo sysNodesTableInfo = new SysNodesTableInfo(clusterService);
 
         tableInfos = ImmutableMap.<String, TableInfo>builder()
-                .put(SysClusterTableInfo.IDENT.name(), new SysClusterTableInfo(clusterService))
-                .put(SysNodesTableInfo.IDENT.name(), sysNodesTableInfo)
-                .put(SysShardsTableInfo.IDENT.name(), new SysShardsTableInfo(clusterService, sysNodesTableInfo))
-                .put(SysJobsTableInfo.IDENT.name(), new SysJobsTableInfo(clusterService))
-                .put(SysJobsLogTableInfo.IDENT.name(), new SysJobsLogTableInfo(clusterService))
-                .put(SysOperationsTableInfo.IDENT.name(), new SysOperationsTableInfo(clusterService, sysNodesTableInfo))
-                .put(SysOperationsLogTableInfo.IDENT.name(), new SysOperationsLogTableInfo(clusterService))
-                .put(SysChecksTableInfo.IDENT.name(), new SysChecksTableInfo(clusterService))
-                .put(SysRepositoriesTableInfo.IDENT.name(), new SysRepositoriesTableInfo(clusterService))
-                .put(SysSnapshotsTableInfo.IDENT.name(), new SysSnapshotsTableInfo(clusterService))
-                .build();
+            .put(SysClusterTableInfo.IDENT.name(), new SysClusterTableInfo(clusterService))
+            .put(SysNodesTableInfo.IDENT.name(), sysNodesTableInfo)
+            .put(SysShardsTableInfo.IDENT.name(), new SysShardsTableInfo(clusterService, sysNodesTableInfo))
+            .put(SysJobsTableInfo.IDENT.name(), new SysJobsTableInfo(clusterService))
+            .put(SysJobsLogTableInfo.IDENT.name(), new SysJobsLogTableInfo(clusterService))
+            .put(SysOperationsTableInfo.IDENT.name(), new SysOperationsTableInfo(clusterService, sysNodesTableInfo))
+            .put(SysOperationsLogTableInfo.IDENT.name(), new SysOperationsLogTableInfo(clusterService))
+            .put(SysChecksTableInfo.IDENT.name(), new SysChecksTableInfo(clusterService))
+            .put(SysNodeChecksTableInfo.IDENT.name(), new SysNodeChecksTableInfo(clusterService))
+            .put(SysRepositoriesTableInfo.IDENT.name(), new SysRepositoriesTableInfo(clusterService))
+            .put(SysSnapshotsTableInfo.IDENT.name(), new SysSnapshotsTableInfo(clusterService))
+            .put(SysSummitsTableInfo.IDENT.name(), new SysSummitsTableInfo(clusterService))
+            .build();
     }
 
     @Override
@@ -64,11 +67,6 @@ public class SysSchemaInfo implements SchemaInfo {
     @Override
     public String name() {
         return NAME;
-    }
-
-    @Override
-    public boolean systemSchema() {
-        return true;
     }
 
     @Override
@@ -84,6 +82,11 @@ public class SysSchemaInfo implements SchemaInfo {
 
     @Override
     public void close() throws Exception {
+
+    }
+
+    @Override
+    public void update(ClusterChangedEvent event) {
 
     }
 }

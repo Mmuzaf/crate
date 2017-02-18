@@ -31,57 +31,50 @@ import io.crate.sql.Identifiers;
 import io.crate.sql.tree.Table;
 import org.elasticsearch.common.io.stream.StreamInput;
 import org.elasticsearch.common.io.stream.StreamOutput;
-import org.elasticsearch.common.io.stream.Streamable;
 
 import javax.annotation.Nullable;
 import java.io.IOException;
 import java.util.List;
-import java.util.Locale;
 import java.util.Set;
 
-public class TableIdent implements Streamable {
+public class TableIdent {
 
     private static final Set<String> INVALID_TABLE_NAME_CHARACTERS = ImmutableSet.of(".");
 
-    private String schema;
-    private String name;
+    private final String schema;
+    private final String name;
 
     public static TableIdent of(Table tableNode, @Nullable String fallbackSchema) {
         List<String> parts = tableNode.getName().getParts();
         Preconditions.checkArgument(parts.size() < 3,
-                "Table with more then 2 QualifiedName parts is not supported. only <schema>.<tableName> works.");
+            "Table with more then 2 QualifiedName parts is not supported. only <schema>.<tableName> works.");
         if (parts.size() == 2) {
             return new TableIdent(parts.get(0), parts.get(1));
         }
         return new TableIdent(fallbackSchema, parts.get(0));
     }
 
-    public static TableIdent fromIndexName(String indexName){
+    public static TableIdent fromIndexName(String indexName) {
         if (PartitionName.isPartition(indexName)) {
             PartitionName pn = PartitionName.fromIndexOrTemplate(indexName);
             return pn.tableIdent();
         }
         int dotPos = indexName.indexOf('.');
-        if (dotPos == -1){
+        if (dotPos == -1) {
             return new TableIdent(null, indexName);
         }
-        return new TableIdent(indexName.substring(0, dotPos), indexName.substring(dotPos+1));
+        return new TableIdent(indexName.substring(0, dotPos), indexName.substring(dotPos + 1));
     }
 
-    public static TableIdent fromStream(StreamInput in) throws IOException {
-        TableIdent tableIdent = new TableIdent();
-        tableIdent.readFrom(in);
-        return tableIdent;
+    public TableIdent(StreamInput in) throws IOException {
+        schema = in.readString();
+        name = in.readString();
     }
 
     public TableIdent(@Nullable String schema, String name) {
         assert name != null : "table name must not be null";
-        this.schema = MoreObjects.firstNonNull(schema, Schemas.DEFAULT_SCHEMA_NAME) ;
+        this.schema = MoreObjects.firstNonNull(schema, Schemas.DEFAULT_SCHEMA_NAME);
         this.name = name;
-    }
-
-    private TableIdent() {
-
     }
 
     public String schema() {
@@ -93,11 +86,11 @@ public class TableIdent implements Streamable {
     }
 
     public String fqn() {
-        return String.format(Locale.ENGLISH, "%s.%s", schema, name);
+        return schema + "." + name;
     }
 
     public String sqlFqn() {
-        return String.format(Locale.ENGLISH, "%s.%s", Identifiers.quoteIfNeeded(schema), Identifiers.quoteIfNeeded(name));
+        return Identifiers.quoteIfNeeded(schema) + "." + Identifiers.quoteIfNeeded(name);
     }
 
     public String indexName() {
@@ -117,10 +110,13 @@ public class TableIdent implements Streamable {
     }
 
     private static boolean isValidTableOrSchemaName(String name) {
-        for (String illegalCharacter: INVALID_TABLE_NAME_CHARACTERS) {
+        for (String illegalCharacter : INVALID_TABLE_NAME_CHARACTERS) {
             if (name.contains(illegalCharacter) || name.length() == 0) {
                 return false;
             }
+        }
+        if (name.startsWith("_")) {
+            return false;
         }
         return true;
     }
@@ -135,7 +131,7 @@ public class TableIdent implements Streamable {
         }
         TableIdent o = (TableIdent) obj;
         return Objects.equal(schema, o.schema) &&
-                Objects.equal(name, o.name);
+               Objects.equal(name, o.name);
     }
 
     @Override
@@ -147,16 +143,9 @@ public class TableIdent implements Streamable {
 
     @Override
     public String toString() {
-        return String.format(Locale.ENGLISH, "%s.%s", schema, name);
+        return fqn();
     }
 
-    @Override
-    public void readFrom(StreamInput in) throws IOException {
-        schema = in.readString();
-        name = in.readString();
-    }
-
-    @Override
     public void writeTo(StreamOutput out) throws IOException {
         out.writeString(schema);
         out.writeString(name);

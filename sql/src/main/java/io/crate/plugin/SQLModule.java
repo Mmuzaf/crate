@@ -22,21 +22,25 @@
 package io.crate.plugin;
 
 import io.crate.action.sql.DDLStatementDispatcher;
+import io.crate.action.sql.SQLOperations;
 import io.crate.metadata.FulltextAnalyzerResolver;
+import io.crate.planner.Planner;
+import io.crate.planner.TableStats;
 import io.crate.planner.TableStatsService;
-import io.crate.service.SQLService;
+import io.crate.protocols.postgres.PostgresNetty;
 import org.elasticsearch.common.inject.AbstractModule;
-import org.elasticsearch.common.unit.TimeValue;
 
 
 public class SQLModule extends AbstractModule {
 
     @Override
     protected void configure() {
-        bind(SQLService.class).asEagerSingleton();
         bind(DDLStatementDispatcher.class).asEagerSingleton();
         bind(FulltextAnalyzerResolver.class).asEagerSingleton();
-
-        bind(TimeValue.class).annotatedWith(TableStatsService.StatsUpdateInterval.class).toInstance(TimeValue.timeValueSeconds(60));
+        bind(PostgresNetty.class).asEagerSingleton();
+        bind(SQLOperations.class).asEagerSingleton();
+        bind(Planner.class).asEagerSingleton();
+        bind(TableStats.class).asEagerSingleton();
+        bind(TableStatsService.class).asEagerSingleton();
     }
 }

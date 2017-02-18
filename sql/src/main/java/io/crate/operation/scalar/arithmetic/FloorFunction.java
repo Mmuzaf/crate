@@ -22,9 +22,6 @@
 package io.crate.operation.scalar.arithmetic;
 
 import com.google.common.collect.ImmutableList;
-import io.crate.analyze.symbol.Function;
-import io.crate.analyze.symbol.Literal;
-import io.crate.analyze.symbol.Symbol;
 import io.crate.metadata.FunctionIdent;
 import io.crate.metadata.FunctionInfo;
 import io.crate.metadata.Scalar;
@@ -47,10 +44,11 @@ public abstract class FloorFunction extends Scalar<Number, Number> {
         module.register(new NoopFloorFunction(DataTypes.UNDEFINED));
     }
 
-    static class DoubleFloorFunction extends FloorFunction {
+    private static class DoubleFloorFunction extends FloorFunction {
 
         private static final FunctionInfo INFO = new FunctionInfo(
-                new FunctionIdent(NAME, ImmutableList.<DataType>of(DataTypes.DOUBLE)), DataTypes.LONG, FunctionInfo.Type.SCALAR, true, true);
+            new FunctionIdent(NAME, ImmutableList.of(DataTypes.DOUBLE)), DataTypes.LONG, FunctionInfo.Type.SCALAR,
+            FunctionInfo.DETERMINISTIC_AND_COMPARISON_REPLACEMENT);
 
         @Override
         public Long evaluate(Input[] args) {
@@ -67,10 +65,11 @@ public abstract class FloorFunction extends Scalar<Number, Number> {
         }
     }
 
-    static class FloatFloorFunction extends FloorFunction {
+    private static class FloatFloorFunction extends FloorFunction {
 
         private static final FunctionInfo INFO = new FunctionInfo(
-                new FunctionIdent(NAME, ImmutableList.<DataType>of(DataTypes.FLOAT)), DataTypes.INTEGER, FunctionInfo.Type.SCALAR, true, true);
+            new FunctionIdent(NAME, ImmutableList.of(DataTypes.FLOAT)), DataTypes.INTEGER, FunctionInfo.Type.SCALAR,
+            FunctionInfo.DETERMINISTIC_AND_COMPARISON_REPLACEMENT);
 
         @Override
         public Integer evaluate(Input[] args) {
@@ -87,12 +86,13 @@ public abstract class FloorFunction extends Scalar<Number, Number> {
         }
     }
 
-    static class NoopFloorFunction extends FloorFunction {
+    private static class NoopFloorFunction extends FloorFunction {
 
         private final FunctionInfo info;
 
         NoopFloorFunction(DataType type) {
-            info = new FunctionInfo(new FunctionIdent(NAME, ImmutableList.of(type)), type, FunctionInfo.Type.SCALAR, true, true);
+            info = new FunctionInfo(new FunctionIdent(NAME, ImmutableList.of(type)), type, FunctionInfo.Type.SCALAR,
+                FunctionInfo.DETERMINISTIC_AND_COMPARISON_REPLACEMENT);
         }
 
         @Override

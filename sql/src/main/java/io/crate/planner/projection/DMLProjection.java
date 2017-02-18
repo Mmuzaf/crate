@@ -25,6 +25,7 @@ package io.crate.planner.projection;
 import com.google.common.base.Objects;
 import com.google.common.collect.ImmutableList;
 import io.crate.analyze.symbol.Symbol;
+import io.crate.analyze.symbol.Symbols;
 import io.crate.analyze.symbol.Value;
 import io.crate.metadata.RowGranularity;
 import io.crate.types.DataTypes;
@@ -36,17 +37,18 @@ import java.util.List;
 
 public abstract class DMLProjection extends Projection {
 
-    protected final static List<Symbol> OUTPUTS = ImmutableList.<Symbol>of(
-            new Value(DataTypes.LONG)  // number of rows updated
+    private final static List<Symbol> OUTPUTS = ImmutableList.<Symbol>of(
+        new Value(DataTypes.LONG)  // number of rows updated
     );
 
-    protected Symbol uidSymbol;
+    Symbol uidSymbol;
 
-    public DMLProjection(Symbol uidSymbol) {
+    DMLProjection(Symbol uidSymbol) {
         this.uidSymbol = uidSymbol;
     }
 
-    public DMLProjection() {
+    DMLProjection(StreamInput in) throws IOException {
+        uidSymbol = Symbols.fromStream(in);
     }
 
     @Override
@@ -72,13 +74,8 @@ public abstract class DMLProjection extends Projection {
     }
 
     @Override
-    public void readFrom(StreamInput in) throws IOException {
-        uidSymbol = Symbol.fromStream(in);
-    }
-
-    @Override
     public void writeTo(StreamOutput out) throws IOException {
-        Symbol.toStream(uidSymbol, out);
+        Symbols.toStream(uidSymbol, out);
     }
 
     @Override

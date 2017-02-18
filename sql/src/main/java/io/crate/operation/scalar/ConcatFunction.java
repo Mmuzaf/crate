@@ -45,7 +45,7 @@ public abstract class ConcatFunction extends Scalar<BytesRef, BytesRef> {
         module.register(NAME, new Resolver());
     }
 
-    protected ConcatFunction(FunctionInfo functionInfo) {
+    ConcatFunction(FunctionInfo functionInfo) {
         this.functionInfo = functionInfo;
     }
 
@@ -55,7 +55,7 @@ public abstract class ConcatFunction extends Scalar<BytesRef, BytesRef> {
     }
 
     @Override
-    public Symbol normalizeSymbol(Function function) {
+    public Symbol normalizeSymbol(Function function, TransactionContext transactionContext) {
         if (anyNonLiterals(function.arguments())) {
             return function;
         }
@@ -64,12 +64,12 @@ public abstract class ConcatFunction extends Scalar<BytesRef, BytesRef> {
             inputs[i] = ((Input) function.arguments().get(i));
         }
         //noinspection unchecked
-        return Literal.newLiteral(functionInfo.returnType(), evaluate(inputs));
+        return Literal.of(functionInfo.returnType(), evaluate(inputs));
     }
 
     private static class StringConcatFunction extends ConcatFunction {
 
-        protected StringConcatFunction(FunctionInfo functionInfo) {
+        StringConcatFunction(FunctionInfo functionInfo) {
             super(functionInfo);
         }
 
@@ -95,7 +95,7 @@ public abstract class ConcatFunction extends Scalar<BytesRef, BytesRef> {
 
     private static class GenericConcatFunction extends ConcatFunction {
 
-        protected GenericConcatFunction(FunctionInfo functionInfo) {
+        GenericConcatFunction(FunctionInfo functionInfo) {
             super(functionInfo);
         }
 
@@ -123,27 +123,32 @@ public abstract class ConcatFunction extends Scalar<BytesRef, BytesRef> {
         }
     }
 
-    private static class Resolver implements DynamicFunctionResolver {
+    private static class Resolver extends BaseFunctionResolver {
+
+        protected Resolver() {
+            super(Signature.withLenientVarArgs(Signature.ArgMatcher.ANY, Signature.ArgMatcher.ANY));
+        }
 
         @Override
-        public FunctionImplementation<Function> getForTypes(List<DataType> dataTypes) throws IllegalArgumentException {
-            if (dataTypes.size() < 2) {
-                throw new IllegalArgumentException("concat function requires at least 2 arguments");
-            } else if (dataTypes.size() == 2 && dataTypes.get(0).equals(DataTypes.STRING) && dataTypes.get(1).equals(DataTypes.STRING)) {
+        public FunctionImplementation getForTypes(List<DataType> dataTypes) throws IllegalArgumentException {
+            if (dataTypes.size() == 2 && dataTypes.get(0).equals(DataTypes.STRING) &&
+                       dataTypes.get(1).equals(DataTypes.STRING)) {
                 return new StringConcatFunction(new FunctionInfo(new FunctionIdent(NAME, dataTypes), DataTypes.STRING));
-            } else if(dataTypes.size() == 2 && dataTypes.get(0) instanceof ArrayType && dataTypes.get(1) instanceof ArrayType){
+            } else if (dataTypes.size() == 2 && dataTypes.get(0) instanceof ArrayType &&
+                       dataTypes.get(1) instanceof ArrayType) {
 
                 DataType innerType0 = ((ArrayType) dataTypes.get(0)).innerType();
                 DataType innerType1 = ((ArrayType) dataTypes.get(1)).innerType();
 
-                Preconditions.checkArgument(!innerType0.equals(DataTypes.UNDEFINED) || !innerType1.equals(DataTypes.UNDEFINED),
-                        "When concatenating arrays, one of the two arguments can be of undefined inner type, but not both");
+                Preconditions.checkArgument(
+                    !innerType0.equals(DataTypes.UNDEFINED) || !innerType1.equals(DataTypes.UNDEFINED),
+                    "When concatenating arrays, one of the two arguments can be of undefined inner type, but not both");
 
-                if(!innerType0.equals(DataTypes.UNDEFINED)){
+                if (!innerType0.equals(DataTypes.UNDEFINED)) {
                     Preconditions.checkArgument(innerType1.isConvertableTo(innerType0),
-                            String.format(Locale.ENGLISH,
-                                    "Second argument's inner type (%s) of the array_cat function cannot be converted to the first argument's inner type (%s)",
-                                    innerType1, innerType0));
+                        String.format(Locale.ENGLISH,
+                            "Second argument's inner type (%s) of the array_cat function cannot be converted to the first argument's inner type (%s)",
+                            innerType1, innerType0));
                 }
 
                 return new ArrayCatFunction(ArrayCatFunction.createInfo(dataTypes));
@@ -151,7 +156,7 @@ public abstract class ConcatFunction extends Scalar<BytesRef, BytesRef> {
                 for (int i = 0; i < dataTypes.size(); i++) {
                     if (!dataTypes.get(i).isConvertableTo(DataTypes.STRING)) {
                         throw new IllegalArgumentException(String.format(Locale.ENGLISH,
-                                "Argument %d of the concat function can't be converted to string", i));
+                            "Argument %d of the concat function can't be converted to string", i + 1));
                     }
                 }
                 return new GenericConcatFunction(new FunctionInfo(new FunctionIdent(NAME, dataTypes), DataTypes.STRING));

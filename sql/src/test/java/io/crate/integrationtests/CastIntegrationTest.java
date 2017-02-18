@@ -22,20 +22,17 @@
 
 package io.crate.integrationtests;
 
+import io.crate.testing.UseJdbc;
 import org.hamcrest.Matcher;
-import org.junit.Rule;
 import org.junit.Test;
-import org.junit.rules.ExpectedException;
 
 import static org.hamcrest.Matchers.is;
 import static org.hamcrest.Matchers.nullValue;
 import static org.hamcrest.collection.IsArrayContainingInOrder.arrayContaining;
 
 
+@UseJdbc
 public class CastIntegrationTest extends SQLTransportIntegrationTest {
-
-    @Rule
-    public ExpectedException expectedException = ExpectedException.none();
 
     @Test
     public void testTryCastValidLiteralCasting() {
@@ -80,6 +77,6 @@ public class CastIntegrationTest extends SQLTransportIntegrationTest {
     public void testInvalidCastExpression() throws Exception {
         expectedException.expect(Exception.class);
         expectedException.expectMessage("No cast function found for return type object");
-        execute("select try_cast(name as object) from sys.cluster");
+        execute("select try_cast(name as array(object)) from sys.cluster");
     }
 }

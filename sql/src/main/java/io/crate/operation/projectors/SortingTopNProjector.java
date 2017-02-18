@@ -22,16 +22,14 @@
 package io.crate.operation.projectors;
 
 import com.google.common.base.Preconditions;
-import com.google.common.collect.Ordering;
-import com.google.common.collect.Sets;
-import io.crate.Constants;
-import io.crate.core.collections.ArrayBucket;
-import io.crate.core.collections.Row;
+import io.crate.data.ArrayBucket;
+import io.crate.data.Row;
 import io.crate.operation.Input;
 import io.crate.operation.collect.CollectExpression;
 import io.crate.operation.projectors.sorting.RowPriorityQueue;
 
 import java.util.Collection;
+import java.util.Comparator;
 import java.util.Set;
 
 public class SortingTopNProjector extends AbstractProjector {
@@ -44,6 +42,7 @@ public class SortingTopNProjector extends AbstractProjector {
     private final Iterable<? extends CollectExpression<Row, ?>> collectExpressions;
     private Object[] spare;
     private Set<Requirement> requirements;
+    private volatile IterableRowEmitter rowEmitter = null;
 
     /**
      * @param inputs             contains output {@link io.crate.operation.Input}s and orderBy {@link io.crate.operation.Input}s
@@ -56,26 +55,23 @@ public class SortingTopNProjector extends AbstractProjector {
     public SortingTopNProjector(Collection<? extends Input<?>> inputs,
                                 Iterable<? extends CollectExpression<Row, ?>> collectExpressions,
                                 int numOutputs,
-                                Ordering<Object[]> ordering,
+                                Comparator<Object[]> ordering,
                                 int limit,
                                 int offset) {
-        Preconditions.checkArgument(limit >= TopN.NO_LIMIT, "invalid limit");
-        Preconditions.checkArgument(offset >= 0, "invalid offset");
+        Preconditions.checkArgument(limit > 0, "invalid limit %s, this projector only supports positive limits", limit);
+        Preconditions.checkArgument(offset >= 0, "invalid offset %s", offset);
 
         this.inputs = inputs;
         this.numOutputs = numOutputs;
         this.collectExpressions = collectExpressions;
         this.offset = offset;
 
-        if (limit == TopN.NO_LIMIT) {
-            limit = Constants.DEFAULT_SELECT_LIMIT;
-        }
         int maxSize = this.offset + limit;
         pq = new RowPriorityQueue<>(maxSize, ordering);
     }
 
     @Override
-    public boolean setNextRow(Row row) {
+    public Result setNextRow(Row row) {
         for (CollectExpression<Row, ?> collectExpression : collectExpressions) {
             collectExpression.setNextRow(row);
         }
@@ -87,17 +83,13 @@ public class SortingTopNProjector extends AbstractProjector {
             spare[i++] = input.value();
         }
         spare = pq.insertWithOverflow(spare);
-        return true;
+        return Result.CONTINUE;
     }
 
     @Override
-    public void finish() {
+    public void finish(RepeatHandle repeatHandle) {
         final int resultSize = Math.max(pq.size() - offset, 0);
-        if (resultSize == 0) {
-            downstream.finish();
-            return;
-        }
-        IterableRowEmitter rowEmitter = createRowEmitter(resultSize);
+        rowEmitter = createRowEmitter(resultSize);
         rowEmitter.run();
     }
 
@@ -106,7 +98,17 @@ public class SortingTopNProjector extends AbstractProjector {
         for (int i = resultSize - 1; i >= 0; i--) {
             rows[i] = pq.pop();
         }
-        return new IterableRowEmitter(downstream, executionState, new ArrayBucket(rows, numOutputs));
+        return new IterableRowEmitter(downstream, new ArrayBucket(rows, numOutputs));
+    }
+
+    @Override
+    public void kill(Throwable throwable) {
+        IterableRowEmitter emitter = rowEmitter;
+        if (emitter == null) {
+            downstream.kill(throwable);
+        } else {
+            emitter.kill(throwable);
+        }
     }
 
     @Override
@@ -115,17 +117,9 @@ public class SortingTopNProjector extends AbstractProjector {
     }
 
     @Override
-    public void repeat() {
-        final int resultSize = Math.max(pq.size() - offset, 0);
-        IterableRowEmitter rowEmitter = createRowEmitter(resultSize);
-        rowEmitter.run();
-    }
-
-    @Override
     public Set<Requirement> requirements() {
         if (requirements == null) {
-            requirements = Sets.newEnumSet(downstream.requirements(), Requirement.class);
-            requirements.remove(Requirement.REPEAT);
+            requirements = Requirements.remove(downstream.requirements(), Requirement.REPEAT);
         }
         return requirements;
     }

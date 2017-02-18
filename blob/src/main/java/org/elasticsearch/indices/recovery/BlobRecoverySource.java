@@ -22,10 +22,9 @@
 package org.elasticsearch.indices.recovery;
 
 import io.crate.blob.BlobTransferTarget;
-import io.crate.blob.v2.BlobIndices;
+import io.crate.blob.v2.BlobIndicesService;
 import org.elasticsearch.ExceptionsHelper;
 import org.elasticsearch.cluster.ClusterService;
-import org.elasticsearch.cluster.action.index.MappingUpdatedAction;
 import org.elasticsearch.cluster.metadata.IndexMetaData;
 import org.elasticsearch.cluster.routing.RoutingNode;
 import org.elasticsearch.cluster.routing.ShardRouting;
@@ -34,24 +33,25 @@ import org.elasticsearch.common.component.AbstractComponent;
 import org.elasticsearch.common.inject.Inject;
 import org.elasticsearch.common.settings.Settings;
 import org.elasticsearch.index.IndexService;
-import org.elasticsearch.index.settings.IndexSettings;
 import org.elasticsearch.index.shard.IndexShard;
 import org.elasticsearch.index.shard.ShardId;
 import org.elasticsearch.indices.IndicesLifecycle;
 import org.elasticsearch.indices.IndicesService;
 import org.elasticsearch.threadpool.ThreadPool;
-import org.elasticsearch.transport.BaseTransportRequestHandler;
 import org.elasticsearch.transport.TransportChannel;
+import org.elasticsearch.transport.TransportRequestHandler;
 import org.elasticsearch.transport.TransportService;
 
 import java.util.*;
 
+
 /**
  * The source recovery accepts recovery requests from other peer shards and start the recovery process from this
  * source shard to the target shard.
+ * <p>
+ * This is a copy from ES RecoverySource - with a change marked with "CRATE CHANGE"
  */
 public class BlobRecoverySource extends AbstractComponent {
-
 
     public static class Actions {
         public static final String START_RECOVERY = "internal:index/shard/recovery/start_recovery";
@@ -60,35 +60,28 @@ public class BlobRecoverySource extends AbstractComponent {
     private final TransportService transportService;
     private final IndicesService indicesService;
     private final RecoverySettings recoverySettings;
-    private final MappingUpdatedAction mappingUpdatedAction;
 
     private final ClusterService clusterService;
     private final BlobTransferTarget blobTransferTarget;
-    private final BlobIndices blobIndices;
+    private final BlobIndicesService blobIndicesService;
 
-    private final OngoingRecoveries ongoingRecoveries = new OngoingRecoveries();
+    private final OngoingRecoveres ongoingRecoveries = new OngoingRecoveres();
 
 
     @Inject
-    public BlobRecoverySource(Settings settings,
-                              TransportService transportService,
-                              IndicesService indicesService,
-                              RecoverySettings recoverySettings,
-                              MappingUpdatedAction mappingUpdatedAction,
-                              ClusterService clusterService,
-                              BlobTransferTarget blobTransferTarget,
-                              BlobIndices blobIndices) {
+    public BlobRecoverySource(Settings settings, TransportService transportService, IndicesService indicesService,
+                              RecoverySettings recoverySettings, ClusterService clusterService,
+                              BlobTransferTarget blobTransferTarget, BlobIndicesService blobIndicesService) {
         super(settings);
         this.transportService = transportService;
         this.indicesService = indicesService;
-        this.mappingUpdatedAction = mappingUpdatedAction;
         this.clusterService = clusterService;
         this.blobTransferTarget = blobTransferTarget;
-        this.blobIndices = blobIndices;
+        this.blobIndicesService = blobIndicesService;
         this.indicesService.indicesLifecycle().addListener(new IndicesLifecycle.Listener() {
             @Override
             public void beforeIndexShardClosed(ShardId shardId, @Nullable IndexShard indexShard,
-                                               @IndexSettings Settings indexSettings) {
+                                               Settings indexSettings) {
                 if (indexShard != null) {
                     ongoingRecoveries.cancel(indexShard, "shard is closed");
                 }
@@ -96,10 +89,12 @@ public class BlobRecoverySource extends AbstractComponent {
         });
 
         this.recoverySettings = recoverySettings;
+
     }
 
+    // CRATE CHANGE:
     public void registerHandler() {
-        transportService.registerHandler(Actions.START_RECOVERY, new StartRecoveryTransportRequestHandler());
+        transportService.registerRequestHandler(Actions.START_RECOVERY, StartRecoveryRequest.class, ThreadPool.Names.GENERIC, new StartRecoveryTransportRequestHandler());
     }
 
     private RecoveryResponse recover(final StartRecoveryRequest request) {
@@ -108,10 +103,11 @@ public class BlobRecoverySource extends AbstractComponent {
 
         // starting recovery from that our (the source) shard state is marking the shard to be in recovery mode as well, otherwise
         // the index operations will not be routed to it properly
-        RoutingNode node = clusterService.state().readOnlyRoutingNodes().node(request.targetNode().id());
+        RoutingNode node = clusterService.state().getRoutingNodes().node(request.targetNode().getId());
         if (node == null) {
             logger.debug("delaying recovery of {} as source node {} is unknown", request.shardId(), request.targetNode());
-            throw new DelayRecoveryException("source node does not have the node [" + request.targetNode() + "] in its state yet..");
+            throw new DelayRecoveryException(
+                "source node does not have the node [" + request.targetNode() + "] in its state yet..");
         }
         ShardRouting targetShardRouting = null;
         for (ShardRouting shardRouting : node) {
@@ -126,38 +122,30 @@ public class BlobRecoverySource extends AbstractComponent {
         }
         if (!targetShardRouting.initializing()) {
             logger.debug("delaying recovery of {} as it is not listed as initializing on the target node {}. known shards state is [{}]",
-                    request.shardId(), request.targetNode(), targetShardRouting.state());
-            throw new DelayRecoveryException("source node has the state of the target shard to be [" + targetShardRouting.state() + "], expecting to be [initializing]");
+                request.shardId(), request.targetNode(), targetShardRouting.state());
+            throw new DelayRecoveryException(
+                "source node has the state of the target shard to be [" + targetShardRouting.state() +
+                "], expecting to be [initializing]");
         }
 
         logger.trace("[{}][{}] starting recovery to {}, mark_as_relocated {}", request.shardId().index().name(), request.shardId().id(), request.targetNode(), request.markAsRelocated());
         final RecoverySourceHandler handler;
         if (IndexMetaData.isOnSharedFilesystem(shard.indexSettings())) {
-            handler = new SharedFSRecoverySourceHandler(shard, request, recoverySettings, transportService, clusterService, indicesService, mappingUpdatedAction, logger);
+            handler = new SharedFSRecoverySourceHandler(shard, request, recoverySettings, transportService, logger);
         } else {
-            handler = new BlobRecoverySourceHandler(shard, request, recoverySettings, transportService, clusterService, indicesService, mappingUpdatedAction, logger, blobTransferTarget, blobIndices);
+            // CRATE CHANGE:
+            handler = new BlobRecoverySourceHandler(
+                shard, request, recoverySettings, transportService, logger, blobTransferTarget, blobIndicesService);
         }
         ongoingRecoveries.add(shard, handler);
         try {
-            shard.recover(handler);
+            return handler.recoverToTarget();
         } finally {
             ongoingRecoveries.remove(shard, handler);
         }
-        return handler.getResponse();
     }
 
-    class StartRecoveryTransportRequestHandler extends BaseTransportRequestHandler<StartRecoveryRequest> {
-
-        @Override
-        public StartRecoveryRequest newInstance() {
-            return new StartRecoveryRequest();
-        }
-
-        @Override
-        public String executor() {
-            return ThreadPool.Names.GENERIC;
-        }
-
+    class StartRecoveryTransportRequestHandler extends TransportRequestHandler<StartRecoveryRequest> {
         @Override
         public void messageReceived(final StartRecoveryRequest request, final TransportChannel channel) throws Exception {
             RecoveryResponse response = recover(request);
@@ -166,7 +154,7 @@ public class BlobRecoverySource extends AbstractComponent {
     }
 
 
-    private static final class OngoingRecoveries {
+    private static final class OngoingRecoveres {
         private final Map<IndexShard, Set<RecoverySourceHandler>> ongoingRecoveries = new HashMap<>();
 
         synchronized void add(IndexShard shard, RecoverySourceHandler handler) {
@@ -175,7 +163,8 @@ public class BlobRecoverySource extends AbstractComponent {
                 shardRecoveryHandlers = new HashSet<>();
                 ongoingRecoveries.put(shard, shardRecoveryHandlers);
             }
-            assert shardRecoveryHandlers.contains(handler) == false : "Handler was already registered [" + handler + "]";
+            assert
+                shardRecoveryHandlers.contains(handler) == false : "Handler was already registered [" + handler + "]";
             shardRecoveryHandlers.add(handler);
             shard.recoveryStats().incCurrentAsSource();
         }
@@ -211,4 +200,3 @@ public class BlobRecoverySource extends AbstractComponent {
         }
     }
 }
-

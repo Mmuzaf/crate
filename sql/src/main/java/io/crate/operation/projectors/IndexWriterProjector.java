@@ -22,23 +22,24 @@
 package io.crate.operation.projectors;
 
 import com.google.common.base.MoreObjects;
-import com.google.common.base.Supplier;
-import com.google.common.util.concurrent.Futures;
-import io.crate.analyze.symbol.Reference;
 import io.crate.analyze.symbol.Symbol;
-import io.crate.core.collections.Row;
+import io.crate.data.Row;
 import io.crate.executor.transport.ShardUpsertRequest;
-import io.crate.executor.transport.TransportActionProvider;
 import io.crate.metadata.ColumnIdent;
+import io.crate.metadata.Functions;
+import io.crate.metadata.Reference;
 import io.crate.metadata.settings.CrateSettings;
 import io.crate.operation.Input;
 import io.crate.operation.collect.CollectExpression;
 import io.crate.operation.collect.RowShardResolver;
 import org.apache.lucene.util.BytesRef;
+import org.elasticsearch.action.admin.indices.create.TransportBulkCreateIndicesAction;
+import org.elasticsearch.action.bulk.BulkRequestExecutor;
 import org.elasticsearch.action.bulk.BulkRetryCoordinatorPool;
 import org.elasticsearch.action.bulk.BulkShardProcessor;
 import org.elasticsearch.client.Requests;
 import org.elasticsearch.cluster.ClusterService;
+import org.elasticsearch.cluster.metadata.IndexNameExpressionResolver;
 import org.elasticsearch.common.bytes.BytesReference;
 import org.elasticsearch.common.io.stream.BytesStreamOutput;
 import org.elasticsearch.common.logging.ESLogger;
@@ -54,6 +55,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.UUID;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.function.Supplier;
 
 public class IndexWriterProjector extends AbstractProjector {
 
@@ -65,13 +67,16 @@ public class IndexWriterProjector extends AbstractProjector {
     private final AtomicBoolean failed = new AtomicBoolean(false);
 
     public IndexWriterProjector(ClusterService clusterService,
+                                Functions functions,
+                                IndexNameExpressionResolver indexNameExpressionResolver,
                                 Settings settings,
-                                TransportActionProvider transportActionProvider,
+                                TransportBulkCreateIndicesAction transportBulkCreateIndicesAction,
+                                BulkRequestExecutor<ShardUpsertRequest> shardUpsertAction,
                                 Supplier<String> indexNameResolver,
                                 BulkRetryCoordinatorPool bulkRetryCoordinatorPool,
                                 Reference rawSourceReference,
                                 List<ColumnIdent> primaryKeyIdents,
-                                List<Symbol> primaryKeySymbols,
+                                List<? extends Symbol> primaryKeySymbols,
                                 @Nullable Symbol routingSymbol,
                                 ColumnIdent clusteredByColumn,
                                 Input<?> sourceInput,
@@ -90,49 +95,55 @@ public class IndexWriterProjector extends AbstractProjector {
         } else {
             //noinspection unchecked
             this.sourceInput =
-                    new MapInput((Input<Map<String, Object>>) sourceInput, includes, excludes);
+                new MapInput((Input<Map<String, Object>>) sourceInput, includes, excludes);
         }
-        rowShardResolver = new RowShardResolver(primaryKeyIdents, primaryKeySymbols, clusteredByColumn, routingSymbol);
+        rowShardResolver = new RowShardResolver(functions, primaryKeyIdents, primaryKeySymbols, clusteredByColumn, routingSymbol);
         ShardUpsertRequest.Builder builder = new ShardUpsertRequest.Builder(
-                CrateSettings.BULK_REQUEST_TIMEOUT.extractTimeValue(settings),
-                overwriteDuplicates,
-                true,
-                null,
-                new Reference[]{rawSourceReference},
-                jobId,
-                false);
+            CrateSettings.BULK_REQUEST_TIMEOUT.extractTimeValue(settings),
+            overwriteDuplicates,
+            true,
+            null,
+            new Reference[]{rawSourceReference},
+            jobId,
+            false);
 
         bulkShardProcessor = new BulkShardProcessor<>(
-                clusterService,
-                transportActionProvider.transportBulkCreateIndicesAction(),
-                bulkRetryCoordinatorPool,
-                autoCreateIndices,
-                MoreObjects.firstNonNull(bulkActions, 100),
-                builder,
-                transportActionProvider.transportShardUpsertActionDelegate(),
-                jobId
+            clusterService,
+            transportBulkCreateIndicesAction,
+            indexNameExpressionResolver,
+            settings,
+            bulkRetryCoordinatorPool,
+            autoCreateIndices,
+            MoreObjects.firstNonNull(bulkActions, 100),
+            builder,
+            shardUpsertAction,
+            jobId
         );
     }
 
     @Override
     public void downstream(RowReceiver rowReceiver) {
         super.downstream(rowReceiver);
-        Futures.addCallback(bulkShardProcessor.result(), new BulkProcessorFutureCallback(failed, rowReceiver));
+        BulkProcessorFutureCallback bulkProcessorFutureCallback = new BulkProcessorFutureCallback(failed, rowReceiver);
+        bulkShardProcessor.result().whenComplete(bulkProcessorFutureCallback);
     }
 
     @Override
-    public boolean setNextRow(Row row) {
+    public Result setNextRow(Row row) {
         for (CollectExpression<Row, ?> collectExpression : collectExpressions) {
             collectExpression.setNextRow(row);
         }
         rowShardResolver.setNextRow(row);
         ShardUpsertRequest.Item item = new ShardUpsertRequest.Item(
-                rowShardResolver.id(), null, new Object[] { sourceInput.value() }, null);
-        return bulkShardProcessor.add(indexNameResolver.get(), item, rowShardResolver.routing());
+            rowShardResolver.id(), null, new Object[]{sourceInput.value()}, null);
+        if (bulkShardProcessor.add(indexNameResolver.get(), item, rowShardResolver.routing())) {
+            return Result.CONTINUE;
+        }
+        return Result.STOP;
     }
 
     @Override
-    public void finish() {
+    public void finish(RepeatHandle repeatHandle) {
         bulkShardProcessor.close();
     }
 
@@ -140,6 +151,13 @@ public class IndexWriterProjector extends AbstractProjector {
     public void fail(Throwable throwable) {
         failed.set(true);
         downstream.fail(throwable);
+        bulkShardProcessor.kill(throwable);
+    }
+
+    @Override
+    public void kill(Throwable throwable) {
+        failed.set(true);
+        super.kill(throwable);
         bulkShardProcessor.kill(throwable);
     }
 
@@ -167,7 +185,7 @@ public class IndexWriterProjector extends AbstractProjector {
             Map<String, Object> filteredMap = XContentMapValues.filter(value, includes, excludes);
             try {
                 BytesReference bytes = new XContentBuilder(Requests.INDEX_CONTENT_TYPE.xContent(),
-                        new BytesStreamOutput(lastSourceSize)).map(filteredMap).bytes();
+                    new BytesStreamOutput(lastSourceSize)).map(filteredMap).bytes();
                 lastSourceSize = bytes.length();
                 return bytes.toBytesRef();
             } catch (IOException ex) {

@@ -22,9 +22,10 @@
 package io.crate.integrationtests;
 
 import io.crate.metadata.settings.CrateSettings;
-import org.elasticsearch.common.settings.ImmutableSettings;
+import io.crate.testing.UseJdbc;
 import org.elasticsearch.common.settings.Settings;
-import org.elasticsearch.test.ElasticsearchIntegrationTest;
+import org.elasticsearch.common.unit.MemorySizeValue;
+import org.elasticsearch.test.ESIntegTestCase;
 import org.junit.After;
 import org.junit.Test;
 
@@ -32,22 +33,20 @@ import java.util.Map;
 
 import static org.hamcrest.Matchers.is;
 
-@ElasticsearchIntegrationTest.ClusterScope
+@ESIntegTestCase.ClusterScope
+@UseJdbc
 public class SysClusterSettingsTest extends SQLTransportIntegrationTest {
 
     @Override
     protected Settings nodeSettings(int nodeOrdinal) {
-        ImmutableSettings.Builder builder = ImmutableSettings.builder().put(super.nodeSettings(nodeOrdinal));
+        Settings.Builder builder = Settings.builder().put(super.nodeSettings(nodeOrdinal));
         builder.put(CrateSettings.BULK_REQUEST_TIMEOUT.settingName(), "42s");
-        builder.put("gateway.type", "local");
         return builder.build();
     }
 
-    @Override
     @After
-    public void tearDown() throws Exception {
-        super.tearDown();
-        execute("reset global bulk.partition_creation_timeout, bulk.request_timeout");
+    public void resetSettings() throws Exception {
+        execute("reset global stats.operations_log_size, bulk.request_timeout, \"indices.breaker.query.limit\"");
     }
 
     @Test
@@ -55,28 +54,37 @@ public class SysClusterSettingsTest extends SQLTransportIntegrationTest {
         execute("set global persistent stats.enabled = true");
         execute("select settings['stats']['enabled'] from sys.cluster");
         assertThat(response.rowCount(), is(1L));
-        assertThat((Boolean)response.rows()[0][0], is(true));
+        assertThat((Boolean) response.rows()[0][0], is(true));
 
         execute("reset global stats.enabled");
         execute("select settings['stats']['enabled'] from sys.cluster");
         assertThat(response.rowCount(), is(1L));
-        assertThat((Boolean)response.rows()[0][0], is(false));
+        assertThat((Boolean) response.rows()[0][0], is(false));
 
         execute("set global transient stats = { enabled = true, jobs_log_size = 3, operations_log_size = 4 }");
         execute("select settings['stats']['enabled'], settings['stats']['jobs_log_size']," +
                 "settings['stats']['operations_log_size'] from sys.cluster");
         assertThat(response.rowCount(), is(1L));
-        assertThat((Boolean)response.rows()[0][0], is(true));
-        assertThat((Integer)response.rows()[0][1], is(3));
-        assertThat((Integer)response.rows()[0][2], is(4));
+        assertThat((Boolean) response.rows()[0][0], is(true));
+        assertThat((Integer) response.rows()[0][1], is(3));
+        assertThat((Integer) response.rows()[0][2], is(4));
 
         execute("reset global stats");
         execute("select settings['stats']['enabled'], settings['stats']['jobs_log_size']," +
                 "settings['stats']['operations_log_size'] from sys.cluster");
         assertThat(response.rowCount(), is(1L));
-        assertThat((Boolean)response.rows()[0][0], is(false));
-        assertThat((Integer)response.rows()[0][1], is(10_000));
-        assertThat((Integer)response.rows()[0][2], is(10_000));
+        assertThat((Boolean) response.rows()[0][0], is(false));
+        assertThat((Integer) response.rows()[0][1], is(10_000));
+        assertThat((Integer) response.rows()[0][2], is(10_000));
+
+        execute("set global transient \"indices.breaker.query.limit\" = '2mb'");
+        execute("select settings['indices'] from sys.cluster");
+        Map<String, Map> indices = (Map<String, Map>) response.rows()[0][0];
+        Map<String, Map> breaker = indices.get(CrateSettings.INDICES_BREAKER.name());
+        Map<String, Map> query = breaker.get(CrateSettings.INDICES_BREAKER_QUERY.name());
+        assertThat(query.get(CrateSettings.INDICES_BREAKER_QUERY_LIMIT.name()),
+            is(MemorySizeValue.parseBytesSizeValueOrHeapRatio("2mb",
+                CrateSettings.INDICES_BREAKER_QUERY_LIMIT.settingName()).toString()));
     }
 
     @Test
@@ -99,15 +107,15 @@ public class SysClusterSettingsTest extends SQLTransportIntegrationTest {
 
     @Test
     public void testDynamicTransientSettings() throws Exception {
-        ImmutableSettings.Builder builder = ImmutableSettings.builder()
-                .put(CrateSettings.STATS_JOBS_LOG_SIZE.settingName(), 1)
-                .put(CrateSettings.STATS_OPERATIONS_LOG_SIZE.settingName(), 2)
-                .put(CrateSettings.STATS_ENABLED.settingName(), false);
+        Settings.Builder builder = Settings.builder()
+            .put(CrateSettings.STATS_JOBS_LOG_SIZE.settingName(), 1)
+            .put(CrateSettings.STATS_OPERATIONS_LOG_SIZE.settingName(), 2)
+            .put(CrateSettings.STATS_ENABLED.settingName(), false);
         client().admin().cluster().prepareUpdateSettings().setTransientSettings(builder.build()).execute().actionGet();
 
         execute("select settings from sys.cluster");
         assertEquals(1L, response.rowCount());
-        Map<String, Map> settings = (Map<String, Map>)response.rows()[0][0];
+        Map<String, Map> settings = (Map<String, Map>) response.rows()[0][0];
         Map stats = settings.get(CrateSettings.STATS.name());
         assertEquals(1, stats.get(CrateSettings.STATS_JOBS_LOG_SIZE.name()));
         assertEquals(2, stats.get(CrateSettings.STATS_OPERATIONS_LOG_SIZE.name()));
@@ -117,45 +125,48 @@ public class SysClusterSettingsTest extends SQLTransportIntegrationTest {
 
         execute("select settings from sys.cluster");
         assertEquals(1L, response.rowCount());
-        settings = (Map<String, Map>)response.rows()[0][0];
+        settings = (Map<String, Map>) response.rows()[0][0];
         stats = settings.get(CrateSettings.STATS.name());
         assertEquals(CrateSettings.STATS_JOBS_LOG_SIZE.defaultValue(),
-                stats.get(CrateSettings.STATS_JOBS_LOG_SIZE.name()));
+            stats.get(CrateSettings.STATS_JOBS_LOG_SIZE.name()));
         assertEquals(CrateSettings.STATS_OPERATIONS_LOG_SIZE.defaultValue(),
-                stats.get(CrateSettings.STATS_OPERATIONS_LOG_SIZE.name()));
+            stats.get(CrateSettings.STATS_OPERATIONS_LOG_SIZE.name()));
         assertEquals(CrateSettings.STATS_ENABLED.defaultValue(),
-                stats.get(CrateSettings.STATS_ENABLED.name()));
+            stats.get(CrateSettings.STATS_ENABLED.name()));
     }
 
     @Test
     public void testDynamicPersistentSettings() throws Exception {
-        ImmutableSettings.Builder builder = ImmutableSettings.builder()
-                .put(CrateSettings.BULK_REQUEST_TIMEOUT.settingName(), "1s")
-                .put(CrateSettings.BULK_PARTITION_CREATION_TIMEOUT.settingName(), "2s");
+        Settings.Builder builder = Settings.builder()
+            .put(CrateSettings.STATS_OPERATIONS_LOG_SIZE.settingName(), 100);
         client().admin().cluster().prepareUpdateSettings().setPersistentSettings(builder.build()).execute().actionGet();
 
         execute("select settings from sys.cluster");
         assertEquals(1L, response.rowCount());
-        Map<String, Map> settings = (Map<String, Map>)response.rows()[0][0];
-        Map bulk = settings.get(CrateSettings.BULK.name());
-        assertEquals("1s", bulk.get(CrateSettings.BULK_REQUEST_TIMEOUT.name()));
-        assertEquals("2s", bulk.get(CrateSettings.BULK_PARTITION_CREATION_TIMEOUT.name()));
+        Map<String, Map> settings = (Map<String, Map>) response.rows()[0][0];
+        Map bulk = settings.get(CrateSettings.STATS.name());
+        assertEquals(100, bulk.get(CrateSettings.STATS_OPERATIONS_LOG_SIZE.name()));
 
         internalCluster().fullRestart();
-
-        execute("select settings from sys.cluster");
-        assertEquals(1L, response.rowCount());
-        settings = (Map<String, Map>)response.rows()[0][0];
-        bulk = settings.get(CrateSettings.BULK.name());
-        assertEquals("1s", bulk.get(CrateSettings.BULK_REQUEST_TIMEOUT.name()));
-        assertEquals("2s", bulk.get(CrateSettings.BULK_PARTITION_CREATION_TIMEOUT.name()));
+        // the gateway recovery is async and
+        // it might take a bit until it reads the persisted cluster state and updates the settings expression
+        assertBusy(new Runnable() {
+            @Override
+            public void run() {
+                execute("select settings from sys.cluster");
+                assertEquals(1L, response.rowCount());
+                Map<String, Map> settings = (Map<String, Map>) response.rows()[0][0];
+                Map bulk = settings.get(CrateSettings.STATS.name());
+                assertEquals(100, bulk.get(CrateSettings.STATS_OPERATIONS_LOG_SIZE.name()));
+            }
+        });
     }
 
     @Test
     public void testStaticGatewayDefaultSettings() {
         execute("select settings from sys.cluster");
         assertEquals(1L, response.rowCount());
-        Map<String, Map> settings = (Map<String, Map>)response.rows()[0][0];
+        Map<String, Map> settings = (Map<String, Map>) response.rows()[0][0];
         Map gateway = settings.get(CrateSettings.GATEWAY.name());
         assertEquals("5m", gateway.get(CrateSettings.GATEWAY_RECOVER_AFTER_TIME.name()));
         assertEquals(-1, gateway.get(CrateSettings.GATEWAY_EXPECTED_NODES.name()));
@@ -166,11 +177,25 @@ public class SysClusterSettingsTest extends SQLTransportIntegrationTest {
     public void testStaticUDCDefaultSettings() {
         execute("select settings['udc'] from sys.cluster");
         assertEquals(1L, response.rowCount());
-        Map<String, Map> settings = (Map<String, Map>)response.rows()[0][0];
+        Map<String, Map> settings = (Map<String, Map>) response.rows()[0][0];
         assertEquals(4, settings.size());
         assertEquals(true, settings.get(CrateSettings.UDC_ENABLED.name()));
         assertEquals("10m", settings.get(CrateSettings.UDC_INITIAL_DELAY.name()));
         assertEquals("1d", settings.get(CrateSettings.UDC_INTERVAL.name()));
         assertEquals("https://udc.crate.io", settings.get(CrateSettings.UDC_URL.name()));
+    }
+
+    @Test
+    public void testStatsCircuitBreakerLogsDefaultSettings() {
+        execute("select settings['stats'] from sys.cluster");
+        assertEquals(1L, response.rowCount());
+        Map<String, Map> stats = (Map<String, Map>) response.rows()[0][0];
+        Map<String, Map> breaker = stats.get(CrateSettings.STATS_BREAKER.name());
+        Map<String, Map> log = breaker.get(CrateSettings.STATS_BREAKER_LOG.name());
+        Map<String, Map> jobs = log.get(CrateSettings.STATS_BREAKER_LOG_JOBS.name());
+        assertThat(jobs.get(CrateSettings.STATS_BREAKER_LOG_JOBS_LIMIT.name()),
+            is(MemorySizeValue.parseBytesSizeValueOrHeapRatio(  // convert default string value (percentage) to byte size string
+                CrateSettings.STATS_BREAKER_LOG_JOBS_LIMIT.defaultValue(),
+                CrateSettings.STATS_BREAKER_LOG_JOBS_LIMIT.settingName()).toString()));
     }
 }

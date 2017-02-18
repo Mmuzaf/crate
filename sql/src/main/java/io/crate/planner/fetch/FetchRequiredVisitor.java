@@ -23,6 +23,7 @@
 package io.crate.planner.fetch;
 
 import io.crate.analyze.symbol.*;
+import io.crate.metadata.Reference;
 import io.crate.metadata.doc.DocSysColumns;
 
 import java.util.HashSet;
@@ -40,7 +41,10 @@ public class FetchRequiredVisitor extends SymbolVisitor<FetchRequiredVisitor.Con
 
         private Set<Symbol> querySymbols;
 
-        public Context(){};
+        public Context() {
+        }
+
+        ;
 
         public Context(Set<Symbol> querySymbols) {
             this.querySymbols = querySymbols;

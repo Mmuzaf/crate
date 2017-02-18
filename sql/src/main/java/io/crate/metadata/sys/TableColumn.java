@@ -22,39 +22,39 @@
 package io.crate.metadata.sys;
 
 import io.crate.metadata.ColumnIdent;
+import io.crate.metadata.Reference;
 import io.crate.metadata.ReferenceIdent;
-import io.crate.metadata.ReferenceInfo;
 import io.crate.metadata.TableIdent;
 
 import java.util.Map;
 
 /**
  * A virtual column that is pointing to other columns.
- *
+ * <p>
  * E.g.
- *  _doc['foo'] is pointing to 'foo'
- *
- *  _node['name'] is pointing to 'name' of the sys.nodes table
+ * _doc['foo'] is pointing to 'foo'
+ * <p>
+ * _node['name'] is pointing to 'name' of the sys.nodes table
  */
 public class TableColumn {
 
     private final ColumnIdent column;
-    private final Map<ColumnIdent, ReferenceInfo> columns;
+    private final Map<ColumnIdent, Reference> columns;
 
     /**
-     * @param column the virtual column
+     * @param column  the virtual column
      * @param columns the columns this virtual column has underneath
      */
-    public TableColumn(ColumnIdent column, Map<ColumnIdent, ReferenceInfo> columns) {
+    public TableColumn(ColumnIdent column, Map<ColumnIdent, Reference> columns) {
         this.column = column;
         this.columns = columns;
     }
 
-    public ReferenceInfo getReferenceInfo(TableIdent tableIdent, ColumnIdent columnIdent) {
+    public Reference getReference(TableIdent tableIdent, ColumnIdent columnIdent) {
         if (!columnIdent.isChildOf(column)) {
             return null;
         }
-        ReferenceInfo info = columns.get(columnIdent.shiftRight());
+        Reference info = columns.get(columnIdent.shiftRight());
         if (info == null) {
             return null;
         }

@@ -21,23 +21,25 @@
 
 package io.crate.testing;
 
-import io.crate.core.collections.Row;
-import io.crate.core.collections.Row1;
-import io.crate.core.collections.SingleRowBucket;
+import io.crate.data.CollectionBucket;
+import io.crate.data.Row;
+import io.crate.operation.projectors.RepeatHandle;
+
+import java.util.Collections;
 
 public class RowCountRowReceiver extends CollectingRowReceiver {
 
     private int rowCount = 0;
 
     @Override
-    public boolean setNextRow(Row row) {
+    public Result setNextRow(Row row) {
         rowCount++;
-        return true;
+        return Result.CONTINUE;
     }
 
     @Override
-    public void finish() {
-        resultFuture.set(new SingleRowBucket(new Row1(rowCount)));
-        isFinished = true;
+    public void finish(RepeatHandle repeatHandle) {
+        resultFuture.complete(new CollectionBucket(Collections.singletonList(new Object[] { rowCount })));
+        numFailOrFinish++;
     }
 }

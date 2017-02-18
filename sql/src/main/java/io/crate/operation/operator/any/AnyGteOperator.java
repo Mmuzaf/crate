@@ -21,20 +21,19 @@
 
 package io.crate.operation.operator.any;
 
-import io.crate.analyze.symbol.Function;
 import io.crate.metadata.FunctionImplementation;
 import io.crate.metadata.FunctionInfo;
 import io.crate.operation.operator.OperatorModule;
 import io.crate.sql.tree.ComparisonExpression;
 
-public class AnyGteOperator extends AnyOperator<AnyGteOperator> {
+public class AnyGteOperator extends AnyOperator {
 
     public static final String NAME = OPERATOR_PREFIX + ComparisonExpression.Type.GREATER_THAN_OR_EQUAL.getValue();
 
     static class AnyGteResolver extends AnyResolver {
 
         @Override
-        public FunctionImplementation<Function> newInstance(FunctionInfo info) {
+        public FunctionImplementation newInstance(FunctionInfo info) {
             return new AnyGteOperator(info);
         }
 
@@ -48,7 +47,7 @@ public class AnyGteOperator extends AnyOperator<AnyGteOperator> {
         module.registerDynamicOperatorFunction(NAME, new AnyGteResolver());
     }
 
-    protected AnyGteOperator(FunctionInfo functionInfo) {
+    AnyGteOperator(FunctionInfo functionInfo) {
         super(functionInfo);
     }
 

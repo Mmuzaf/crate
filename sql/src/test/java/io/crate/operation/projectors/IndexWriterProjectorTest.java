@@ -22,14 +22,12 @@
 package io.crate.operation.projectors;
 
 import io.crate.analyze.symbol.InputColumn;
-import io.crate.analyze.symbol.Reference;
 import io.crate.analyze.symbol.Symbol;
-import io.crate.core.collections.Bucket;
-import io.crate.core.collections.Row;
-import io.crate.core.collections.RowN;
-import io.crate.executor.transport.TransportActionProvider;
+import io.crate.data.Bucket;
+import io.crate.data.Row;
+import io.crate.data.RowN;
+import io.crate.executor.transport.TransportShardUpsertAction;
 import io.crate.integrationtests.SQLTransportIntegrationTest;
-import io.crate.jobs.ExecutionState;
 import io.crate.metadata.*;
 import io.crate.metadata.doc.DocSysColumns;
 import io.crate.operation.RowDownstream;
@@ -38,9 +36,11 @@ import io.crate.operation.collect.InputCollectExpression;
 import io.crate.testing.CollectingRowReceiver;
 import io.crate.types.DataTypes;
 import org.apache.lucene.util.BytesRef;
+import org.elasticsearch.action.admin.indices.create.TransportBulkCreateIndicesAction;
 import org.elasticsearch.action.bulk.BulkRetryCoordinatorPool;
 import org.elasticsearch.cluster.ClusterService;
-import org.elasticsearch.common.settings.ImmutableSettings;
+import org.elasticsearch.cluster.metadata.IndexNameExpressionResolver;
+import org.elasticsearch.common.settings.Settings;
 import org.junit.Test;
 
 import java.util.Arrays;
@@ -51,7 +51,6 @@ import java.util.UUID;
 import static io.crate.testing.TestingHelpers.isRow;
 import static org.hamcrest.Matchers.contains;
 import static org.hamcrest.core.Is.is;
-import static org.mockito.Mockito.mock;
 
 public class IndexWriterProjectorTest extends SQLTransportIntegrationTest {
 
@@ -69,50 +68,51 @@ public class IndexWriterProjectorTest extends SQLTransportIntegrationTest {
         List<CollectExpression<Row, ?>> collectExpressions = Collections.<CollectExpression<Row, ?>>singletonList(sourceInput);
 
         IndexWriterProjector writerProjector = new IndexWriterProjector(
-                internalCluster().getInstance(ClusterService.class),
-                ImmutableSettings.EMPTY,
-                internalCluster().getInstance(TransportActionProvider.class),
-                IndexNameResolver.forTable(new TableIdent(null, "bulk_import")),
-                internalCluster().getInstance(BulkRetryCoordinatorPool.class),
-                new Reference(new ReferenceInfo(new ReferenceIdent(bulkImportIdent, DocSysColumns.RAW), RowGranularity.DOC, DataTypes.STRING)),
-                Arrays.asList(ID_IDENT),
-                Arrays.<Symbol>asList(new InputColumn(0)),
-                null,
-                null,
-                sourceInput,
-                collectExpressions,
-                20,
-                null,
-                null,
-                false,
-                false,
-                UUID.randomUUID()
+            internalCluster().getInstance(ClusterService.class),
+            internalCluster().getInstance(Functions.class),
+            new IndexNameExpressionResolver(Settings.EMPTY),
+            Settings.EMPTY,
+            internalCluster().getInstance(TransportBulkCreateIndicesAction.class),
+            internalCluster().getInstance(TransportShardUpsertAction.class)::execute,
+            IndexNameResolver.forTable(new TableIdent(null, "bulk_import")),
+            internalCluster().getInstance(BulkRetryCoordinatorPool.class),
+            new Reference(new ReferenceIdent(bulkImportIdent, DocSysColumns.RAW), RowGranularity.DOC, DataTypes.STRING),
+            Arrays.asList(ID_IDENT),
+            Arrays.<Symbol>asList(new InputColumn(0)),
+            null,
+            null,
+            sourceInput,
+            collectExpressions,
+            20,
+            null,
+            null,
+            false,
+            false,
+            UUID.randomUUID()
         );
         writerProjector.downstream(collectingRowReceiver);
-        final RowDownstream rowDownstream = RowMergers.passThroughRowMerger(writerProjector);
+        final RowDownstream rowDownstream = new MultiUpstreamRowReceiver(writerProjector);
 
         final RowReceiver receiver1 = rowDownstream.newRowReceiver();
-        receiver1.prepare(mock(ExecutionState.class));
 
         Thread t1 = new Thread(new Runnable() {
             @Override
             public void run() {
                 for (int i = 0; i < 100; i++) {
                     receiver1.setNextRow(
-                            new RowN(new Object[]{i, new BytesRef("{\"id\": " + i + ", \"name\": \"Arthur\"}")}));
+                        new RowN(new Object[]{i, new BytesRef("{\"id\": " + i + ", \"name\": \"Arthur\"}")}));
                 }
             }
         });
 
 
         final RowReceiver receiver2 = rowDownstream.newRowReceiver();
-        receiver2.prepare(mock(ExecutionState.class));
         Thread t2 = new Thread(new Runnable() {
             @Override
             public void run() {
                 for (int i = 100; i < 200; i++) {
                     receiver2.setNextRow(
-                            new RowN(new Object[]{i, new BytesRef("{\"id\": " + i + ", \"name\": \"Trillian\"}")}));
+                        new RowN(new Object[]{i, new BytesRef("{\"id\": " + i + ", \"name\": \"Trillian\"}")}));
                 }
             }
         });
@@ -121,8 +121,8 @@ public class IndexWriterProjectorTest extends SQLTransportIntegrationTest {
 
         t1.join();
         t2.join();
-        receiver1.finish();
-        receiver2.finish();
+        receiver1.finish(RepeatHandle.UNSUPPORTED);
+        receiver2.finish(RepeatHandle.UNSUPPORTED);
         Bucket objects = collectingRowReceiver.result();
 
         assertThat(objects, contains(isRow(200L)));

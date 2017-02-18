@@ -23,6 +23,7 @@ package io.crate.integrationtests;
 
 import io.crate.jobs.JobContextService;
 import io.crate.jobs.JobExecutionContext;
+import io.crate.testing.UseJdbc;
 import org.junit.Test;
 
 import java.lang.reflect.Field;
@@ -32,6 +33,7 @@ import java.util.concurrent.TimeUnit;
 
 import static org.hamcrest.core.Is.is;
 
+@UseJdbc
 public class JobContextIntegrationTest extends SQLTransportIntegrationTest {
 
     Setup setup = new Setup(sqlExecutor);
@@ -53,10 +55,10 @@ public class JobContextIntegrationTest extends SQLTransportIntegrationTest {
         // multiple upserts (SymbolBasedBulkShardProcessorContext is created)
         execute("create table upserts (id int primary key, d long)");
         ensureYellow();
-        execute("insert into upserts (id, d) values (?, ?)", new Object[][] {
-                new Object[] { 1, -7L },
-                new Object[] { 2, 3L },
-        } );
+        execute("insert into upserts (id, d) values (?, ?)", new Object[][]{
+            new Object[]{1, -7L},
+            new Object[]{2, 3L},
+        });
         refresh();
 
         // upsert-by-id (UpsertByIdContext is created)

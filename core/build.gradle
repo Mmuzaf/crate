@@ -1,23 +1,11 @@
-apply plugin: 'me.champeau.gradle.jmh'
-apply plugin: 'java'
-apply plugin: 'maven'
-apply plugin: 'de.thetaphi.forbiddenapis'
+apply from: "$rootDir/gradle/javaModule.gradle"
+
 
 archivesBaseName = 'crate-core'
 
-configurations {
-    all*.exclude group: 'org.elasticsearch'
-    sharedCompile.extendsFrom compile
-}
-
 dependencies {
-    compile project(':es')
-    compile 'commons-codec:commons-codec:1.9'
-    compile ('org.apache.xbean:xbean-finder:4.2') {
-        exclude group: 'org.apache.xbean', module: 'xbean-asm-util'
-    }
-
-    testCompile project(':testing')
+    compile project(':es:es-core')
+    testCompile project(':integration-testing')
 }
 
 test {
@@ -27,57 +15,38 @@ test {
     jacoco {
         excludes = [
                 "*Test*"
-                ]
+        ]
     }
 }
 
-forbiddenApisMain {
-    bundledSignatures = ['jdk-unsafe', 'jdk-deprecated']
-    ignoreFailures = false
-}
+task getVersion(dependsOn: 'classes') {
+    doLast {
+        def stdout = new ByteArrayOutputStream()
+        javaexec {
+            classpath = sourceSets.main.runtimeClasspath
+            main = 'io.crate.Version'
+            standardOutput = stdout
+        }
+        ext.gitTag = "git describe".execute().in.text.trim()
+        ext.version = stdout.toString().trim().split(" ")[1].replace(',', '').trim()
 
-task getVersion (dependsOn: 'classes') << {
-    def stdout = new ByteArrayOutputStream()
-    javaexec {
-        classpath = sourceSets.main.runtimeClasspath
-        main = 'io.crate.Version'
-        standardOutput = stdout
+        if (gradle.taskGraph.hasTask(':app:release')) {
+            assert gitTag == version, "Version mismatch gitTag: " + gitTag + " does not match crate version: " + version
+        } else if (gradle.taskGraph.hasTask(':app:nightly')) {
+            def date = new Date().format('yyyyMMddHHmm')
+            def shortHash = "git rev-parse --short HEAD".execute().in.text.trim()
+            ext.version = version.replace('-SNAPSHOT', '') + "-" + date + "-" + shortHash
+        } else if (!gradle.taskGraph.hasTask(':app:uploadArchives')) {
+            def shortHash = "git rev-parse --short HEAD".execute().in.text.trim()
+            ext.version = version + "-" + shortHash
+        }
+
+        logger.quiet("gitTag: " + gitTag)
+        logger.quiet("version: " + version)
     }
-    ext.gitTag = "git describe".execute().in.text.trim()
-    ext.version = stdout.toString().trim().split(" ")[1].replace(',','').trim()
-
-    if (gradle.taskGraph.hasTask(':app:release')) {
-        assert gitTag == version, "Version mismatch gitTag: " + gitTag + " does not match crate version: " + version
-    } else if (gradle.taskGraph.hasTask(':app:nightly')) {
-        def date = new Date().format('yyyyMMddHHmm')
-        def shortHash = "git rev-parse --short HEAD".execute().in.text.trim()
-        ext.version = version.replace('-SNAPSHOT','') + "-" + date + "-" + shortHash
-    } else if (!gradle.taskGraph.hasTask(':client:uploadArchives') && !gradle.taskGraph.hasTask(':app:uploadArchives')) {
-        def shortHash = "git rev-parse --short HEAD".execute().in.text.trim()
-        ext.version = version + "-" + shortHash
-    }
-
-    logger.quiet("gitTag: " + gitTag)
-    logger.quiet("version: " + version)
 }
 
 
 sourceSets {
-    test {
-        resources {
-            srcDir 'src/test/java'
-        }
-    }
-    shared {
-        java {
-            srcDir "src/main/java/"
-            include "io/crate/Streamer*"
-            include "io/crate/TimestampFormat*"
-            include "io/crate/core/collections/MapComparator*"
-            include "io/crate/core/collections/ForEach*"
-            include "io/crate/core/StringUtils*"
-            include "io/crate/geo/GeoJSONUtils*"
-            include "io/crate/types/**"
-        }
-    }
+    test.output.resourcesDir = null
 }

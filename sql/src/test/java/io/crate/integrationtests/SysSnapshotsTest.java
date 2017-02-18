@@ -21,6 +21,7 @@
 
 package io.crate.integrationtests;
 
+import io.crate.testing.UseJdbc;
 import io.crate.types.ArrayType;
 import io.crate.types.DataType;
 import io.crate.types.StringType;
@@ -30,10 +31,13 @@ import org.elasticsearch.action.admin.cluster.repositories.delete.DeleteReposito
 import org.elasticsearch.action.admin.cluster.repositories.put.PutRepositoryResponse;
 import org.elasticsearch.action.admin.cluster.snapshots.create.CreateSnapshotResponse;
 import org.elasticsearch.action.admin.cluster.snapshots.delete.DeleteSnapshotResponse;
-import org.elasticsearch.common.settings.ImmutableSettings;
 import org.elasticsearch.common.settings.Settings;
 import org.elasticsearch.snapshots.SnapshotState;
-import org.junit.*;
+import org.elasticsearch.test.ESIntegTestCase;
+import org.junit.After;
+import org.junit.Before;
+import org.junit.ClassRule;
+import org.junit.Test;
 import org.junit.rules.TemporaryFolder;
 
 import java.io.File;
@@ -44,6 +48,8 @@ import java.util.List;
 import static org.hamcrest.CoreMatchers.equalTo;
 import static org.hamcrest.Matchers.*;
 
+@ESIntegTestCase.ClusterScope(transportClientRatio = 0)
+@UseJdbc(0) // missing column types
 public class SysSnapshotsTest extends SQLTransportIntegrationTest {
 
     @ClassRule
@@ -57,10 +63,10 @@ public class SysSnapshotsTest extends SQLTransportIntegrationTest {
 
     @Override
     protected Settings nodeSettings(int nodeOrdinal) {
-        return ImmutableSettings.settingsBuilder()
-                .put(super.nodeSettings(nodeOrdinal))
-                .put("path.repo", TEMP_FOLDER.getRoot().getAbsolutePath())
-                .build();
+        return Settings.settingsBuilder()
+            .put(super.nodeSettings(nodeOrdinal))
+            .put("path.repo", TEMP_FOLDER.getRoot().getAbsolutePath())
+            .build();
     }
 
     @Before
@@ -84,12 +90,12 @@ public class SysSnapshotsTest extends SQLTransportIntegrationTest {
 
     private void createRepository(String name) {
         PutRepositoryResponse putRepositoryResponse = client().admin().cluster().preparePutRepository(name)
-                .setType("fs")
-                .setSettings(ImmutableSettings.settingsBuilder()
-                                .put("location", new File(TEMP_FOLDER.getRoot(), "backup").getAbsolutePath())
-                                .put("chunk_size", "5k")
-                                .put("compress", false)
-                ).get();
+            .setType("fs")
+            .setSettings(Settings.settingsBuilder()
+                .put("location", new File(TEMP_FOLDER.getRoot(), "backup").getAbsolutePath())
+                .put("chunk_size", "5k")
+                .put("compress", false)
+            ).get();
         assertThat(putRepositoryResponse.isAcknowledged(), equalTo(true));
     }
 
@@ -98,7 +104,7 @@ public class SysSnapshotsTest extends SQLTransportIntegrationTest {
         assertThat(deleteRepositoryResponse.isAcknowledged(), equalTo(true));
     }
 
-    private void createTableAndSnapshot(String tableName, String snapshotName){
+    private void createTableAndSnapshot(String tableName, String snapshotName) {
         execute("create table " + tableName + " (id int primary key) with(number_of_replicas=0)");
         ensureYellow();
 
@@ -112,8 +118,8 @@ public class SysSnapshotsTest extends SQLTransportIntegrationTest {
 
     private void createSnapshot(String snapshotName, String... tables) {
         CreateSnapshotResponse createSnapshotResponse = client().admin().cluster()
-                .prepareCreateSnapshot(REPOSITORY_NAME, snapshotName)
-                .setWaitForCompletion(true).setIndices(tables).get();
+            .prepareCreateSnapshot(REPOSITORY_NAME, snapshotName)
+            .setWaitForCompletion(true).setIndices(tables).get();
         assertThat(createSnapshotResponse.getSnapshotInfo().successfulShards(), greaterThan(0));
         assertThat(createSnapshotResponse.getSnapshotInfo().successfulShards(), equalTo(createSnapshotResponse.getSnapshotInfo().totalShards()));
         snapshots.add(snapshotName);
@@ -122,7 +128,7 @@ public class SysSnapshotsTest extends SQLTransportIntegrationTest {
 
     private void deleteSnapshot(String name) {
         DeleteSnapshotResponse deleteSnapshotResponse = client().admin().cluster()
-                .prepareDeleteSnapshot(REPOSITORY_NAME, name).get();
+            .prepareDeleteSnapshot(REPOSITORY_NAME, name).get();
         assertThat(deleteSnapshotResponse.isAcknowledged(), equalTo(true));
     }
 
@@ -133,15 +139,15 @@ public class SysSnapshotsTest extends SQLTransportIntegrationTest {
         assertThat(response.cols().length, is(7));
         assertThat(response.cols(), is(new String[]{"concrete_indices", "finished", "name", "repository", "started", "state", "version"}));
         assertThat(response.columnTypes(), is(
-                new DataType[]{
-                        new ArrayType(StringType.INSTANCE),
-                            TimestampType.INSTANCE,
-                            StringType.INSTANCE,
-                            StringType.INSTANCE,
-                            TimestampType.INSTANCE,
-                            StringType.INSTANCE,
-                            StringType.INSTANCE
-                }));
+            new DataType[]{
+                new ArrayType(StringType.INSTANCE),
+                TimestampType.INSTANCE,
+                StringType.INSTANCE,
+                StringType.INSTANCE,
+                TimestampType.INSTANCE,
+                StringType.INSTANCE,
+                StringType.INSTANCE
+            }));
         assertThat((String[]) response.rows()[0][0], arrayContaining("test_table"));
         assertThat((Long) response.rows()[0][1], lessThanOrEqualTo(finishedTime));
         assertThat((String) response.rows()[0][2], is("test_snap_1"));

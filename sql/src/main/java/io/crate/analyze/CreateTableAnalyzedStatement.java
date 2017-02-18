@@ -22,15 +22,18 @@
 package io.crate.analyze;
 
 import io.crate.exceptions.TableAlreadyExistsException;
-import io.crate.metadata.*;
+import io.crate.metadata.ColumnIdent;
+import io.crate.metadata.PartitionName;
+import io.crate.metadata.Schemas;
+import io.crate.metadata.TableIdent;
 
 import javax.annotation.Nullable;
+import java.util.Collection;
 import java.util.List;
 import java.util.Map;
 
 public class CreateTableAnalyzedStatement extends AbstractDDLAnalyzedStatement {
 
-    protected final FulltextAnalyzerResolver fulltextAnalyzerResolver;
     private AnalyzedTableElements analyzedTableElements;
     private Map<String, Object> mapping;
     private ColumnIdent routingColumn;
@@ -38,8 +41,7 @@ public class CreateTableAnalyzedStatement extends AbstractDDLAnalyzedStatement {
     private boolean noOp = false;
     private boolean ifNotExists = false;
 
-    public CreateTableAnalyzedStatement(FulltextAnalyzerResolver fulltextAnalyzerResolver){
-        this.fulltextAnalyzerResolver = fulltextAnalyzerResolver;
+    public CreateTableAnalyzedStatement() {
     }
 
     public void table(TableIdent tableIdent, boolean ifNotExists, Schemas schemas) {
@@ -76,10 +78,13 @@ public class CreateTableAnalyzedStatement extends AbstractDDLAnalyzedStatement {
 
     /**
      * name of the template to create
+     *
      * @return the name of the template to create or <code>null</code>
-     *         if no template is created
+     * if no template is created
      */
-    public @Nullable String templateName() {
+    public
+    @Nullable
+    String templateName() {
         if (isPartitioned()) {
             return PartitionName.templateName(tableIdent().schema(), tableIdent().name());
         }
@@ -89,10 +94,13 @@ public class CreateTableAnalyzedStatement extends AbstractDDLAnalyzedStatement {
     /**
      * template prefix to match against index names to which
      * this template should be applied
+     *
      * @return a template prefix for matching index names or null
-     *         if no template is created
+     * if no template is created
      */
-    public @Nullable String templatePrefix() {
+    public
+    @Nullable
+    String templatePrefix() {
         if (isPartitioned()) {
             return templateName() + "*";
         }
@@ -104,8 +112,12 @@ public class CreateTableAnalyzedStatement extends AbstractDDLAnalyzedStatement {
         return (Map) mapping().get("properties");
     }
 
-    public List<String> primaryKeys() {
+    public Collection<String> primaryKeys() {
         return analyzedTableElements.primaryKeys();
+    }
+
+    public Collection<String> notNullColumns() {
+        return analyzedTableElements.notNullColumns();
     }
 
     public Map<String, Object> mapping() {
@@ -120,10 +132,6 @@ public class CreateTableAnalyzedStatement extends AbstractDDLAnalyzedStatement {
         return mapping;
     }
 
-    public FulltextAnalyzerResolver fulltextAnalyzerResolver() {
-        return fulltextAnalyzerResolver;
-    }
-
     public TableIdent tableIdent() {
         return tableIdent;
     }
@@ -135,7 +143,9 @@ public class CreateTableAnalyzedStatement extends AbstractDDLAnalyzedStatement {
         this.routingColumn = routingColumn;
     }
 
-    public @Nullable ColumnIdent routing() {
+    public
+    @Nullable
+    ColumnIdent routing() {
         return routingColumn;
     }
 

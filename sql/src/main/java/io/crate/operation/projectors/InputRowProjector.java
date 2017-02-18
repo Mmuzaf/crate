@@ -22,7 +22,7 @@
 
 package io.crate.operation.projectors;
 
-import io.crate.core.collections.Row;
+import io.crate.data.Row;
 import io.crate.operation.Input;
 import io.crate.operation.InputRow;
 import io.crate.operation.collect.CollectExpression;
@@ -32,7 +32,7 @@ import java.util.List;
 /**
  * projector that simply applies its inputs to the given row in {@link #setNextRow(Row)}
  * and returns the results to its downstream.
- *
+ * <p>
  * Differs from {@link SimpleTopNProjector} in that it does not apply any limit or offset.
  */
 public class InputRowProjector extends AbstractProjector {
@@ -47,7 +47,7 @@ public class InputRowProjector extends AbstractProjector {
     }
 
     @Override
-    public boolean setNextRow(Row row) {
+    public Result setNextRow(Row row) {
         for (CollectExpression<Row, ?> collectExpression : collectExpressions) {
             collectExpression.setNextRow(row);
         }
@@ -55,8 +55,8 @@ public class InputRowProjector extends AbstractProjector {
     }
 
     @Override
-    public void finish() {
-        downstream.finish();
+    public void finish(RepeatHandle repeatable) {
+        downstream.finish(repeatable);
     }
 
     @Override

@@ -33,11 +33,13 @@ import io.crate.analyze.symbol.Symbol;
 import io.crate.exceptions.ColumnUnknownException;
 import io.crate.metadata.ColumnIdent;
 import io.crate.metadata.Path;
+import io.crate.metadata.table.Operation;
 import io.crate.planner.projection.WriterProjection;
+import io.crate.sql.tree.QualifiedName;
 import org.elasticsearch.common.settings.Settings;
 
+import javax.annotation.Nonnull;
 import javax.annotation.Nullable;
-import javax.print.attribute.standard.Compression;
 import java.util.List;
 import java.util.Map;
 
@@ -51,7 +53,6 @@ public class CopyToAnalyzedStatement extends AbstractCopyAnalyzedStatement imple
     private final WriterProjection.OutputFormat outputFormat;
     @Nullable
     private final List<String> outputNames;
-    private final boolean isDirectoryUri;
 
     /*
      * add values that should be added or overwritten
@@ -62,7 +63,6 @@ public class CopyToAnalyzedStatement extends AbstractCopyAnalyzedStatement imple
     public CopyToAnalyzedStatement(QueriedDocTable subQueryRelation,
                                    Settings settings,
                                    Symbol uri,
-                                   boolean isDirectoryUri,
                                    @Nullable WriterProjection.CompressionType compressionType,
                                    @Nullable WriterProjection.OutputFormat outputFormat,
                                    @Nullable List<String> outputNames,
@@ -74,7 +74,6 @@ public class CopyToAnalyzedStatement extends AbstractCopyAnalyzedStatement imple
         this.compressionType = compressionType;
         this.outputNames = outputNames;
         this.outputFormat = outputFormat;
-        this.isDirectoryUri = isDirectoryUri;
         this.overwrites = MoreObjects.firstNonNull(overwrites, ImmutableMap.<ColumnIdent, Symbol>of());
     }
 
@@ -87,16 +86,18 @@ public class CopyToAnalyzedStatement extends AbstractCopyAnalyzedStatement imple
     }
 
     @Nullable
-    public WriterProjection.CompressionType compressionType() { return compressionType; }
+    public WriterProjection.CompressionType compressionType() {
+        return compressionType;
+    }
 
     @Nullable
-    public WriterProjection.OutputFormat outputFormat() { return outputFormat; }
+    public WriterProjection.OutputFormat outputFormat() {
+        return outputFormat;
+    }
 
     @Nullable
-    public List<String> outputNames() { return outputNames; }
-
-    public boolean isDirectoryUri() {
-        return isDirectoryUri;
+    public List<String> outputNames() {
+        return outputNames;
     }
 
     public Map<ColumnIdent, Symbol> overwrites() {
@@ -110,14 +111,8 @@ public class CopyToAnalyzedStatement extends AbstractCopyAnalyzedStatement imple
 
     @Nullable
     @Override
-    public Field getField(Path path) {
+    public Field getField(Path path, Operation operation) throws UnsupportedOperationException, ColumnUnknownException {
         throw new UnsupportedOperationException("getField not implemented on CopyToAnalyzedStatement");
-    }
-
-    @Nullable
-    @Override
-    public Field getWritableField(Path path) throws UnsupportedOperationException, ColumnUnknownException {
-        throw new UnsupportedOperationException("CopyToAnalyzedStatement is not writable");
     }
 
     @Override
@@ -128,5 +123,20 @@ public class CopyToAnalyzedStatement extends AbstractCopyAnalyzedStatement imple
     @Override
     public <C, R> R accept(AnalyzedRelationVisitor<C, R> visitor, C context) {
         return visitor.visitCopyToAnalyzedStatement(this, context);
+    }
+
+    @Override
+    public boolean isWriteOperation() {
+        return false;
+    }
+
+    @Override
+    public QualifiedName getQualifiedName() {
+        throw new UnsupportedOperationException("method not supported");
+    }
+
+    @Override
+    public void setQualifiedName(@Nonnull QualifiedName qualifiedName) {
+        throw new UnsupportedOperationException("method not supported");
     }
 }

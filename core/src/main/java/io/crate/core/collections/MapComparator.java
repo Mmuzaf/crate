@@ -22,6 +22,8 @@
 package io.crate.core.collections;
 
 import com.google.common.base.Preconditions;
+import io.crate.types.DataType;
+import io.crate.types.DataTypes;
 
 import java.util.Comparator;
 import java.util.Map;
@@ -30,7 +32,8 @@ public class MapComparator implements Comparator<Map> {
 
     private static final MapComparator INSTANCE = new MapComparator();
 
-    private MapComparator() {}
+    private MapComparator() {
+    }
 
     public static MapComparator getInstance() {
         return INSTANCE;
@@ -39,11 +42,32 @@ public class MapComparator implements Comparator<Map> {
     public static <K, V> int compareMaps(Map<K, V> m1, Map<K, V> m2) {
         Preconditions.checkNotNull(m1, "map is null");
         Preconditions.checkNotNull(m2, "map is null");
-        int sizeCompare = Integer.valueOf(m1.size()).compareTo(m2.size());
+        int sizeCompare = Integer.compare(m1.size(), m2.size());
         if (sizeCompare != 0)
             return sizeCompare;
+
         for (Map.Entry<K, V> entry : m1.entrySet()) {
-            if (!entry.getValue().equals(m2.get(entry.getKey()))) {
+            V thisValue = entry.getValue();
+            V otherValue = m2.get(entry.getKey());
+            if (thisValue == null) {
+                if (otherValue != null) {
+                    return 1;
+                } else {
+                    continue;
+                }
+            }
+            if (!thisValue.equals(otherValue)) {
+                if (otherValue == null) {
+                    return -1;
+                }
+                if (!thisValue.getClass().equals(otherValue.getClass())) {
+                    DataType leftType = DataTypes.guessType(thisValue);
+                    int cmp = leftType.compareValueTo(leftType.value(thisValue), leftType.value(otherValue));
+                    if (cmp == 0) {
+                        continue;
+                    }
+                    return cmp;
+                }
                 return 1;
             }
         }

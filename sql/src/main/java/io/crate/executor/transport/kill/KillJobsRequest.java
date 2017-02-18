@@ -34,15 +34,14 @@ public class KillJobsRequest extends TransportRequest {
 
     private Collection<UUID> toKill;
 
-    public KillJobsRequest() {
-
+    KillJobsRequest() {
     }
 
     public KillJobsRequest(Collection<UUID> jobsToKill) {
         toKill = jobsToKill;
     }
 
-    public Collection<UUID> toKill() {
+    Collection<UUID> toKill() {
         return toKill;
     }
 
@@ -66,5 +65,10 @@ public class KillJobsRequest extends TransportRequest {
             out.writeLong(job.getMostSignificantBits());
             out.writeLong(job.getLeastSignificantBits());
         }
+    }
+
+    @Override
+    public String toString() {
+        return "KillJobsRequest{" + toKill + '}';
     }
 }

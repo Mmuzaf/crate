@@ -24,13 +24,13 @@ package io.crate.analyze;
 import com.google.common.base.Preconditions;
 import io.crate.analyze.expressions.ExpressionToObjectVisitor;
 import io.crate.analyze.expressions.ExpressionToStringVisitor;
+import io.crate.data.Row;
 import io.crate.metadata.ColumnIdent;
 import io.crate.metadata.PartitionName;
-import io.crate.metadata.ReferenceInfo;
+import io.crate.metadata.Reference;
 import io.crate.metadata.TableIdent;
 import io.crate.metadata.doc.DocTableInfo;
 import io.crate.sql.tree.Assignment;
-import io.crate.types.DataType;
 import io.crate.types.DataTypes;
 import org.apache.lucene.util.BytesRef;
 
@@ -40,26 +40,26 @@ import java.util.*;
 public class PartitionPropertiesAnalyzer {
 
     public static Map<ColumnIdent, Object> assignmentsToMap(List<Assignment> assignments,
-                                                       Object[] parameters) {
+                                                            Row parameters) {
         Map<ColumnIdent, Object> map = new HashMap<>(assignments.size());
         for (Assignment assignment : assignments) {
             map.put(
-                    ColumnIdent.fromPath(ExpressionToStringVisitor.convert(assignment.columnName(), parameters)),
-                    ExpressionToObjectVisitor.convert(assignment.expression(), parameters)
-                    );
+                ColumnIdent.fromPath(ExpressionToStringVisitor.convert(assignment.columnName(), parameters)),
+                ExpressionToObjectVisitor.convert(assignment.expression(), parameters)
+            );
         }
         return map;
     }
 
     public static PartitionName toPartitionName(DocTableInfo tableInfo,
                                                 List<Assignment> partitionProperties,
-                                                Object[] parameters) {
+                                                Row parameters) {
         Preconditions.checkArgument(tableInfo.isPartitioned(), "table '%s' is not partitioned", tableInfo.ident().fqn());
         Preconditions.checkArgument(partitionProperties.size() == tableInfo.partitionedBy().size(),
-                "The table \"%s\" is partitioned by %s columns but the PARTITION clause contains %s columns",
-                tableInfo.ident().fqn(),
-                tableInfo.partitionedBy().size(),
-                partitionProperties.size()
+            "The table \"%s\" is partitioned by %s columns but the PARTITION clause contains %s columns",
+            tableInfo.ident().fqn(),
+            tableInfo.partitionedBy().size(),
+            partitionProperties.size()
         );
         Map<ColumnIdent, Object> properties = assignmentsToMap(partitionProperties, parameters);
         BytesRef[] values = new BytesRef[properties.size()];
@@ -69,12 +69,12 @@ public class PartitionPropertiesAnalyzer {
 
             int idx = tableInfo.partitionedBy().indexOf(entry.getKey());
             try {
-                ReferenceInfo referenceInfo = tableInfo.partitionedByColumns().get(idx);
-                Object converted = referenceInfo.type().value(value);
+                Reference reference = tableInfo.partitionedByColumns().get(idx);
+                Object converted = reference.valueType().value(value);
                 values[idx] = converted == null ? null : DataTypes.STRING.value(converted);
             } catch (IndexOutOfBoundsException ex) {
                 throw new IllegalArgumentException(
-                        String.format(Locale.ENGLISH, "\"%s\" is no known partition column", entry.getKey().sqlFqn()));
+                    String.format(Locale.ENGLISH, "\"%s\" is no known partition column", entry.getKey().sqlFqn()));
             }
         }
         return new PartitionName(tableInfo.ident(), Arrays.asList(values));
@@ -83,7 +83,7 @@ public class PartitionPropertiesAnalyzer {
     public static PartitionName toPartitionName(TableIdent tableIdent,
                                                 @Nullable DocTableInfo docTableInfo,
                                                 List<Assignment> partitionProperties,
-                                                Object[] parameters) {
+                                                Row parameters) {
         if (docTableInfo != null) {
             return toPartitionName(docTableInfo, partitionProperties, parameters);
         }
@@ -93,17 +93,15 @@ public class PartitionPropertiesAnalyzer {
         BytesRef[] values = new BytesRef[properties.size()];
 
         int idx = 0;
-        for (Map.Entry<ColumnIdent, Object> entry : properties.entrySet()) {
-            DataType guessedType = DataTypes.guessType(entry.getValue(), false);
-            Object value = guessedType.value(entry.getValue());
-            values[idx++] = DataTypes.STRING.value(value);
+        for (Object o : properties.values()) {
+            values[idx++] = DataTypes.STRING.value(o);
         }
         return new PartitionName(tableIdent, Arrays.asList(values));
     }
 
     public static String toPartitionIdent(DocTableInfo tableInfo,
                                           List<Assignment> partitionProperties,
-                                          Object[] parameters) {
+                                          Row parameters) {
         return toPartitionName(tableInfo, partitionProperties, parameters).ident();
     }
 }

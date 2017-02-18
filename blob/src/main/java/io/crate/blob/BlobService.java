@@ -23,7 +23,7 @@ package io.crate.blob;
 
 import io.crate.blob.exceptions.MissingHTTPEndpointException;
 import io.crate.blob.pending_transfer.BlobHeadRequestHandler;
-import io.crate.blob.v2.BlobIndices;
+import io.crate.blob.v2.BlobIndex;
 import org.elasticsearch.ElasticsearchException;
 import org.elasticsearch.cluster.ClusterService;
 import org.elasticsearch.cluster.node.DiscoveryNode;
@@ -40,28 +40,22 @@ import org.elasticsearch.http.HttpServer;
 import org.elasticsearch.indices.recovery.BlobRecoverySource;
 import org.elasticsearch.transport.TransportService;
 
-import java.io.File;
-import java.util.HashSet;
-import java.util.Set;
-
 public class BlobService extends AbstractLifecycleComponent<BlobService> {
 
     private final Injector injector;
     private final BlobHeadRequestHandler blobHeadRequestHandler;
 
     private final ClusterService clusterService;
-    private final BlobEnvironment blobEnvironment;
 
     @Inject
     public BlobService(Settings settings,
-            ClusterService clusterService, Injector injector,
-            BlobHeadRequestHandler blobHeadRequestHandler,
-            BlobEnvironment blobEnvironment) {
+                       ClusterService clusterService,
+                       Injector injector,
+                       BlobHeadRequestHandler blobHeadRequestHandler) {
         super(settings);
         this.clusterService = clusterService;
         this.injector = injector;
         this.blobHeadRequestHandler = blobHeadRequestHandler;
-        this.blobEnvironment = blobEnvironment;
     }
 
     public RemoteDigestBlob newBlob(String index, String digest) {
@@ -80,16 +74,8 @@ public class BlobService extends AbstractLifecycleComponent<BlobService> {
         ESLogger transportServiceLogger = Loggers.getLogger(TransportService.class);
         String previousLevel = transportServiceLogger.getLevel();
         transportServiceLogger.setLevel("ERROR");
-
         injector.getInstance(BlobRecoverySource.class).registerHandler();
-
         transportServiceLogger.setLevel(previousLevel);
-
-        // validate the optional blob path setting
-        String globalBlobPathPrefix = settings.get(BlobEnvironment.SETTING_BLOBS_PATH);
-        if (globalBlobPathPrefix != null) {
-            blobEnvironment.blobsPath(new File(globalBlobPathPrefix));
-        }
 
         blobHeadRequestHandler.registerHandler();
 
@@ -107,10 +93,16 @@ public class BlobService extends AbstractLifecycleComponent<BlobService> {
 
     @Override
     protected void doStop() throws ElasticsearchException {
+        if (settings.getAsBoolean("http.enabled", true)) {
+            injector.getInstance(HttpServer.class).stop();
+        }
     }
 
     @Override
     protected void doClose() throws ElasticsearchException {
+        if (settings.getAsBoolean("http.enabled", true)) {
+            injector.getInstance(HttpServer.class).close();
+        }
     }
 
     /**
@@ -120,34 +112,26 @@ public class BlobService extends AbstractLifecycleComponent<BlobService> {
      */
     public String getRedirectAddress(String index, String digest) throws MissingHTTPEndpointException {
         ShardIterator shards = clusterService.operationRouting().getShards(
-                clusterService.state(), index, null, null, digest, "_local");
+            clusterService.state(), index, null, null, digest, "_local");
 
+        String localNodeId = clusterService.state().nodes().getLocalNodeId();
+        DiscoveryNodes nodes = clusterService.state().getNodes();
         ShardRouting shard;
-        Set<String> nodeIds = new HashSet<>();
-
-        // check if one of the shards is on the current node;
         while ((shard = shards.nextOrNull()) != null) {
             if (!shard.active()) {
                 continue;
             }
-            if (shard.currentNodeId().equals(clusterService.state().nodes().localNodeId())) {
+            if (shard.currentNodeId().equals(localNodeId)) {
+                // no redirect required if the shard is on this node
                 return null;
             }
-            nodeIds.add(shard.currentNodeId());
-        }
 
-        DiscoveryNode node;
-        DiscoveryNodes nodes = clusterService.state().getNodes();
-        for (String nodeId : nodeIds) {
-            node = nodes.get(nodeId);
-            if (node.getAttributes().containsKey("http_address")) {
-                return node.getAttributes().get("http_address") + "/_blobs/" + BlobIndices.indexName(index) + "/" + digest;
+            DiscoveryNode node = nodes.get(shard.currentNodeId());
+            String httpAddress = node.getAttributes().get("http_address");
+            if (httpAddress != null) {
+                return httpAddress + "/_blobs/" + BlobIndex.stripPrefix(index) + "/" + digest;
             }
-            // else:
-            // No HttpServer on node,
-            // okay if there are replica nodes with httpServer available
         }
-
         throw new MissingHTTPEndpointException("Can't find a suitable http server to serve the blob");
     }
 

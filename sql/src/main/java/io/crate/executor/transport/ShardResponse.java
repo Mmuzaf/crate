@@ -23,16 +23,17 @@ package io.crate.executor.transport;
 
 import com.carrotsearch.hppc.IntArrayList;
 import com.google.common.base.MoreObjects;
-import org.elasticsearch.action.ActionResponse;
+import org.elasticsearch.action.ActionWriteResponse;
 import org.elasticsearch.common.io.stream.StreamInput;
 import org.elasticsearch.common.io.stream.StreamOutput;
 import org.elasticsearch.common.io.stream.Streamable;
 
+import javax.annotation.Nullable;
 import java.io.IOException;
 import java.util.ArrayList;
 import java.util.List;
 
-public class ShardResponse extends ActionResponse {
+public class ShardResponse extends ActionWriteResponse {
 
     /**
      * Represents a failure.
@@ -47,9 +48,9 @@ public class ShardResponse extends ActionResponse {
         }
 
         public Failure(String id, String message, boolean versionConflict) {
-             this.id = id;
-             this.message = message;
-             this.versionConflict = versionConflict;
+            this.id = id;
+            this.message = message;
+            this.versionConflict = versionConflict;
         }
 
         public String id() {
@@ -87,15 +88,17 @@ public class ShardResponse extends ActionResponse {
         @Override
         public String toString() {
             return MoreObjects.toStringHelper(this)
-                    .add("id", id)
-                    .add("message", message)
-                    .add("versionConflict", versionConflict)
-                    .toString();
+                .add("id", id)
+                .add("message", message)
+                .add("versionConflict", versionConflict)
+                .toString();
         }
     }
 
     private IntArrayList locations = new IntArrayList();
     private List<Failure> failures = new ArrayList<>();
+    @Nullable
+    private Throwable failure;
 
     public ShardResponse() {
     }
@@ -118,6 +121,13 @@ public class ShardResponse extends ActionResponse {
         return failures;
     }
 
+    public void failure(@Nullable Throwable throwable) {
+        this.failure = throwable;
+    }
+
+    public Throwable failure() {
+        return failure;
+    }
 
     @Override
     public void readFrom(StreamInput in) throws IOException {
@@ -133,6 +143,9 @@ public class ShardResponse extends ActionResponse {
                 failures.add(null);
             }
         }
+        if (in.readBoolean()) {
+            failure = in.readThrowable();
+        }
     }
 
     @Override
@@ -147,6 +160,12 @@ public class ShardResponse extends ActionResponse {
                 out.writeBoolean(true);
                 failures.get(i).writeTo(out);
             }
+        }
+        if (failure != null) {
+            out.writeBoolean(true);
+            out.writeThrowable(failure);
+        } else {
+            out.writeBoolean(false);
         }
     }
 

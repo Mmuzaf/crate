@@ -21,37 +21,35 @@
 
 package io.crate.operation.merge;
 
-import com.google.common.collect.Ordering;
-
-import java.util.Collections;
+import java.util.Comparator;
 
 /**
  * A pagingIterator that sorts on consumption
- *
+ * <p>
  * {@link #hasNext()} might call next() on a backing iterator. So if one or more of the backing iterators contains shared
  * objects these should be consumed after a next() call and before the next hasNext() or next() call or they'll change.
  */
-public class SortedPagingIterator<T> implements PagingIterator<T> {
+public class SortedPagingIterator<TKey, TRow> implements PagingIterator<TKey, TRow> {
 
-    private final SortedMergeIterator<T> mergingIterator;
+    private final SortedMergeIterator<TKey, TRow> mergingIterator;
     private boolean ignoreLeastExhausted = false;
 
     /**
-     * @param ordering determining how the items are sorted
+     * @param comparator    determining how the items are sorted
      * @param needsRepeat if true additional internal state is kept in order to be able to repeat this iterator.
      *                    If this is false a call to {@link #repeat()} might result in an excaption, at best the behaviour is undefined.
      */
-    public SortedPagingIterator(Ordering<T> ordering, boolean needsRepeat) {
+    public SortedPagingIterator(Comparator<TRow> comparator, boolean needsRepeat) {
         if (needsRepeat) {
-            mergingIterator = new RecordingSortedMergeIterator<>(Collections.<NumberedIterable<T>>emptyList(), ordering);
+            mergingIterator = new RecordingSortedMergeIterator<>(comparator);
         } else {
             // does not support repeat !!!
-            mergingIterator = new PlainSortedMergeIterator<>(Collections.<NumberedIterable<T>>emptyList(), ordering);
+            mergingIterator = new PlainSortedMergeIterator<>(comparator);
         }
     }
 
     @Override
-    public void merge(Iterable<? extends NumberedIterable<T>> iterables) {
+    public void merge(Iterable<? extends KeyIterable<TKey, TRow>> iterables) {
         mergingIterator.merge(iterables);
     }
 
@@ -61,12 +59,12 @@ public class SortedPagingIterator<T> implements PagingIterator<T> {
     }
 
     @Override
-    public int exhaustedIterable() {
+    public TKey exhaustedIterable() {
         return mergingIterator.exhaustedIterable();
     }
 
     @Override
-    public Iterable<T> repeat() {
+    public Iterable<TRow> repeat() {
         return mergingIterator.repeat();
     }
 
@@ -76,12 +74,13 @@ public class SortedPagingIterator<T> implements PagingIterator<T> {
     }
 
     @Override
-    public T next() {
+    public TRow next() {
         return mergingIterator.next();
     }
 
     @Override
     public void remove() {
-        throw new UnsupportedOperationException();
+        throw new UnsupportedOperationException("remove is not supported for " +
+                                                SortedPagingIterator.class.getSimpleName());
     }
 }

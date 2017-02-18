@@ -29,34 +29,34 @@ import java.util.Map;
 
 public class NodeOperationGrouper {
 
-    private NodeOperationGrouper() {}
-
-    public static class Context {
-
-        private final ArrayListMultimap<String, NodeOperation> byServer;
-        public NodeOperation currentOperation;
-
-        public Context() {
-            this.byServer = ArrayListMultimap.create();
-        }
-
-        protected void add(String server) {
-            byServer.put(server, currentOperation);
-        }
-
-        public Map<String, Collection<NodeOperation>> grouped() {
-            return byServer.asMap();
-        }
+    private NodeOperationGrouper() {
     }
 
     public static Map<String, Collection<NodeOperation>> groupByServer(Iterable<NodeOperation> nodeOperations) {
         Context ctx = new Context();
         for (NodeOperation nodeOperation : nodeOperations) {
             ctx.currentOperation = nodeOperation;
-            for (String server : nodeOperation.executionPhase().executionNodes()) {
+            for (String server : nodeOperation.executionPhase().nodeIds()) {
                 ctx.add(server);
             }
         }
         return ctx.grouped();
+    }
+
+    private static class Context {
+        private final ArrayListMultimap<String, NodeOperation> byServer;
+        private NodeOperation currentOperation;
+
+        private Context() {
+            this.byServer = ArrayListMultimap.create();
+        }
+
+        private void add(String server) {
+            byServer.put(server, currentOperation);
+        }
+
+        private Map<String, Collection<NodeOperation>> grouped() {
+            return byServer.asMap();
+        }
     }
 }

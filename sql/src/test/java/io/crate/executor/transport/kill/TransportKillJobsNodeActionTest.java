@@ -22,15 +22,13 @@
 package io.crate.executor.transport.kill;
 
 import com.google.common.collect.ImmutableList;
-import io.crate.executor.transport.Transports;
 import io.crate.jobs.JobContextService;
 import org.elasticsearch.action.ActionListener;
+import org.elasticsearch.common.settings.Settings;
 import org.elasticsearch.test.cluster.NoopClusterService;
-import org.elasticsearch.threadpool.ThreadPool;
 import org.elasticsearch.transport.TransportService;
-import org.junit.After;
-import org.junit.Before;
 import org.junit.Test;
+import org.mockito.Answers;
 
 import java.util.List;
 import java.util.UUID;
@@ -41,35 +39,21 @@ import static org.mockito.Mockito.*;
 
 public class TransportKillJobsNodeActionTest {
 
-    private ThreadPool threadPool;
-
-    @Before
-    public void setUp() throws Exception {
-        threadPool = new ThreadPool("dummy");
-    }
-
-    @After
-    public void tearDown() throws Exception {
-        threadPool.shutdown();
-        threadPool.awaitTermination(100, TimeUnit.MILLISECONDS);
-    }
-
     @Test
     public void testKillIsCalledOnJobContextService() throws Exception {
         TransportService transportService = mock(TransportService.class);
-        JobContextService jobContextService = mock(JobContextService.class);
-        NoopClusterService noopClusterService = new NoopClusterService();
-
+        JobContextService jobContextService = mock(JobContextService.class, Answers.RETURNS_MOCKS.get());
         TransportKillJobsNodeAction transportKillJobsNodeAction = new TransportKillJobsNodeAction(
-                jobContextService,
-                new NoopClusterService(),
-                new Transports(noopClusterService, transportService, threadPool),
-                transportService
+            Settings.EMPTY,
+            jobContextService,
+            new NoopClusterService(),
+            transportService
         );
 
         final CountDownLatch latch = new CountDownLatch(1);
         List<UUID> toKill = ImmutableList.of(UUID.randomUUID(), UUID.randomUUID());
-        transportKillJobsNodeAction.executeKillOnAllNodes(new KillJobsRequest(toKill), new ActionListener<KillResponse>() {
+
+        transportKillJobsNodeAction.nodeOperation(new KillJobsRequest(toKill), new ActionListener<KillResponse>() {
             @Override
             public void onResponse(KillResponse killAllResponse) {
                 latch.countDown();
@@ -81,8 +65,7 @@ public class TransportKillJobsNodeActionTest {
             }
         });
 
-        latch.await();
+        latch.await(1, TimeUnit.SECONDS);
         verify(jobContextService, times(1)).killJobs(toKill);
     }
-
 }

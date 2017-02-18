@@ -22,7 +22,7 @@
 package io.crate.operation.projectors;
 
 import com.google.common.base.Preconditions;
-import io.crate.core.collections.Row;
+import io.crate.data.Row;
 import io.crate.operation.Input;
 import io.crate.operation.collect.CollectExpression;
 
@@ -39,28 +39,32 @@ public class SimpleTopNProjector extends InputRowProjector {
                                int offset) {
         super(inputs, collectExpressions);
 
-        Preconditions.checkArgument(limit >= 0, "invalid limit");
-        Preconditions.checkArgument(offset>=0, "invalid offset");
+        Preconditions.checkArgument(limit >= 0, "invalid limit: " + limit);
+        Preconditions.checkArgument(offset >= 0, "invalid offset: " + offset);
         this.remainingOffset = offset;
         this.toCollect = limit;
     }
 
     @Override
-    public boolean setNextRow(Row row) {
-        if (toCollect < 1){
-            return false;
+    public Result setNextRow(Row row) {
+        if (toCollect < 1) {
+            return Result.STOP;
         }
         if (remainingOffset > 0) {
             remainingOffset--;
-            return true;
+            return Result.CONTINUE;
         }
-        boolean wantMore = super.setNextRow(row);
-        if (!wantMore) {
-            toCollect = -1;
-            return false;
-        } else {
-            toCollect--;
-            return toCollect > 0;
+        toCollect--;
+        Result result = super.setNextRow(row);
+        switch (result) {
+            case PAUSE:
+                return result;
+            case CONTINUE:
+                return toCollect < 1 ? Result.STOP : Result.CONTINUE;
+            case STOP:
+                toCollect = -1;
+                return Result.STOP;
         }
+        throw new AssertionError("Unrecognized setNextRow result: " + result);
     }
 }

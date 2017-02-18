@@ -21,80 +21,43 @@
 
 package io.crate.jobs;
 
+import com.google.common.collect.ImmutableList;
+import com.google.common.util.concurrent.Futures;
+import com.google.common.util.concurrent.ListenableFuture;
+import com.google.common.util.concurrent.SettableFuture;
+import io.crate.concurrent.CountdownFutureCallback;
 import io.crate.exceptions.ContextMissingException;
-import io.crate.operation.collect.StatsTables;
+import io.crate.operation.collect.stats.JobsLogs;
 import org.elasticsearch.ElasticsearchException;
+import org.elasticsearch.cluster.ClusterService;
 import org.elasticsearch.common.component.AbstractLifecycleComponent;
-import org.elasticsearch.common.inject.BindingAnnotation;
 import org.elasticsearch.common.inject.Inject;
 import org.elasticsearch.common.inject.Singleton;
 import org.elasticsearch.common.settings.Settings;
-import org.elasticsearch.common.unit.TimeValue;
-import org.elasticsearch.common.util.Callback;
 import org.elasticsearch.common.util.concurrent.ConcurrentCollections;
-import org.elasticsearch.threadpool.ThreadPool;
 
+import javax.annotation.Nonnull;
 import javax.annotation.Nullable;
-import java.lang.annotation.ElementType;
-import java.lang.annotation.Retention;
-import java.lang.annotation.RetentionPolicy;
-import java.lang.annotation.Target;
 import java.util.*;
 import java.util.concurrent.ConcurrentMap;
-import java.util.concurrent.ScheduledFuture;
-import java.util.concurrent.locks.ReentrantReadWriteLock;
+import java.util.function.BiConsumer;
+import java.util.stream.Stream;
 
 @Singleton
 public class JobContextService extends AbstractLifecycleComponent<JobContextService> {
 
-    @BindingAnnotation
-    @Target({ ElementType.FIELD, ElementType.PARAMETER, ElementType.METHOD })
-    @Retention(RetentionPolicy.RUNTIME)
-    public static @interface JobKeepAlive {}
-
-    @BindingAnnotation
-    @Target({ ElementType.FIELD, ElementType.PARAMETER, ElementType.METHOD })
-    @Retention(RetentionPolicy.RUNTIME)
-    public static @interface ReaperInterval {}
-
-
-    private final ThreadPool threadPool;
-    private final StatsTables statsTables;
-    private final ScheduledFuture<?> keepAliveReaper;
+    private final ClusterService clusterService;
+    private final JobsLogs jobsLogs;
     private final ConcurrentMap<UUID, JobExecutionContext> activeContexts =
-            ConcurrentCollections.newConcurrentMapWithAggressiveConcurrency();
-
-    private final ReentrantReadWriteLock rwLock = new ReentrantReadWriteLock();
-    private final ReentrantReadWriteLock.ReadLock readLock = rwLock.readLock();
-    private final ReentrantReadWriteLock.WriteLock writeLock = rwLock.writeLock();
-
-    private final TimeValue keepAlive;
-    private final Reaper reaperImpl;
+        ConcurrentCollections.newConcurrentMapWithAggressiveConcurrency();
 
     private final List<KillAllListener> killAllListeners = Collections.synchronizedList(new ArrayList<KillAllListener>());
 
     @Inject
-    public JobContextService(Settings settings,
-                             ThreadPool threadPool,
-                             StatsTables statsTables,
-                             Reaper reaper,
-                             @JobKeepAlive TimeValue keepAlive,
-                             @ReaperInterval TimeValue reaperInterval) {
+    public JobContextService(Settings settings, ClusterService clusterService, JobsLogs jobsLogs) {
         super(settings);
-        this.threadPool = threadPool;
-        this.statsTables = statsTables;
-        this.keepAlive = keepAlive;
-        this.reaperImpl = reaper;
-        if (keepAlive.micros() > 0) {
-            this.keepAliveReaper = threadPool.scheduleWithFixedDelay(new Runnable() {
-                @Override
-                public void run() {
-                    reaperImpl.killHangingJobs(JobContextService.this.keepAlive, activeContexts.values());
-                }
-            }, reaperInterval);
-        } else {
-            this.keepAliveReaper = null;
-        }
+        this.clusterService = clusterService;
+        this.jobsLogs = jobsLogs;
     }
 
     @Override
@@ -104,7 +67,7 @@ public class JobContextService extends AbstractLifecycleComponent<JobContextServ
     @Override
     protected void doStop() throws ElasticsearchException {
         for (JobExecutionContext context : activeContexts.values()) {
-            context.close();
+            context.kill();
         }
     }
 
@@ -114,9 +77,6 @@ public class JobContextService extends AbstractLifecycleComponent<JobContextServ
 
     @Override
     protected void doClose() throws ElasticsearchException {
-        if (keepAliveReaper != null) {
-            keepAliveReaper.cancel(false);
-        }
     }
 
     public JobExecutionContext getContext(UUID jobId) {
@@ -127,90 +87,146 @@ public class JobContextService extends AbstractLifecycleComponent<JobContextServ
         return context;
     }
 
+    public Stream<UUID> getJobIdsByCoordinatorNode(final String coordinatorNodeId) {
+        return activeContexts.values()
+            .stream()
+            .filter(jobExecutionContext -> jobExecutionContext.coordinatorNodeId().equals(coordinatorNodeId))
+            .map(JobExecutionContext::jobId);
+    }
+
+    public Stream<UUID> getJobIdsByParticipatingNodes(final String nodeId) {
+        return activeContexts.values().stream()
+            .filter(i -> i.participatingNodes().contains(nodeId))
+            .map(JobExecutionContext::jobId);
+    }
+
     @Nullable
     public JobExecutionContext getContextOrNull(UUID jobId) {
         return activeContexts.get(jobId);
     }
 
     public JobExecutionContext.Builder newBuilder(UUID jobId) {
-        return new JobExecutionContext.Builder(jobId, threadPool, statsTables);
+        return new JobExecutionContext.Builder(jobId, clusterService.localNode().getId(), Collections.emptyList(), jobsLogs);
     }
 
-    public JobExecutionContext createContext(JobExecutionContext.Builder contextBuilder) {
+    public JobExecutionContext.Builder newBuilder(UUID jobId, String coordinatorNodeId) {
+        return new JobExecutionContext.Builder(jobId, coordinatorNodeId, Collections.emptyList(), jobsLogs);
+    }
+
+    public JobExecutionContext.Builder newBuilder(UUID jobId, String coordinatorNodeId, Collection<String> participatingNodes) {
+        return new JobExecutionContext.Builder(jobId, coordinatorNodeId, participatingNodes, jobsLogs);
+    }
+
+    public JobExecutionContext createContext(JobExecutionContext.Builder contextBuilder) throws Exception {
         if (contextBuilder.isEmpty()) {
             throw new IllegalArgumentException("JobExecutionContext.Builder must at least contain 1 SubExecutionContext");
         }
         final UUID jobId = contextBuilder.jobId();
         JobExecutionContext newContext = contextBuilder.build();
-        readLock.lock();
-        try {
-            newContext.setCloseCallback(new JobContextCallback());
-            JobExecutionContext existing = activeContexts.putIfAbsent(jobId, newContext);
-            if (existing != null) {
-                throw new IllegalArgumentException(
-                        String.format(Locale.ENGLISH, "context for job %s already exists:%n%s", jobId, existing));
-            }
-        } finally {
-            readLock.unlock();
+
+        JobContextCallback jobContextCallback = new JobContextCallback(jobId);
+        newContext.completionFuture().whenComplete(jobContextCallback);
+
+        JobExecutionContext existing = activeContexts.putIfAbsent(jobId, newContext);
+        if (existing != null) {
+            throw new IllegalArgumentException(
+                String.format(Locale.ENGLISH, "context for job %s already exists:%n%s", jobId, existing));
         }
         if (logger.isTraceEnabled()) {
             logger.trace("JobExecutionContext created for job {},  activeContexts: {}",
-                    jobId, activeContexts.size());
+                jobId, activeContexts.size());
         }
         return newContext;
     }
 
-    public long killAll() {
-        long numKilled = 0L;
-        long now = System.nanoTime();
-        writeLock.lock();
-        try {
-            for (KillAllListener killAllListener : killAllListeners) {
-                killAllListener.killAllJobs(now);
+
+    /**
+     * kills all contexts which are active at the time of the call of this method.
+     *
+     * @return a future holding the number of contexts kill was called on, the future is finished when all contexts
+     * are completed and never fails.
+     */
+    public ListenableFuture<Integer> killAll() {
+        for (KillAllListener killAllListener : killAllListeners) {
+            try {
+                killAllListener.killAllJobs();
+            } catch (Throwable t) {
+                logger.error("Failed to call killAllJobs on listener {}", t, killAllListener);
             }
-            for (JobExecutionContext jobExecutionContext : activeContexts.values()) {
-                jobExecutionContext.kill();
-                // don't use  numKilled = activeContext.size() because the content of activeContexts could change
+        }
+        Collection<UUID> toKill = ImmutableList.copyOf(activeContexts.keySet());
+        if (toKill.isEmpty()) {
+            return Futures.immediateFuture(0);
+        }
+        return killContexts(toKill);
+    }
+
+    private ListenableFuture<Integer> killContexts(Collection<UUID> toKill) {
+        assert !toKill.isEmpty() : "toKill must not be empty";
+        int numKilled = 0;
+        CountdownFutureCallback countDownFuture = new CountdownFutureCallback(toKill.size());
+        for (UUID jobId : toKill) {
+            JobExecutionContext ctx = activeContexts.get(jobId);
+            if (ctx != null) {
+                ctx.completionFuture().whenComplete(countDownFuture);
+                ctx.kill();
                 numKilled++;
+            } else {
+                // no kill but we need to count down
+                countDownFuture.onSuccess();
             }
-            assert activeContexts.size() == 0 :
-                    "after killing all contexts, they should have been removed from the map due to the callbacks";
-        } finally {
-            writeLock.unlock();
         }
-        return numKilled;
+        final SettableFuture<Integer> result = SettableFuture.create();
+        final int finalNumKilled = numKilled;
+        countDownFuture.whenComplete(
+            (r, e) -> result.set(finalNumKilled));
+        return result;
     }
 
-    public long killJobs(Collection<UUID> toKill) {
-        long numKilled = 0L;
-        writeLock.lock();
-        try {
-            for (KillAllListener killAllListener : killAllListeners) {
-                for (UUID job : toKill) {
+    public ListenableFuture<Integer> killJobs(Collection<UUID> toKill) {
+        for (KillAllListener killAllListener : killAllListeners) {
+            for (UUID job : toKill) {
+                try {
                     killAllListener.killJob(job);
+                } catch (Throwable t) {
+                    logger.error("Failed to call killJob on listener {}", t, killAllListener);
                 }
             }
-            for (UUID jobId : toKill) {
-                JobExecutionContext ctx = activeContexts.get(jobId);
-                if (ctx != null) {
-                    ctx.kill();
-                    numKilled++;
-                }
-            }
-        } finally {
-            writeLock.unlock();
         }
-        return numKilled;
+        return killContexts(toKill);
     }
 
-    private class JobContextCallback implements Callback<JobExecutionContext> {
-        @Override
-        public void handle(JobExecutionContext context) {
-            activeContexts.remove(context.jobId());
+    private class JobContextCallback implements BiConsumer<Void, Throwable> {
+
+        private UUID jobId;
+
+        JobContextCallback(UUID jobId) {
+            this.jobId = jobId;
+        }
+
+        private void remove(@Nullable Throwable throwable) {
+            activeContexts.remove(jobId);
             if (logger.isTraceEnabled()) {
                 logger.trace("JobExecutionContext closed for job {} removed it -" +
-                                " {} executionContexts remaining",
-                        context.jobId(), activeContexts.size());
+                             " {} executionContexts remaining",
+                    throwable, jobId, activeContexts.size());
+            }
+        }
+
+        public void onSuccess() {
+            remove(null);
+        }
+
+        public void onFailure(@Nonnull Throwable throwable) {
+            remove(throwable);
+        }
+
+        @Override
+        public void accept(Void aVoid, Throwable t) {
+            if (t == null) {
+                onSuccess();
+            } else {
+                onFailure(t);
             }
         }
     }

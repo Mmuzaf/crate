@@ -28,38 +28,22 @@ import io.crate.testing.TestingHelpers;
 import io.crate.types.DataTypes;
 import org.junit.Test;
 
-import static org.hamcrest.core.Is.is;
-import static org.mockito.Mockito.mock;
-import static org.mockito.Mockito.when;
+import static org.hamcrest.Matchers.containsString;
 
 public class PartitionReferenceResolverTest extends CrateUnitTest {
 
     @Test
     public void testClusterExpressionsNotAllowed() throws Exception {
-        NestedReferenceResolver fallbackRefResolver = mock(NestedReferenceResolver.class);
-        ReferenceInfo refInfo = TestingHelpers.refInfo("foo.bar", DataTypes.STRING, RowGranularity.CLUSTER);
-        when(fallbackRefResolver.getImplementation(refInfo)).thenReturn(new ReferenceImplementation() {
-            @Override
-            public Object value() {
-                return null;
-            }
-
-            @Override
-            public ReferenceImplementation getChildImplementation(String name) {
-                return null;
-            }
-        });
+        Reference refInfo = TestingHelpers.refInfo("foo.bar", DataTypes.STRING, RowGranularity.CLUSTER);
         PartitionReferenceResolver referenceResolver = new PartitionReferenceResolver(
-                fallbackRefResolver,
-                ImmutableList.<PartitionExpression>of()
-        );
+            ImmutableList.<PartitionExpression>of());
 
         if (assertionsEnabled()) {
             try {
                 referenceResolver.getImplementation(refInfo);
                 fail("no assertion error thrown");
             } catch (AssertionError e) {
-                assertThat(e.getMessage(), is("granularity < PARTITION should have been resolved already"));
+                assertThat(e.getMessage(), containsString("granularity < PARTITION should have been resolved already"));
             }
         } else {
             referenceResolver.getImplementation(refInfo);
@@ -68,7 +52,7 @@ public class PartitionReferenceResolverTest extends CrateUnitTest {
 
     }
 
-    private static boolean assertionsEnabled() {
+    public static boolean assertionsEnabled() {
         boolean assertsEnabled = false;
         assert assertsEnabled = true; // Intentional side effect!!!
         return assertsEnabled;

@@ -21,12 +21,13 @@
 
 package io.crate;
 
-import org.elasticsearch.common.io.FastStringReader;
-import org.elasticsearch.common.io.Streams;
+import org.elasticsearch.common.io.stream.StreamInput;
+import org.elasticsearch.common.io.stream.StreamOutput;
 import org.joda.time.DateTimeZone;
 import org.joda.time.format.ISODateTimeFormat;
 
 import java.io.IOException;
+import java.io.InputStream;
 import java.util.Properties;
 
 public class Build {
@@ -38,11 +39,10 @@ public class Build {
         String hashShort = "NA";
         String timestamp = "NA";
 
-        try {
-            String properties = Streams.copyToStringFromClasspath("/crate-build.properties");
+        try (InputStream inputStream = Build.class.getResourceAsStream("/crate-build.properties")) {
             Properties props = new Properties();
-            try (FastStringReader fsr = new FastStringReader(properties)) {
-                props.load(fsr);
+            if (inputStream != null) {
+                props.load(inputStream);
             }
             hash = props.getProperty("hash", hash);
             if (!hash.equals("NA")) {
@@ -79,5 +79,15 @@ public class Build {
 
     public String timestamp() {
         return timestamp;
+    }
+
+    public static void writeBuildTo(Build build, StreamOutput out) throws IOException {
+        out.writeString(build.hash());
+        out.writeString(build.hashShort());
+        out.writeString(build.timestamp());
+    }
+
+    public static Build readBuild(StreamInput in) throws IOException {
+        return new Build(in.readString(), in.readString(), in.readString());
     }
 }

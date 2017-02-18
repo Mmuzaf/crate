@@ -22,25 +22,32 @@
 
 package io.crate.testing;
 
-import com.google.common.collect.ImmutableList;
+import com.google.common.collect.Iterables;
 import io.crate.action.job.SharedShardContexts;
+import io.crate.action.sql.SessionContext;
 import io.crate.analyze.Analysis;
 import io.crate.analyze.Analyzer;
+import io.crate.analyze.EvaluatingNormalizer;
 import io.crate.analyze.ParameterContext;
-import io.crate.analyze.relations.PlannedAnalyzedRelation;
 import io.crate.breaker.RamAccountingContext;
+import io.crate.data.Row;
+import io.crate.data.RowN;
 import io.crate.jobs.JobContextService;
 import io.crate.jobs.JobExecutionContext;
+import io.crate.metadata.Functions;
+import io.crate.metadata.ReplaceMode;
 import io.crate.metadata.Routing;
+import io.crate.metadata.TransactionContext;
 import io.crate.operation.collect.CrateCollector;
 import io.crate.operation.collect.JobCollectContext;
 import io.crate.operation.collect.MapSideDataCollectOperation;
 import io.crate.operation.projectors.RowReceiver;
+import io.crate.planner.Plan;
 import io.crate.planner.Planner;
 import io.crate.planner.consumer.ConsumerContext;
 import io.crate.planner.consumer.QueryAndFetchConsumer;
-import io.crate.planner.node.dql.CollectAndMerge;
-import io.crate.planner.node.dql.CollectPhase;
+import io.crate.planner.node.dql.Collect;
+import io.crate.planner.node.dql.RoutedCollectPhase;
 import io.crate.sql.parser.SqlParser;
 import org.elasticsearch.common.breaker.CircuitBreaker;
 import org.elasticsearch.common.breaker.NoopCircuitBreaker;
@@ -48,8 +55,8 @@ import org.elasticsearch.indices.IndicesService;
 import org.elasticsearch.test.InternalTestCluster;
 
 import java.util.ArrayList;
+import java.util.Collections;
 import java.util.List;
-import java.util.Map;
 import java.util.UUID;
 
 /**
@@ -59,21 +66,26 @@ import java.util.UUID;
 public class LuceneDocCollectorProvider implements AutoCloseable {
 
     private static final RamAccountingContext RAM_ACCOUNTING_CONTEXT =
-            new RamAccountingContext("dummy", new NoopCircuitBreaker(CircuitBreaker.Name.FIELDDATA));
+        new RamAccountingContext("dummy", new NoopCircuitBreaker(CircuitBreaker.FIELDDATA));
 
     private final InternalTestCluster cluster;
     private final Analyzer analyzer;
     private final QueryAndFetchConsumer queryAndFetchConsumer;
+    private final EvaluatingNormalizer normalizer;
+    private final Planner planner;
 
     private List<JobCollectContext> collectContexts = new ArrayList<>();
 
     public LuceneDocCollectorProvider(InternalTestCluster cluster) {
         this.cluster = cluster;
         this.analyzer = cluster.getDataNodeInstance(Analyzer.class);
+        this.planner = cluster.getDataNodeInstance(Planner.class);
         this.queryAndFetchConsumer = cluster.getDataNodeInstance(QueryAndFetchConsumer.class);
+        this.normalizer = EvaluatingNormalizer.functionOnlyNormalizer(
+            cluster.getInstance(Functions.class), ReplaceMode.COPY);
     }
 
-    private Iterable<CrateCollector> createNodeCollectors(String nodeId, CollectPhase collectPhase, RowReceiver downstream) {
+    private Iterable<CrateCollector> createNodeCollectors(String nodeId, RoutedCollectPhase collectPhase, RowReceiver downstream) throws Exception {
         String nodeName = cluster.clusterService().state().nodes().get(nodeId).name();
         IndicesService indicesService = cluster.getInstance(IndicesService.class, nodeName);
         JobContextService jobContextService = cluster.getInstance(JobContextService.class, nodeName);
@@ -82,38 +94,29 @@ public class LuceneDocCollectorProvider implements AutoCloseable {
         SharedShardContexts sharedShardContexts = new SharedShardContexts(indicesService);
         JobExecutionContext.Builder builder = jobContextService.newBuilder(collectPhase.jobId());
         JobCollectContext jobCollectContext = new JobCollectContext(
-                collectPhase, collectOperation,  cluster.clusterService().state().nodes().localNodeId(),
-                RAM_ACCOUNTING_CONTEXT, downstream, sharedShardContexts);
+            collectPhase, collectOperation, cluster.clusterService().state().nodes().getLocalNodeId(),
+            RAM_ACCOUNTING_CONTEXT, downstream, sharedShardContexts);
         collectContexts.add(jobCollectContext);
         builder.addSubContext(jobCollectContext);
         jobContextService.createContext(builder);
-
-        return collectOperation.createCollectors(
-            collectPhase,
-            downstream,
-            jobCollectContext
-        );
+        return jobCollectContext.collectors();
     }
 
-    public Iterable<CrateCollector> createCollectors(String statement, final RowReceiver downstream, Integer nodePageSizeHint, Object ... args) {
-        Analysis analysis = analyzer.analyze(
-                SqlParser.createStatement(statement), new ParameterContext(args, new Object[0][], null));
-        PlannedAnalyzedRelation plannedAnalyzedRelation = queryAndFetchConsumer.consume(
-                analysis.rootRelation(),
-                new ConsumerContext(analysis.rootRelation(), new Planner.Context(cluster.clusterService(), UUID.randomUUID(), null)));
-        final CollectPhase collectPhase = ((CollectAndMerge) plannedAnalyzedRelation.plan()).collectPhase();
+    public CrateCollector createCollector(String statement, final RowReceiver downstream, Integer nodePageSizeHint, Object... args) throws Exception {
+        Analysis analysis = analyzer.boundAnalyze(
+            SqlParser.createStatement(statement),
+            SessionContext.SYSTEM_SESSION,
+            new ParameterContext(new RowN(args), Collections.<Row>emptyList()));
+        Plan plan = queryAndFetchConsumer.consume(
+            analysis.rootRelation(),
+            new ConsumerContext(new Planner.Context(planner,
+                cluster.clusterService(), UUID.randomUUID(), null, normalizer, new TransactionContext(SessionContext.SYSTEM_SESSION), 0, 0)));
+        Collect collect = (Collect) plan;
+        final RoutedCollectPhase collectPhase = ((RoutedCollectPhase) collect.collectPhase());
         collectPhase.nodePageSizeHint(nodePageSizeHint);
-
-        final ImmutableList.Builder<CrateCollector> builder = ImmutableList.builder();
         Routing routing = collectPhase.routing();
-        routing.walkLocations(new Routing.RoutingLocationVisitor() {
-            @Override
-            public boolean visitNode(String nodeId, Map<String, List<Integer>> nodeRouting) {
-                builder.addAll(createNodeCollectors(nodeId, collectPhase, downstream));
-                return true;
-            }
-        });
-        return builder.build();
+        String nodeId = Iterables.getOnlyElement(routing.nodes());
+        return Iterables.getOnlyElement(createNodeCollectors(nodeId, collectPhase, downstream));
     }
 
     @Override

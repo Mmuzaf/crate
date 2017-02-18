@@ -23,39 +23,49 @@
 package io.crate.integrationtests;
 
 import io.crate.action.sql.SQLActionException;
+import io.crate.action.sql.SQLOperations;
 import io.crate.plugin.CrateCorePlugin;
 import io.crate.testing.SQLTransportExecutor;
+import io.crate.testing.UseJdbc;
 import org.elasticsearch.client.Client;
-import org.elasticsearch.common.settings.ImmutableSettings;
 import org.elasticsearch.common.settings.Settings;
-import org.elasticsearch.test.ElasticsearchIntegrationTest;
-import org.junit.Rule;
+import org.elasticsearch.test.ESIntegTestCase;
 import org.junit.Test;
-import org.junit.rules.ExpectedException;
 
-@ElasticsearchIntegrationTest.ClusterScope(numDataNodes = 1, numClientNodes = 1, randomDynamicTemplates = false)
+import javax.annotation.Nullable;
+
+@ESIntegTestCase.ClusterScope(numDataNodes = 1, numClientNodes = 1, randomDynamicTemplates = false)
+@UseJdbc
 public class JobIntegrationTest extends SQLTransportIntegrationTest {
-
-    @Rule
-    public ExpectedException expectedException = ExpectedException.none();
 
     @Override
     protected Settings nodeSettings(int nodeOrdinal) {
-        return ImmutableSettings.settingsBuilder()
-                .put(super.nodeSettings(nodeOrdinal))
-                .put("plugin.types", CrateCorePlugin.class.getName())
-                .build();
+        return Settings.settingsBuilder()
+            .put(super.nodeSettings(nodeOrdinal))
+            .put("plugin.types", CrateCorePlugin.class.getName())
+            .build();
     }
 
     public JobIntegrationTest() {
         // ensure that the client node is used as handler and has no collectphase
         super(new SQLTransportExecutor(
-                new SQLTransportExecutor.ClientProvider() {
-                    @Override
-                    public Client client() {
-                        return internalCluster().clientNodeClient();
-                    }
+            new SQLTransportExecutor.ClientProvider() {
+                @Override
+                public Client client() {
+                    return internalCluster().clientNodeClient();
                 }
+
+                @Nullable
+                @Override
+                public String pgUrl() {
+                    return null;
+                }
+
+                @Override
+                public SQLOperations sqlOperations() {
+                    return internalCluster().getInstance(SQLOperations.class);
+                }
+            }
         ));
     }
 

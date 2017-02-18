@@ -23,25 +23,16 @@ package io.crate.operation.collect;
 
 import com.google.common.base.Function;
 import com.google.common.collect.Collections2;
-import io.crate.analyze.EvaluatingNormalizer;
-import io.crate.exceptions.UnhandledServerException;
-import io.crate.metadata.Functions;
-import io.crate.metadata.NestedReferenceResolver;
-import io.crate.metadata.RowGranularity;
 import io.crate.operation.ThreadPools;
 import io.crate.operation.collect.sources.CollectSource;
 import io.crate.operation.collect.sources.CollectSourceResolver;
 import io.crate.operation.projectors.RowReceiver;
-import io.crate.operation.reference.sys.node.NodeSysExpression;
-import io.crate.operation.reference.sys.node.NodeSysReferenceResolver;
 import io.crate.planner.node.dql.CollectPhase;
-import org.elasticsearch.cluster.ClusterService;
 import org.elasticsearch.common.inject.Inject;
 import org.elasticsearch.common.inject.Singleton;
 import org.elasticsearch.threadpool.ThreadPool;
 
 import java.util.Collection;
-import java.util.Set;
 import java.util.concurrent.Executor;
 import java.util.concurrent.RejectedExecutionException;
 import java.util.concurrent.ThreadPoolExecutor;
@@ -52,27 +43,13 @@ import java.util.concurrent.ThreadPoolExecutor;
 @Singleton
 public class MapSideDataCollectOperation {
 
-    private final EvaluatingNormalizer clusterNormalizer;
-    private final ClusterService clusterService;
     private final CollectSourceResolver collectSourceResolver;
-    private final Functions functions;
-    private final NodeSysExpression nodeSysExpression;
     private final ThreadPool threadPool;
 
     @Inject
-    public MapSideDataCollectOperation(ClusterService clusterService,
-                                       Functions functions,
-                                       NestedReferenceResolver clusterReferenceResolver,
-                                       NodeSysExpression nodeSysExpression,
-                                       CollectSourceResolver collectSourceResolver,
-                                       ThreadPool threadPool) {
-        this.functions = functions;
-        this.nodeSysExpression = nodeSysExpression;
-        this.clusterService = clusterService;
+    public MapSideDataCollectOperation(CollectSourceResolver collectSourceResolver, ThreadPool threadPool) {
         this.collectSourceResolver = collectSourceResolver;
         this.threadPool = threadPool;
-
-        clusterNormalizer = new EvaluatingNormalizer(functions, RowGranularity.CLUSTER, clusterReferenceResolver);
     }
 
     /**
@@ -95,31 +72,8 @@ public class MapSideDataCollectOperation {
     public Collection<CrateCollector> createCollectors(CollectPhase collectPhase,
                                                        RowReceiver downstream,
                                                        final JobCollectContext jobCollectContext) {
-        assert collectPhase.isRouted(); // not routed collect is not handled here
-        assert collectPhase.jobId() != null : "no jobId present for collect operation";
-
-        String localNodeId = clusterService.state().nodes().localNodeId();
-        Set<String> routingNodes = collectPhase.routing().nodes();
-
-        if (!routingNodes.contains(localNodeId)) {
-            throw new UnhandledServerException("unsupported routing");
-        } else {
-            CollectSource service = collectSourceResolver.getService(collectPhase, localNodeId);
-            collectPhase = normalize(collectPhase);
-            return service.getCollectors(collectPhase, downstream, jobCollectContext);
-        }
-    }
-
-    private CollectPhase normalize(CollectPhase collectPhase) {
-        collectPhase = collectPhase.normalize(clusterNormalizer);
-        switch (collectPhase.maxRowGranularity()) {
-            case NODE:
-            case DOC:
-                EvaluatingNormalizer normalizer =
-                        new EvaluatingNormalizer(functions, RowGranularity.NODE, new NodeSysReferenceResolver(nodeSysExpression));
-                return collectPhase.normalize(normalizer);
-        }
-        return collectPhase;
+        CollectSource service = collectSourceResolver.getService(collectPhase);
+        return service.getCollectors(collectPhase, downstream, jobCollectContext);
     }
 
     public void launchCollectors(Collection<CrateCollector> shardCollectors, String threadPoolName) throws RejectedExecutionException {
@@ -127,8 +81,8 @@ public class MapSideDataCollectOperation {
         Executor executor = threadPool.executor(threadPoolName);
         if (executor instanceof ThreadPoolExecutor) {
             ThreadPools.runWithAvailableThreads(
-                    (ThreadPoolExecutor) executor,
-                    collectors2Runnables(shardCollectors));
+                (ThreadPoolExecutor) executor,
+                collectors2Runnables(shardCollectors));
         } else {
             // assume executor is just a wrapper to 1 thread
             for (CrateCollector collector : shardCollectors) {

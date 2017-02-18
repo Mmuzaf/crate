@@ -36,16 +36,25 @@ import static org.elasticsearch.rest.RestRequest.Method.GET;
  */
 public class AdminUIFrontpageAction extends BaseRestHandler {
 
+    private final RestController controller;
+    private final AdminUIStaticFileRequestFilter requestFilter;
+
     @Inject
-    public AdminUIFrontpageAction(Settings settings, Client client, RestController controller) {
+    public AdminUIFrontpageAction(Settings settings, Client client, RestController controller, AdminUIStaticFileRequestFilter staticFileRequestFilter) {
         super(settings, controller, client);
+        this.controller = controller;
+        this.requestFilter = staticFileRequestFilter;
+    }
+
+    public void registerHandler() {
         controller.registerHandler(GET, "/admin", this);
+        controller.registerFilter(requestFilter);
     }
 
     @Override
     protected void handleRequest(RestRequest request, RestChannel channel, Client client) throws Exception {
         BytesRestResponse resp = new BytesRestResponse(RestStatus.TEMPORARY_REDIRECT);
-        resp.addHeader("Location", "/_plugin/crate-admin/");
+        resp.addHeader("Location", "/");
         channel.sendResponse(resp);
     }
 

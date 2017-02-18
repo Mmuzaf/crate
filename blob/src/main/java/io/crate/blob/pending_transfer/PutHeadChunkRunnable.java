@@ -78,6 +78,9 @@ public class PutHeadChunkRunnable implements Runnable {
             File pendingFile;
             try {
                 pendingFile = digestBlob.file();
+                if (pendingFile == null) {
+                    pendingFile = digestBlob.getContainerFile();
+                }
                 fileInputStream = new FileInputStream(pendingFile);
             } catch (FileNotFoundException e) {
                 // this happens if the file has already been moved from tmpDirectory to containerDirectory
@@ -101,11 +104,11 @@ public class PutHeadChunkRunnable implements Runnable {
                 remainingBytes -= bytesRead;
 
                 transportService.submitRequest(
-                        recipientNode,
-                        BlobHeadRequestHandler.Actions.PUT_BLOB_HEAD_CHUNK,
-                        new PutBlobHeadChunkRequest(transferId, new BytesArray(buffer, 0, bytesRead)),
-                        TransportRequestOptions.options(),
-                        EmptyTransportResponseHandler.INSTANCE_SAME
+                    recipientNode,
+                    BlobHeadRequestHandler.Actions.PUT_BLOB_HEAD_CHUNK,
+                    new PutBlobHeadChunkRequest(transferId, new BytesArray(buffer, 0, bytesRead)),
+                    TransportRequestOptions.EMPTY,
+                    EmptyTransportResponseHandler.INSTANCE_SAME
                 ).txGet();
             }
 
@@ -130,8 +133,7 @@ public class PutHeadChunkRunnable implements Runnable {
         }
     }
 
-    private void waitUntilFileHasGrown(File pendingFile)
-    {
+    private void waitUntilFileHasGrown(File pendingFile) {
         try {
             if (watcher == null) {
                 initWatcher(pendingFile.getParent());
@@ -149,7 +151,7 @@ public class PutHeadChunkRunnable implements Runnable {
                 }
 
                 @SuppressWarnings("unchecked")
-                WatchEvent<Path> ev = (WatchEvent<Path>)event;
+                WatchEvent<Path> ev = (WatchEvent<Path>) event;
                 Path filename = ev.context();
                 if (filename.toString().equals(pendingFile.getName())) {
                     break;

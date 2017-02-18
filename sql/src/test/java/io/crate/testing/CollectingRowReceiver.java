@@ -23,31 +23,31 @@
 package io.crate.testing;
 
 import com.google.common.base.Throwables;
-import com.google.common.util.concurrent.SettableFuture;
 import com.google.common.util.concurrent.UncheckedExecutionException;
-import io.crate.core.collections.Bucket;
-import io.crate.core.collections.CollectionBucket;
-import io.crate.core.collections.Row;
-import io.crate.jobs.ExecutionState;
-import io.crate.operation.RowUpstream;
-import io.crate.operation.projectors.Requirement;
-import io.crate.operation.projectors.Requirements;
-import io.crate.operation.projectors.RowReceiver;
+import io.crate.data.Bucket;
+import io.crate.data.CollectionBucket;
+import io.crate.data.Row;
+import io.crate.operation.projectors.*;
 import org.elasticsearch.common.unit.TimeValue;
 
+import javax.annotation.Nonnull;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Set;
+import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.TimeoutException;
+import java.util.concurrent.atomic.AtomicInteger;
 
 public class CollectingRowReceiver implements RowReceiver {
 
     public final List<Object[]> rows = new ArrayList<>();
-    protected final SettableFuture<Bucket> resultFuture = SettableFuture.create();
-    protected boolean isFinished = false;
-    protected RowUpstream upstream;
+    final CompletableFuture<Bucket> resultFuture = new CompletableFuture<>();
+    int numFailOrFinish = 0;
+    private AtomicInteger numPauseProcessed = new AtomicInteger(0);
+    private ResumeHandle resumeable;
+    private RepeatHandle repeatHandle;
 
     public static CollectingRowReceiver withPauseAfter(int pauseAfter) {
         return new PausingReceiver(pauseAfter);
@@ -57,11 +57,20 @@ public class CollectingRowReceiver implements RowReceiver {
         return new LimitingReceiver(limit);
     }
 
+    public static CollectingRowReceiver withFailure() {
+        return new FailingReceiver();
+    }
+
+    public static CollectingRowReceiver withFailureOnRepeat() {
+        return new FailingOnRepeatReceiver();
+    }
+
     public CollectingRowReceiver() {
     }
 
     @Override
-    public void prepare(ExecutionState executionState) {
+    public CompletableFuture<Bucket> completionFuture() {
+        return resultFuture;
     }
 
     @Override
@@ -70,34 +79,49 @@ public class CollectingRowReceiver implements RowReceiver {
     }
 
     @Override
-    public void setUpstream(RowUpstream rowUpstream) {
-        this.upstream = rowUpstream;
-    }
-
-    @Override
-    public boolean setNextRow(Row row) {
+    public Result setNextRow(Row row) {
         rows.add(row.materialize());
-        return true;
+        return Result.CONTINUE;
     }
 
     @Override
-    public void finish() {
-        resultFuture.set(new CollectionBucket(rows));
-        isFinished = true;
+    public void kill(Throwable throwable) {
+        if (throwable == null) {
+            completionFuture().cancel(false);
+        } else {
+            resultFuture.completeExceptionally(throwable);
+        }
+    }
+
+    @Override
+    public void pauseProcessed(ResumeHandle resumeable) {
+        this.numPauseProcessed.incrementAndGet();
+        this.resumeable = resumeable;
+    }
+
+    @Override
+    public void finish(RepeatHandle repeatHandle) {
+        this.repeatHandle = repeatHandle;
+        resultFuture.complete(new CollectionBucket(rows));
+        numFailOrFinish++;
+    }
+
+    public int getNumFailOrFinishCalls() {
+        return numFailOrFinish;
     }
 
     public boolean isFinished() {
-        return isFinished;
+        return numFailOrFinish > 0;
     }
 
     @Override
-    public void fail(Throwable throwable) {
-        resultFuture.setException(throwable);
-        isFinished = true;
+    public void fail(@Nonnull Throwable throwable) {
+        resultFuture.completeExceptionally(throwable);
+        numFailOrFinish++;
     }
 
     public void resumeUpstream(boolean async) {
-        upstream.resume(async);
+        resumeable.resume(async);
     }
 
     public Bucket result() throws Exception {
@@ -115,15 +139,18 @@ public class CollectingRowReceiver implements RowReceiver {
             }
             throw Throwables.propagate(cause);
         } catch (TimeoutException e) {
-            TimeoutException timeoutException = new TimeoutException(
-                    "Didn't receive fail or finish. Upstream was \"" + upstream + "\"");
+            TimeoutException timeoutException = new TimeoutException("Didn't receive fail or finish.");
             timeoutException.initCause(e);
             throw timeoutException;
         }
     }
 
     public void repeatUpstream() {
-        upstream.repeat();
+        repeatHandle.repeat();
+    }
+
+    public int numPauseProcessed() {
+        return numPauseProcessed.get();
     }
 
     private static class LimitingReceiver extends CollectingRowReceiver {
@@ -131,19 +158,19 @@ public class CollectingRowReceiver implements RowReceiver {
         private final int limit;
         private int numRows = 0;
 
-        public LimitingReceiver(int limit) {
+        LimitingReceiver(int limit) {
             this.limit = limit;
         }
 
         @Override
-        public boolean setNextRow(Row row) {
-            boolean wantsMore = super.setNextRow(row);
+        public Result setNextRow(Row row) {
+            Result result = super.setNextRow(row);
             numRows++;
             //noinspection SimplifiableIfStatement
             if (numRows >= limit) {
-                return false;
+                return Result.STOP;
             }
-            return wantsMore;
+            return result;
         }
     }
 
@@ -152,19 +179,45 @@ public class CollectingRowReceiver implements RowReceiver {
         private final int pauseAfter;
         private int numRows = 0;
 
-        public PausingReceiver(int pauseAfter) {
+        PausingReceiver(int pauseAfter) {
             this.pauseAfter = pauseAfter;
         }
 
         @Override
-        public boolean setNextRow(Row row) {
-            boolean wantsMore = super.setNextRow(row);
+        public Result setNextRow(Row row) {
+            Result result = super.setNextRow(row);
             numRows++;
             if (numRows == pauseAfter) {
-                upstream.pause();
-                return true;
+                return Result.PAUSE;
             }
-            return wantsMore;
+            return result;
+        }
+    }
+
+    private static class FailingReceiver extends CollectingRowReceiver {
+
+        @Override
+        public Result setNextRow(Row row) {
+            throw new IllegalStateException("dummy");
+        }
+    }
+
+    private static class FailingOnRepeatReceiver extends CollectingRowReceiver {
+
+        private boolean invokeFailure = false;
+
+        @Override
+        public Result setNextRow(Row row) {
+            if (invokeFailure) {
+                throw new IllegalStateException("dummy");
+            }
+            return super.setNextRow(row);
+        }
+
+        @Override
+        public void repeatUpstream() {
+            invokeFailure = true;
+            super.repeatUpstream();
         }
     }
 }

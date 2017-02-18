@@ -35,7 +35,7 @@ import java.util.concurrent.ConcurrentMap;
 public class TimeZoneParser {
 
     public static final DateTimeZone DEFAULT_TZ = DateTimeZone.UTC;
-    public static final Literal<BytesRef> DEFAULT_TZ_LITERAL = Literal.newLiteral("UTC");
+    public static final Literal<BytesRef> DEFAULT_TZ_LITERAL = Literal.of("UTC");
     public static final BytesRef DEFAULT_TZ_BYTES_REF = DEFAULT_TZ_LITERAL.value();
 
     private static final ConcurrentMap<BytesRef, DateTimeZone> TIME_ZONE_MAP = new ConcurrentHashMap<>();
@@ -60,8 +60,8 @@ public class TimeZoneParser {
                     int beginIndex = text.charAt(0) == '+' ? 1 : 0;
                     // format like -02:30
                     tz = DateTimeZone.forOffsetHoursMinutes(
-                            Integer.parseInt(text.substring(beginIndex, index)),
-                            Integer.parseInt(text.substring(index + 1))
+                        Integer.parseInt(text.substring(beginIndex, index)),
+                        Integer.parseInt(text.substring(index + 1))
                     );
                 } else {
                     // id, listed here: http://joda-time.sourceforge.net/timezones.html
@@ -70,7 +70,7 @@ public class TimeZoneParser {
                 }
             } catch (IllegalArgumentException e) {
                 throw new IllegalArgumentException(String.format(Locale.ENGLISH,
-                        "invalid time zone value '%s'", timezone.utf8ToString()));
+                    "invalid time zone value '%s'", timezone.utf8ToString()));
             }
             TIME_ZONE_MAP.putIfAbsent(timezone, tz);
         }

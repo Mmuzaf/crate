@@ -21,43 +21,37 @@
 
 package io.crate.metadata;
 
-import com.google.common.base.Predicate;
-import com.google.common.collect.Iterables;
 import io.crate.analyze.symbol.Function;
 import io.crate.analyze.symbol.Literal;
 import io.crate.analyze.symbol.Symbol;
 import io.crate.operation.Input;
 
-import javax.annotation.Nullable;
 import java.util.Collection;
 import java.util.List;
 
 /**
  * evaluable function implementation
+ *
  * @param <ReturnType> the class of the returned value
  */
-public abstract class Scalar<ReturnType, InputType> implements FunctionImplementation<Function> {
-
-    private static final Predicate<Symbol> NULL_LITERAL = new Predicate<Symbol>() {
-        @Override
-        public boolean apply(@Nullable Symbol input) {
-            return input instanceof Input && ((Input) input).value() == null;
-        }
-    };
+public abstract class Scalar<ReturnType, InputType> implements FunctionImplementation {
 
     public abstract ReturnType evaluate(Input<InputType>... args);
 
     /**
      * Returns a optional compiled version of the scalar implementation.
-     *
      */
     public Scalar<ReturnType, InputType> compile(List<Symbol> arguments) {
         return this;
     }
 
     @Override
-    public Symbol normalizeSymbol(Function symbol) {
-        return evaluateIfLiterals(this, symbol);
+    public Symbol normalizeSymbol(Function symbol, TransactionContext transactionContext) {
+        try {
+            return evaluateIfLiterals(this, symbol);
+        } catch (Throwable t) {
+            return symbol;
+        }
     }
 
     protected static boolean anyNonLiterals(Collection<? extends Symbol> arguments) {
@@ -69,37 +63,24 @@ public abstract class Scalar<ReturnType, InputType> implements FunctionImplement
         return false;
     }
 
-    protected static boolean hasNullInputs(Input[] args) {
-        for (Input arg : args) {
-            if (arg.value() == null) {
-                return true;
-            }
-        }
-        return false;
-    }
-
-    protected static boolean containsNullLiteral(Collection<Symbol> symbols) {
-        return Iterables.any(symbols, NULL_LITERAL);
-    }
-
     /**
      * This method will evaluate the function using the given scalar if all arguments are literals.
      * Otherwise it will return the function as is or NULL in case it contains a null literal
-     *
      */
     private static <ReturnType, InputType> Symbol evaluateIfLiterals(Scalar<ReturnType, InputType> scalar, Function function) {
-        Input[] inputs = new Input[function.arguments().size()];
-        int idx = 0;
-        for (Symbol arg : function.arguments()) {
-            if (arg instanceof Input) {
-                Input inputArg =  (Input) arg;
-                inputs[idx] = inputArg;
-                idx++;
-            } else {
+        List<Symbol> arguments = function.arguments();
+        for (Symbol argument : arguments) {
+            if (!(argument instanceof Input)) {
                 return function;
             }
         }
+        Input[] inputs = new Input[arguments.size()];
+        int idx = 0;
+        for (Symbol arg : arguments) {
+            inputs[idx] = (Input) arg;
+            idx++;
+        }
         //noinspection unchecked
-        return Literal.newLiteral(function.info().returnType(), scalar.evaluate(inputs));
+        return Literal.of(function.info().returnType(), scalar.evaluate(inputs));
     }
 }

@@ -22,44 +22,42 @@
 
 package io.crate.analyze;
 
-import com.google.common.base.Optional;
 import io.crate.analyze.relations.AnalyzedRelationVisitor;
+import io.crate.analyze.relations.JoinPair;
 import io.crate.analyze.relations.QueriedRelation;
 import io.crate.analyze.symbol.Field;
 import io.crate.exceptions.ColumnUnknownException;
 import io.crate.metadata.ColumnIndex;
 import io.crate.metadata.Path;
+import io.crate.metadata.table.Operation;
 import io.crate.sql.tree.QualifiedName;
 
-import javax.annotation.Nullable;
+import javax.annotation.Nonnull;
 import java.util.ArrayList;
-import java.util.Arrays;
 import java.util.List;
+import java.util.Optional;
 
 public class TwoTableJoin implements QueriedRelation {
 
     private final QuerySpec querySpec;
-    private final QualifiedName leftName;
-    private final MultiSourceSelect.Source left;
-    private final QualifiedName rightName;
-    private final MultiSourceSelect.Source right;
+    private final RelationSource left;
+    private final RelationSource right;
     private final Optional<OrderBy> remainingOrderBy;
     private final List<Field> fields;
     private final QualifiedName name;
+    private final JoinPair joinPair;
 
     public TwoTableJoin(QuerySpec querySpec,
-                        QualifiedName leftName,
-                        MultiSourceSelect.Source left,
-                        QualifiedName rightName,
-                        MultiSourceSelect.Source right,
-                        Optional<OrderBy> remainingOrderBy) {
+                        RelationSource left,
+                        RelationSource right,
+                        Optional<OrderBy> remainingOrderBy,
+                        JoinPair joinPair) {
         this.querySpec = querySpec;
-        this.leftName = leftName;
         this.left = left;
-        this.rightName = rightName;
         this.right = right;
-        this.name = QualifiedName.of("join", leftName.toString(), rightName.toString());
+        this.name = QualifiedName.of("join", left.qualifiedName().toString(), right.qualifiedName().toString());
         this.remainingOrderBy = remainingOrderBy;
+        this.joinPair = joinPair;
         fields = new ArrayList<>(querySpec.outputs().size());
         for (int i = 0; i < querySpec.outputs().size(); i++) {
             fields.add(new Field(this, new ColumnIndex(i), querySpec.outputs().get(i).valueType()));
@@ -70,11 +68,11 @@ public class TwoTableJoin implements QueriedRelation {
         return remainingOrderBy;
     }
 
-    public MultiSourceSelect.Source left() {
+    public RelationSource left() {
         return left;
     }
 
-    public MultiSourceSelect.Source right() {
+    public RelationSource right() {
         return right;
     }
 
@@ -83,20 +81,18 @@ public class TwoTableJoin implements QueriedRelation {
         return querySpec;
     }
 
+    public JoinPair joinPair() {
+        return joinPair;
+    }
+
     @Override
     public <C, R> R accept(AnalyzedRelationVisitor<C, R> visitor, C context) {
         return visitor.visitTwoTableJoin(this, context);
     }
 
-    @Nullable
     @Override
-    public Field getField(Path path) {
+    public Field getField(Path path, Operation operation) throws UnsupportedOperationException, ColumnUnknownException {
         throw new UnsupportedOperationException("getField is not supported");
-    }
-
-    @Override
-    public Field getWritableField(Path path) throws UnsupportedOperationException, ColumnUnknownException {
-        throw new UnsupportedOperationException("getWritableField is not supported");
     }
 
     @Override
@@ -104,12 +100,22 @@ public class TwoTableJoin implements QueriedRelation {
         return fields;
     }
 
+    @Override
+    public QualifiedName getQualifiedName() {
+        throw new UnsupportedOperationException("method not supported");
+    }
+
+    @Override
+    public void setQualifiedName(@Nonnull QualifiedName qualifiedName) {
+        throw new UnsupportedOperationException("method not supported");
+    }
+
     public QualifiedName leftName() {
-        return leftName;
+        return left.qualifiedName();
     }
 
     public QualifiedName rightName() {
-        return rightName;
+        return right.qualifiedName();
     }
 
     public QualifiedName name() {

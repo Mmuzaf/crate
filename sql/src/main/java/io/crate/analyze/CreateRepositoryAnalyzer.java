@@ -25,35 +25,25 @@ import io.crate.analyze.repositories.RepositoryParamValidator;
 import io.crate.exceptions.RepositoryAlreadyExistsException;
 import io.crate.executor.transport.RepositoryService;
 import io.crate.sql.tree.CreateRepository;
-import org.elasticsearch.common.inject.Inject;
-import org.elasticsearch.common.inject.Singleton;
-import org.elasticsearch.common.settings.ImmutableSettings;
 import org.elasticsearch.common.settings.Settings;
 
-@Singleton
-public class CreateRepositoryAnalyzer extends AbstractRepositoryDDLAnalyzer {
+class CreateRepositoryAnalyzer {
 
     private final RepositoryParamValidator repositoryParamValidator;
     private final RepositoryService repositoryService;
 
-    @Inject
     CreateRepositoryAnalyzer(RepositoryService repositoryService, RepositoryParamValidator repositoryParamValidator) {
         this.repositoryService = repositoryService;
         this.repositoryParamValidator = repositoryParamValidator;
     }
 
-    @Override
-    public CreateRepositoryAnalyzedStatement visitCreateRepository(CreateRepository node, Analysis context) {
+    public CreateRepositoryAnalyzedStatement analyze(CreateRepository node, ParameterContext parameterContext) {
         String repositoryName = node.repository();
         if (repositoryService.getRepository(repositoryName) != null) {
             throw new RepositoryAlreadyExistsException(repositoryName);
         }
-
-        Settings settings = ImmutableSettings.EMPTY;
-        if (node.properties().isPresent()) {
-            settings = GenericPropertiesConverter.genericPropertiesToSettings(node.properties().get(), context.parameterContext());
-        }
-        repositoryParamValidator.validate(node.type(), settings);
+        Settings settings = repositoryParamValidator.convertAndValidate(
+            node.type(), node.properties(), parameterContext);
         return new CreateRepositoryAnalyzedStatement(repositoryName, node.type(), settings);
     }
 }

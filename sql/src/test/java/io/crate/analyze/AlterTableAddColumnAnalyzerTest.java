@@ -23,97 +23,66 @@ package io.crate.analyze;
 
 import io.crate.core.collections.StringObjectMaps;
 import io.crate.metadata.ColumnIdent;
-import io.crate.metadata.MetaDataModule;
-import io.crate.metadata.Schemas;
-import io.crate.metadata.sys.MetaDataSysModule;
-import io.crate.metadata.table.SchemaInfo;
-import io.crate.operation.scalar.ScalarFunctionModule;
 import io.crate.sql.parser.ParsingException;
-import io.crate.testing.MockedClusterServiceModule;
-import org.elasticsearch.common.inject.Module;
+import io.crate.test.integration.CrateUnitTest;
+import io.crate.testing.SQLExecutor;
+import org.elasticsearch.test.cluster.NoopClusterService;
 import org.hamcrest.Matchers;
-import org.junit.Rule;
 import org.junit.Test;
-import org.junit.rules.ExpectedException;
 
 import java.util.Arrays;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 
 import static io.crate.testing.TestingHelpers.mapToSortedString;
 import static org.hamcrest.Matchers.containsInAnyOrder;
 import static org.hamcrest.Matchers.is;
 import static org.hamcrest.core.IsEqual.equalTo;
-import static org.mockito.Mockito.mock;
-import static org.mockito.Mockito.when;
 
-public class AlterTableAddColumnAnalyzerTest extends BaseAnalyzerTest {
+public class AlterTableAddColumnAnalyzerTest extends CrateUnitTest {
 
-    @Rule
-    public ExpectedException expectedException = ExpectedException.none();
-
-    static class TestMetaDataModule extends MetaDataModule {
-        @Override
-        protected void bindSchemas() {
-            super.bindSchemas();
-            SchemaInfo schemaInfo = mock(SchemaInfo.class);
-            when(schemaInfo.getTableInfo(USER_TABLE_IDENT.name())).thenReturn(USER_TABLE_INFO);
-            when(schemaInfo.getTableInfo(USER_TABLE_IDENT_CLUSTERED_BY_ONLY.name()))
-                    .thenReturn(USER_TABLE_INFO_CLUSTERED_BY_ONLY);
-            when(schemaInfo.getTableInfo(DEEPLY_NESTED_TABLE_IDENT.name())).thenReturn(DEEPLY_NESTED_TABLE_INFO);
-            schemaBinder.addBinding(Schemas.DEFAULT_SCHEMA_NAME).toInstance(schemaInfo);
-        }
-    }
-
-    @Override
-    protected List<Module> getModules() {
-        List<Module> modules = super.getModules();
-        modules.add(new MockedClusterServiceModule());
-        modules.add(new TestMetaDataModule());
-        modules.add(new MetaDataSysModule());
-        modules.add(new ScalarFunctionModule());
-        return modules;
-    }
+    private SQLExecutor e = SQLExecutor.builder(new NoopClusterService()).enableDefaultTables().build();
 
     @Test
     public void testAddColumnOnSystemTableIsNotAllowed() throws Exception {
         expectedException.expect(UnsupportedOperationException.class);
         expectedException.expectMessage("The table sys.shards is read-only. Write, Drop or Alter operations are not supported");
-        analyze("alter table sys.shards add column foobar string");
+        e.analyze("alter table sys.shards add column foobar string");
     }
 
     @Test
     public void testAddColumnOnSinglePartitionNotAllowed() throws Exception {
         expectedException.expect(UnsupportedOperationException.class);
         expectedException.expectMessage("Adding a column to a single partition is not supported");
-        analyze("alter table parted partition (date = 1395874800000) add column foobar string");
+        e.analyze("alter table parted partition (date = 1395874800000) add column foobar string");
     }
 
     @Test
     public void testAddColumnWithAnalyzerAndNonStringType() throws Exception {
         expectedException.expect(IllegalArgumentException.class);
         expectedException.expectMessage(
-                "Can't use an Analyzer on column foobar['age'] because analyzers are only allowed on columns of type \"string\"");
-        analyze("alter table users add column foobar object as (age int index using fulltext)");
+            "Can't use an Analyzer on column foobar['age'] because analyzers are only allowed on columns of type \"string\"");
+        e.analyze("alter table users add column foobar object as (age int index using fulltext)");
     }
 
     @Test
     public void testAddFulltextIndex() throws Exception {
         expectedException.expect(ParsingException.class);
-        analyze("alter table users add column index ft_foo using fulltext (name)");
+        e.analyze("alter table users add column index ft_foo using fulltext (name)");
     }
 
     @Test
     public void testAddColumnThatExistsAlready() throws Exception {
         expectedException.expect(IllegalArgumentException.class);
         expectedException.expectMessage("The table doc.users already has a column named name");
-        analyze("alter table users add column name string");
+        e.analyze("alter table users add column name string");
     }
 
     @Test
     public void testAddColumnToATableWithoutPrimaryKey() throws Exception {
-        AddColumnAnalyzedStatement analysis = (AddColumnAnalyzedStatement) analyze(
-                "alter table users_clustered_by_only add column foobar string");
+        AddColumnAnalyzedStatement analysis = e.analyze(
+            "alter table users_clustered_by_only add column foobar string");
         Map<String, Object> mapping = analysis.analyzedTableElements().toMapping();
 
         Object primaryKeys = ((Map) mapping.get("_meta")).get("primary_keys");
@@ -123,11 +92,11 @@ public class AlterTableAddColumnAnalyzerTest extends BaseAnalyzerTest {
     @SuppressWarnings("ConstantConditions")
     @Test
     public void testAddColumnAsPrimaryKey() throws Exception {
-        AddColumnAnalyzedStatement analysis = (AddColumnAnalyzedStatement) analyze(
-                "alter table users add column additional_pk string primary key");
+        AddColumnAnalyzedStatement analysis = e.analyze(
+            "alter table users add column additional_pk string primary key");
 
         assertThat(analysis.analyzedTableElements().primaryKeys(), Matchers.contains(
-                "additional_pk", "id"
+            "additional_pk", "id"
         ));
 
         AnalyzedColumnDefinition idColumn = null;
@@ -152,29 +121,39 @@ public class AlterTableAddColumnAnalyzerTest extends BaseAnalyzerTest {
     public void testAddPrimaryKeyColumnWithArrayTypeUnsupported() throws Exception {
         expectedException.expect(UnsupportedOperationException.class);
         expectedException.expectMessage("Cannot use columns of type \"array\" as primary key");
-        analyze("alter table users add column newpk array(string) primary key");
+        e.analyze("alter table users add column newpk array(string) primary key");
+    }
+
+    @Test
+    public void testAddColumnToATableWithNotNull() throws Exception {
+        AddColumnAnalyzedStatement analysis = e.analyze("alter table users_clustered_by_only " +
+                                                        "add column notnullcol string not null");
+        Map<String, Object> mapping = analysis.analyzedTableElements().toMapping();
+
+        assertThat((String) ((Set) ((Map) ((Map) mapping.get("_meta")).get("constraints")).get("not_null"))
+            .toArray(new String[0])[0], is("notnullcol"));
     }
 
     @Test
     public void testAddArrayColumn() throws Exception {
-        AddColumnAnalyzedStatement analysis = (AddColumnAnalyzedStatement) analyze("alter table users add newtags array(string)");
+        AddColumnAnalyzedStatement analysis = e.analyze("alter table users add newtags array(string)");
         AnalyzedColumnDefinition columnDefinition = analysis.analyzedTableElements().columns().get(0);
         assertThat(columnDefinition.name(), Matchers.equalTo("newtags"));
         assertThat(columnDefinition.dataType(), Matchers.equalTo("string"));
         assertTrue(columnDefinition.isArrayOrInArray());
 
-        Map<String, Object> mappingProperties = (Map)analysis.analyzedTableElements().toMapping().get("properties");
-        Map<String, Object> newtags = (Map<String, Object>)mappingProperties.get("newtags");
+        Map<String, Object> mappingProperties = (Map) analysis.analyzedTableElements().toMapping().get("properties");
+        Map<String, Object> newtags = (Map<String, Object>) mappingProperties.get("newtags");
 
-        assertThat((String)newtags.get("type"), is("array"));
-        Map<String, Object> inner = (Map<String, Object>)newtags.get("inner");
-        assertThat((String)inner.get("type"), is("string"));
+        assertThat((String) newtags.get("type"), is("array"));
+        Map<String, Object> inner = (Map<String, Object>) newtags.get("inner");
+        assertThat((String) inner.get("type"), is("string"));
     }
 
     @Test
     public void testAddNewNestedObjectColumn() throws Exception {
-        AddColumnAnalyzedStatement analysis = (AddColumnAnalyzedStatement) analyze(
-                "alter table users add column foo['x']['y'] string");
+        AddColumnAnalyzedStatement analysis = e.analyze(
+            "alter table users add column foo['x']['y'] string");
 
         assertThat(analysis.analyzedTableElements().columns().size(), is(2)); // id pk column is also added
         AnalyzedColumnDefinition column = analysis.analyzedTableElements().columns().get(0);
@@ -189,18 +168,35 @@ public class AlterTableAddColumnAnalyzerTest extends BaseAnalyzerTest {
 
         Map<String, Object> mapping = analysis.analyzedTableElements().toMapping();
         Map foo = (Map) StringObjectMaps.getByPath(mapping, "properties.foo");
-        assertThat((String)foo.get("type"), is("object"));
+        assertThat((String) foo.get("type"), is("object"));
 
         Map x = (Map) StringObjectMaps.getByPath(mapping, "properties.foo.properties.x");
-        assertThat((String)x.get("type"), is("object"));
+        assertThat((String) x.get("type"), is("object"));
 
         Map y = (Map) StringObjectMaps.getByPath(mapping, "properties.foo.properties.x.properties.y");
-        assertThat((String)y.get("type"), is("string"));
+        assertThat((String) y.get("type"), is("string"));
+    }
+
+    @Test
+    public void testAddNewNestedColumnToObjectArray() throws Exception {
+        AddColumnAnalyzedStatement analysis = e.analyze("alter table users add friends['is_nice'] BOOLEAN");
+
+        List<AnalyzedColumnDefinition> columns = analysis.analyzedTableElements().columns();
+        assertThat(columns.size(), is(2)); // second one is primary key
+        AnalyzedColumnDefinition friends = columns.get(0);
+        assertThat(mapToSortedString(friends.toMapping()), is("inner={" +
+                                                                "dynamic=true, " +
+                                                                "properties={" +
+                                                                    "is_nice={doc_values=true, index=not_analyzed, store=false, type=boolean}" +
+                                                                "}, " +
+                                                                "type=object" +
+                                                              "}, type=array"));
     }
 
     @Test
     public void testAddNewNestedColumnToObjectColumn() throws Exception {
-        AddColumnAnalyzedStatement analysis = (AddColumnAnalyzedStatement) analyze("alter table users add column details['foo'] object as (score float, name string)");
+        AddColumnAnalyzedStatement analysis = e.analyze(
+            "alter table users add column details['foo'] object as (score float, name string)");
         List<AnalyzedColumnDefinition> columns = analysis.analyzedTableElements().columns();
         assertThat(columns.size(), is(2)); // second one is primary key
 
@@ -227,17 +223,18 @@ public class AlterTableAddColumnAnalyzerTest extends BaseAnalyzerTest {
 
         Map<String, Object> mapping = analysis.analyzedTableElements().toMapping();
         assertThat(mapToSortedString(mapping), is("_all={enabled=false}, " +
-                "_meta={primary_keys=[id]}, " +
-                "properties={details={doc_values=false, dynamic=true, index=not_analyzed, properties={" +
-                "foo={doc_values=false, dynamic=true, index=not_analyzed, properties={" +
-                "name={doc_values=true, index=not_analyzed, store=false, type=string}, " +
-                "score={doc_values=true, index=not_analyzed, store=false, type=float}}, store=false, type=object}}, store=false, type=object}, " +
-                "id={doc_values=true, index=not_analyzed, store=false, type=long}}"));
+                                                  "_meta={primary_keys=[id]}, " +
+                                                  "properties={details={dynamic=true, properties={" +
+                                                  "foo={dynamic=true, properties={" +
+                                                  "name={doc_values=true, index=not_analyzed, store=false, type=string}, " +
+                                                  "score={doc_values=true, index=not_analyzed, store=false, type=float}}, type=object}}, type=object}, " +
+                                                  "id={doc_values=true, index=not_analyzed, store=false, type=long}}"));
     }
 
     @Test
     public void testAddNewNestedColumnWithArrayToRoot() throws Exception {
-        AddColumnAnalyzedStatement analysis = (AddColumnAnalyzedStatement) analyze("alter table users add column new_obj_col object as (a array(long))");
+        AddColumnAnalyzedStatement analysis = e.analyze(
+            "alter table users add column new_obj_col object as (a array(long))");
         List<AnalyzedColumnDefinition> columns = analysis.analyzedTableElements().columns();
         assertThat(columns.size(), is(2)); // second one is primary key
         assertThat(columns.get(0).dataType(), is("object"));
@@ -247,7 +244,8 @@ public class AlterTableAddColumnAnalyzerTest extends BaseAnalyzerTest {
 
     @Test
     public void testAddNewNestedColumnWithArrayToObjectColumn() throws Exception {
-        AddColumnAnalyzedStatement analysis = (AddColumnAnalyzedStatement) analyze("alter table users add column new_obj_col object as (o object as (b array(long)))");
+        AddColumnAnalyzedStatement analysis = e.analyze(
+            "alter table users add column new_obj_col object as (o object as (b array(long)))");
         List<AnalyzedColumnDefinition> columns = analysis.analyzedTableElements().columns();
         assertThat(columns.size(), is(2)); // second one is primary key
         assertThat(columns.get(0).children().get(0).dataType(), is("object"));
@@ -257,7 +255,8 @@ public class AlterTableAddColumnAnalyzerTest extends BaseAnalyzerTest {
 
     @Test
     public void testAddNewNestedColumnToNestedObjectColumn() throws Exception {
-        AddColumnAnalyzedStatement analysis = (AddColumnAnalyzedStatement) analyze("alter table deeply_nested add column details['stuff']['foo'] object as (score float, price string)");
+        AddColumnAnalyzedStatement analysis = e.analyze(
+            "alter table deeply_nested add column details['stuff']['foo'] object as (score float, price string)");
         List<AnalyzedColumnDefinition> columns = analysis.analyzedTableElements().columns();
         assertThat(columns.size(), is(1));
         assertThat(columns.get(0).ident(), is(ColumnIdent.fromPath("details")));
@@ -286,22 +285,22 @@ public class AlterTableAddColumnAnalyzerTest extends BaseAnalyzerTest {
         assertThat(price.dataType(), is("string"));
 
         Map<String, Object> mapping = analysis.analyzedTableElements().toMapping();
-        assertThat(mapToSortedString(mapping), is("_all={enabled=false}, _meta={}, properties={details={doc_values=false, " +
-                "dynamic=true, index=not_analyzed, properties={stuff={doc_values=false, dynamic=true, index=not_analyzed, " +
-                "properties={foo={doc_values=false, dynamic=true, index=not_analyzed, " +
-                "properties={price={doc_values=true, index=not_analyzed, store=false, type=string}, " +
-                "score={doc_values=true, index=not_analyzed, store=false, type=float}}, store=false, type=object}}, " +
-                "store=false, type=object}}, store=false, type=object}}"));
+        assertThat(mapToSortedString(mapping), is("_all={enabled=false}, _meta={}, properties={details={" +
+                                                  "dynamic=true, properties={stuff={dynamic=true, " +
+                                                  "properties={foo={dynamic=true, " +
+                                                  "properties={price={doc_values=true, index=not_analyzed, store=false, type=string}, " +
+                                                  "score={doc_values=true, index=not_analyzed, store=false, type=float}}, type=object}}, " +
+                                                  "type=object}}, type=object}}"));
     }
 
     @Test
     public void testAddGeneratedColumn() throws Exception {
-        AddColumnAnalyzedStatement analysis = (AddColumnAnalyzedStatement) analyze(
-                "alter table users add column name_generated as concat(name, 'foo')");
+        AddColumnAnalyzedStatement analysis = e.analyze(
+            "alter table users add column name_generated as concat(name, 'foo')");
 
         assertThat(analysis.hasNewGeneratedColumns(), is(true));
         assertThat(analysis.analyzedTableElements().columnIdents(), containsInAnyOrder(
-                new ColumnIdent("name_generated"), new ColumnIdent("id")));
+            new ColumnIdent("name_generated"), new ColumnIdent("id")));
 
         AnalyzedColumnDefinition nameGeneratedColumn = null;
         for (AnalyzedColumnDefinition columnDefinition : analysis.analyzedTableElements().columns()) {

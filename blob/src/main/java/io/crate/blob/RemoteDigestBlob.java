@@ -22,7 +22,6 @@
 package io.crate.blob;
 
 import io.crate.common.Hex;
-import org.elasticsearch.ElasticsearchIllegalArgumentException;
 import org.elasticsearch.client.Client;
 import org.elasticsearch.common.bytes.BytesArray;
 import org.elasticsearch.common.logging.ESLogger;
@@ -70,7 +69,7 @@ public class RemoteDigestBlob {
                 case 4:
                     return FAILED;
             }
-            throw new ElasticsearchIllegalArgumentException("No status match for [" + id + "]");
+            throw new IllegalArgumentException("No status match for [" + id + "]");
         }
     }
 
@@ -91,16 +90,16 @@ public class RemoteDigestBlob {
         this.index = index;
     }
 
-    public Status status(){
+    public Status status() {
         return status;
     }
 
     public boolean delete() {
         logger.trace("delete");
-        assert (transferId == null);
+        assert transferId == null : "transferId should be null";
         DeleteBlobRequest request = new DeleteBlobRequest(
-                index,
-                Hex.decodeHex(digest)
+            index,
+            Hex.decodeHex(digest)
         );
 
         return client.execute(DeleteBlobAction.INSTANCE, request).actionGet().deleted;
@@ -108,12 +107,12 @@ public class RemoteDigestBlob {
 
     private Status start(ChannelBuffer buffer, boolean last) {
         logger.trace("start blob upload");
-        assert (transferId == null);
+        assert transferId == null : "transferId should be null";
         StartBlobRequest request = new StartBlobRequest(
-                index,
-                Hex.decodeHex(digest),
-                new BytesArray(buffer.array()),
-                last
+            index,
+            Hex.decodeHex(digest),
+            new BytesArray(buffer.array()),
+            last
         );
         transferId = request.transferId();
         size += buffer.readableBytes();
@@ -124,7 +123,7 @@ public class RemoteDigestBlob {
     }
 
     private Status chunk(ChannelBuffer buffer, boolean last) {
-        assert (transferId != null);
+        assert transferId != null : "transferId should not be null";
         PutChunkRequest request = new PutChunkRequest(
             index,
             Hex.decodeHex(digest),
@@ -146,7 +145,7 @@ public class RemoteDigestBlob {
             // client probably doesn't support 100-continue and is sending chunked requests
             // need to ignore the content.
             return status;
-        } else if (status != Status.PARTIAL){
+        } else if (status != Status.PARTIAL) {
             throw new IllegalStateException("Expected Status.PARTIAL for chunk but got: " + status);
         } else {
             return chunk(buffer, last);

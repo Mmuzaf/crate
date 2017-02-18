@@ -1,23 +1,17 @@
-apply plugin: 'java'
-
+apply from: "$rootDir/gradle/javaModule.gradle"
 archivesBaseName = 'crate-udc'
 
-// we do not want to have elasticsearch here, since we provide it in :es
-configurations {
-    all*.exclude group: 'org.elasticsearch'
-}
-
-repositories {
-    mavenCentral()
-}
-
 dependencies {
-    compile project(':es')
     compile project(':core')
-    testCompile project(':testing')
+    testCompile project(':integration-testing')
+}
+
+sourceSets {
+    test.output.resourcesDir = null
+    main.output.resourcesDir = null
 }
 
 test {
     testLogging.exceptionFormat = 'full'
-    jacoco.excludes = [ "*Test*" ]
+    jacoco.excludes = ["*Test*"]
 }

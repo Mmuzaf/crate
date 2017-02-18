@@ -21,8 +21,8 @@
 
 package io.crate.executor.transport.distributed;
 
-import io.crate.core.collections.Bucket;
-import io.crate.core.collections.Row;
+import io.crate.data.Bucket;
+import io.crate.data.Row;
 
 /**
  * Builder used to build one or more buckets
@@ -43,7 +43,7 @@ public interface MultiBucketBuilder {
     /**
      * Builds the buckets and writes them into the provided array.
      * The provided array must have size N where N is the number of buckets the page contains.
-     *
+     * <p>
      * N is usually specified in the constructor of a specific PageBuilder implementation.
      */
     void build(Bucket[] buckets);

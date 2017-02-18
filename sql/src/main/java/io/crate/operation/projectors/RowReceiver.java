@@ -22,60 +22,77 @@
 
 package io.crate.operation.projectors;
 
-import io.crate.core.collections.Row;
-import io.crate.jobs.ExecutionState;
-import io.crate.operation.RowUpstream;
+import io.crate.concurrent.CompletionListenable;
+import io.crate.data.Row;
 
 import java.util.Set;
+import java.util.concurrent.CompletableFuture;
 
-public interface RowReceiver {
+public interface RowReceiver extends CompletionListenable {
+
+    enum Result {
+        CONTINUE,
+        PAUSE,
+        STOP
+    }
+
+    /**
+     * Future that is triggered once a RowReceiver finishes execution.
+     */
+    @Override
+    CompletableFuture<?> completionFuture();
 
     /**
      * Feed the downstream with the next input row.
-     * If the downstream does not need any more rows, it returns <code>false</code>,
-     * <code>true</code> otherwise.
-     *
-     * Any upstream who calls this methods must call {@link #setUpstream(RowUpstream)} exactly once
-     * so that the receiver is able to call pause/resume on its upstream.
-     *
-     * {@link #finish()} and {@link #fail(Throwable)} may be called without calling setUpstream if there are no rows.
+     * <p>
+     * If setNextRow returns PAUSE a upstream must call {@link #pauseProcessed(ResumeHandle)} and immediately return afterwards.
+     * A Upstream MUST NOT make any other calls until it receives a resume call.
+     * <p>
+     * If setNextRow returns STOP a upstream has to call finish/fail
      *
      * @param row the next row - the row is usually a shared object and the instances content change after the
      *            setNextRow call.
      * @return false if the downstream does not need any more rows, true otherwise.
      */
-    boolean setNextRow(Row row);
+    Result setNextRow(Row row);
+
+    /**
+     * Called by an upstream after it has received PAUSE from {@link #setNextRow(Row)}
+     * The upstream suspends execution immediately afterwards
+     *
+     * @param resumeable can be used to resume the upstream
+     */
+    void pauseProcessed(ResumeHandle resumeable);
 
     /**
      * Called from the upstream to indicate that all rows are sent.
-     *
+     * <p>
      * NOTE: This method must not throw any exceptions!
      */
-    void finish();
+    void finish(RepeatHandle repeatable);
 
     /**
      * Is called from the upstream in case of a failure.
-     * @param throwable the cause of the fail
+     * This is the equivalent to finish and indicates that the upstream is finished
      *
-     * NOTE: This method must not throw any exceptions!
+     * @param throwable the cause of the fail
+     *                  <p>
+     *                  NOTE: This method must not throw any exceptions!
      */
     void fail(Throwable throwable);
 
     /**
-     * prepares / starts the RowReceiver, after this call it must be ready to receive rows
+     * kill a RowReceiver to stop it's execution.
+     * kill can be called from a different thread and can be called after/during finish/fail operations
+     * <p>
+     * If a RowReceiver doesn't delegate the kill to another RowReceiver the rowReceiver has to return false on the
+     * next setNextRow call in order to stop collect operations.
      */
-    void prepare(ExecutionState executionState);
-
-    /**
-     * an RowUpstream who wants to call {@link #setNextRow(Row)} calls setUpstream before he starts sending rows
-     * so that the RowReceiver can call pause/resume on the upstream.
-     */
-    void setUpstream(RowUpstream rowUpstream);
-
+    void kill(Throwable throwable);
 
     /**
      * specifies which requirements a downstream requires from an upstream in order to work correctly.
-     *
+     * <p>
      * This can be used to switch to optimized implementations if something isn't/is requirement
      */
     Set<Requirement> requirements();

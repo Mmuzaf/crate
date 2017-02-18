@@ -37,6 +37,8 @@ import java.util.UUID;
 
 public class ShardDeleteRequest extends ShardRequest<ShardDeleteRequest, ShardDeleteRequest.Item> {
 
+    private int skipFromLocation = -1;
+
     public ShardDeleteRequest() {
     }
 
@@ -44,21 +46,33 @@ public class ShardDeleteRequest extends ShardRequest<ShardDeleteRequest, ShardDe
         super(shardId, routing, jobId);
     }
 
-    public ShardDeleteRequest add(int location, String id) {
-        add(location, new Item(id));
-        return this;
+    void skipFromLocation(int location) {
+        skipFromLocation = location;
+    }
+
+    int skipFromLocation() {
+        return skipFromLocation;
     }
 
     @Override
     public void writeTo(StreamOutput out) throws IOException {
         super.writeTo(out);
         writeItems(out);
+        if (skipFromLocation > -1) {
+            out.writeBoolean(true);
+            out.writeVInt(skipFromLocation);
+        } else {
+            out.writeBoolean(false);
+        }
     }
 
     @Override
     public void readFrom(StreamInput in) throws IOException {
         super.readFrom(in);
         readItems(in, locations.size());
+        if (in.readBoolean()) {
+            skipFromLocation = in.readVInt();
+        }
     }
 
     @Override
@@ -116,14 +130,14 @@ public class ShardDeleteRequest extends ShardRequest<ShardDeleteRequest, ShardDe
         @Override
         public void readFrom(StreamInput in) throws IOException {
             super.readFrom(in);
-            version = Versions.readVersion(in);
+            version = in.readLong();
             versionType = VersionType.fromValue(in.readByte());
         }
 
         @Override
         public void writeTo(StreamOutput out) throws IOException {
             super.writeTo(out);
-            Versions.writeVersion(version, out);
+            out.writeLong(version);
             out.writeByte(versionType.getValue());
         }
     }
@@ -141,10 +155,10 @@ public class ShardDeleteRequest extends ShardRequest<ShardDeleteRequest, ShardDe
         @Override
         public ShardDeleteRequest newRequest(ShardId shardId, String routing) {
             return new ShardDeleteRequest(
-                    shardId,
-                    routing,
-                    jobId)
-                    .timeout(timeout);
+                shardId,
+                routing,
+                jobId)
+                .timeout(timeout);
         }
     }
 

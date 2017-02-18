@@ -21,19 +21,23 @@
 
 package io.crate.analyze.relations;
 
-import com.google.common.base.Optional;
 import com.google.common.collect.ImmutableSet;
 import io.crate.analyze.OrderBy;
 import io.crate.analyze.symbol.*;
 import io.crate.analyze.symbol.format.SymbolFormatter;
 import io.crate.exceptions.ColumnUnknownException;
+import io.crate.exceptions.ColumnValidationException;
 import io.crate.metadata.ColumnIdent;
+import io.crate.metadata.GeneratedReference;
 import io.crate.metadata.Path;
-import io.crate.metadata.ReferenceInfo;
+import io.crate.metadata.Reference;
 import io.crate.metadata.doc.DocSysColumns;
 import io.crate.metadata.doc.DocTableInfo;
+import io.crate.metadata.table.Operation;
 
 import javax.annotation.Nullable;
+import java.util.List;
+import java.util.Optional;
 
 public class DocTableRelation extends AbstractTableRelation<DocTableInfo> {
 
@@ -52,16 +56,16 @@ public class DocTableRelation extends AbstractTableRelation<DocTableInfo> {
 
         @Override
         public Void visitReference(Reference symbol, DocTableRelation context) {
-            if (context.tableInfo.partitionedBy().contains(symbol.info().ident().columnIdent())) {
+            if (context.tableInfo.partitionedBy().contains(symbol.ident().columnIdent())) {
                 throw new UnsupportedOperationException(
-                        SymbolFormatter.format(
-                                "cannot use partitioned column %s in ORDER BY clause", symbol));
-            } else if (symbol.info().indexType() == ReferenceInfo.IndexType.ANALYZED) {
+                    SymbolFormatter.format(
+                        "cannot use partitioned column %s in ORDER BY clause", symbol));
+            } else if (symbol.indexType() == Reference.IndexType.ANALYZED) {
                 throw new UnsupportedOperationException(
-                        SymbolFormatter.format("Cannot ORDER BY '%s': sorting on analyzed/fulltext columns is not possible", symbol));
-            } else if (symbol.info().indexType() == ReferenceInfo.IndexType.NO) {
+                    SymbolFormatter.format("Cannot ORDER BY '%s': sorting on analyzed/fulltext columns is not possible", symbol));
+            } else if (symbol.indexType() == Reference.IndexType.NO) {
                 throw new UnsupportedOperationException(
-                        SymbolFormatter.format("Cannot ORDER BY '%s': sorting on non-indexed columns is not possible", symbol));
+                    SymbolFormatter.format("Cannot ORDER BY '%s': sorting on non-indexed columns is not possible", symbol));
             }
             return null;
         }
@@ -80,24 +84,24 @@ public class DocTableRelation extends AbstractTableRelation<DocTableInfo> {
     @Nullable
     @Override
     public Field getField(Path path) {
-        return getField(path, false);
+        return getField(path, Operation.READ);
     }
 
     @Override
-    public Field getWritableField(Path path) throws UnsupportedOperationException, ColumnUnknownException {
-        return getField(path, true);
-    }
-
-    private Field getField(Path path, boolean forWrite) {
+    public Field getField(Path path, Operation operation) throws UnsupportedOperationException, ColumnUnknownException {
         ColumnIdent ci = toColumnIdent(path);
         if (HIDDEN_COLUMNS.contains(ci)) {
             return null;
         }
-        ReferenceInfo referenceInfo = tableInfo.getReferenceInfo(ci);
-        if (referenceInfo == null) {
-            referenceInfo = tableInfo.indexColumn(ci);
-            if (referenceInfo == null) {
-                DynamicReference dynamic = tableInfo.getDynamic(ci, forWrite);
+        if (operation == Operation.UPDATE) {
+            ensureColumnCanBeUpdated(ci);
+        }
+        Reference reference = tableInfo.getReference(ci);
+        if (reference == null) {
+            reference = tableInfo.indexColumn(ci);
+            if (reference == null) {
+                DynamicReference dynamic = tableInfo.getDynamic(ci,
+                    operation == Operation.INSERT || operation == Operation.UPDATE);
                 if (dynamic == null) {
                     return null;
                 } else {
@@ -105,9 +109,43 @@ public class DocTableRelation extends AbstractTableRelation<DocTableInfo> {
                 }
             }
         }
-        referenceInfo = checkNestedArray(ci, referenceInfo);
+        reference = checkNestedArray(ci, reference);
         // TODO: check allocated fields first?
-        return allocate(ci, new Reference(referenceInfo));
+        return allocate(ci, reference);
+    }
+
+    /**
+     * @throws io.crate.exceptions.ColumnValidationException if the column cannot be updated
+     */
+    private void ensureColumnCanBeUpdated(ColumnIdent ci) {
+        if (ci.isSystemColumn()) {
+            throw new ColumnValidationException(ci.toString(), "Updating a system column is not supported");
+        }
+        if (tableInfo.clusteredBy() != null) {
+            ensureNotUpdated(ci, tableInfo.clusteredBy(), "Updating a clustered-by column is not supported");
+        }
+        for (ColumnIdent pkIdent : tableInfo.primaryKey()) {
+            ensureNotUpdated(ci, pkIdent, "Updating a primary key is not supported");
+        }
+        List<GeneratedReference> generatedReferences = tableInfo.generatedColumns();
+
+        for (ColumnIdent partitionIdent : tableInfo.partitionedBy()) {
+            ensureNotUpdated(ci, partitionIdent, "Updating a partitioned-by column is not supported");
+            int idx = generatedReferences.indexOf(tableInfo.getReference(partitionIdent));
+            if (idx >= 0) {
+                GeneratedReference generatedReference = generatedReferences.get(idx);
+                for (Reference reference : generatedReference.referencedReferences()) {
+                    ensureNotUpdated(ci, reference.ident().columnIdent(),
+                        "Updating a column which is referenced in a partitioned by generated column expression is not supported");
+                }
+            }
+        }
+    }
+
+    private static void ensureNotUpdated(ColumnIdent columnUpdated, ColumnIdent protectedColumnIdent, String errorMessage) {
+        if (columnUpdated.equals(protectedColumnIdent) || protectedColumnIdent.isChildOf(columnUpdated)) {
+            throw new ColumnValidationException(columnUpdated.toString(), errorMessage);
+        }
     }
 
     public void validateOrderBy(Optional<OrderBy> orderBy) {
@@ -117,7 +155,6 @@ public class DocTableRelation extends AbstractTableRelation<DocTableInfo> {
             }
         }
     }
-
 
 
 }

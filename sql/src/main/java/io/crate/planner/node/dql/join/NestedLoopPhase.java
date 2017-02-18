@@ -24,12 +24,12 @@ package io.crate.planner.node.dql.join;
 import com.google.common.base.MoreObjects;
 import com.google.common.collect.ImmutableSet;
 import com.google.common.collect.Iterables;
+import io.crate.analyze.symbol.Symbol;
 import io.crate.analyze.symbol.Symbols;
 import io.crate.planner.distribution.DistributionInfo;
 import io.crate.planner.distribution.UpstreamPhase;
 import io.crate.planner.node.ExecutionPhaseVisitor;
-import io.crate.planner.node.PlanNodeVisitor;
-import io.crate.planner.node.dql.AbstractDQLPlanPhase;
+import io.crate.planner.node.dql.AbstractProjectionsPhase;
 import io.crate.planner.node.dql.MergePhase;
 import io.crate.planner.projection.Projection;
 import org.elasticsearch.common.io.stream.StreamInput;
@@ -42,21 +42,23 @@ import java.util.HashSet;
 import java.util.List;
 import java.util.UUID;
 
-public class NestedLoopPhase extends AbstractDQLPlanPhase implements UpstreamPhase {
+public class NestedLoopPhase extends AbstractProjectionsPhase implements UpstreamPhase {
 
-    public static final ExecutionPhaseFactory<NestedLoopPhase> FACTORY = new ExecutionPhaseFactory<NestedLoopPhase>() {
-        @Override
-        public NestedLoopPhase create() {
-            return new NestedLoopPhase();
-        }
-    };
+    public static final ExecutionPhaseFactory<NestedLoopPhase> FACTORY = NestedLoopPhase::new;
 
     private Collection<String> executionNodes;
     private MergePhase leftMergePhase;
     private MergePhase rightMergePhase;
-    private DistributionInfo distributionInfo = DistributionInfo.DEFAULT_SAME_NODE;
+    private DistributionInfo distributionInfo = DistributionInfo.DEFAULT_BROADCAST;
+    private JoinType joinType;
 
-    public NestedLoopPhase() {}
+    @Nullable
+    private Symbol joinCondition;
+    private int numLeftOutputs;
+    private int numRightOutputs;
+
+    public NestedLoopPhase() {
+    }
 
     public NestedLoopPhase(UUID jobId,
                            int executionNodeId,
@@ -64,14 +66,22 @@ public class NestedLoopPhase extends AbstractDQLPlanPhase implements UpstreamPha
                            List<Projection> projections,
                            @Nullable MergePhase leftMergePhase,
                            @Nullable MergePhase rightMergePhase,
-                           Collection<String> executionNodes) {
+                           Collection<String> executionNodes,
+                           JoinType joinType,
+                           @Nullable Symbol joinCondition,
+                           int numLeftOutputs,
+                           int numRightOutputs) {
         super(jobId, executionNodeId, name, projections);
         Projection lastProjection = Iterables.getLast(projections, null);
-        assert lastProjection != null;
+        assert lastProjection != null : "lastProjection must not be null";
         outputTypes = Symbols.extractTypes(lastProjection.outputs());
         this.leftMergePhase = leftMergePhase;
         this.rightMergePhase = rightMergePhase;
         this.executionNodes = executionNodes;
+        this.joinType = joinType;
+        this.joinCondition = joinCondition;
+        this.numLeftOutputs = numLeftOutputs;
+        this.numRightOutputs = numRightOutputs;
     }
 
     @Override
@@ -80,7 +90,7 @@ public class NestedLoopPhase extends AbstractDQLPlanPhase implements UpstreamPha
     }
 
     @Override
-    public Collection<String> executionNodes() {
+    public Collection<String> nodeIds() {
         if (executionNodes == null) {
             return ImmutableSet.of();
         } else {
@@ -98,15 +108,28 @@ public class NestedLoopPhase extends AbstractDQLPlanPhase implements UpstreamPha
         return rightMergePhase;
     }
 
+    @Nullable
+    public Symbol joinCondition() {
+        return joinCondition;
+    }
+
+    public JoinType joinType() {
+        return joinType;
+    }
+
+    public int numLeftOutputs() {
+        return numLeftOutputs;
+    }
+
+    public int numRightOutputs() {
+        return numRightOutputs;
+    }
+
     @Override
     public <C, R> R accept(ExecutionPhaseVisitor<C, R> visitor, C context) {
         return visitor.visitNestedLoopPhase(this, context);
     }
 
-    @Override
-    public <C, R> R accept(PlanNodeVisitor<C, R> visitor, C context) {
-        return visitor.visitNestedLoopPhase(this, context);
-    }
 
     @Override
     public void readFrom(StreamInput in) throws IOException {
@@ -129,6 +152,12 @@ public class NestedLoopPhase extends AbstractDQLPlanPhase implements UpstreamPha
             rightMergePhase = MergePhase.FACTORY.create();
             rightMergePhase.readFrom(in);
         }
+        if (in.readBoolean()) {
+            joinCondition = Symbols.fromStream(in);
+        }
+        joinType = JoinType.values()[in.readVInt()];
+        numLeftOutputs = in.readVInt();
+        numRightOutputs = in.readVInt();
     }
 
     @Override
@@ -158,16 +187,29 @@ public class NestedLoopPhase extends AbstractDQLPlanPhase implements UpstreamPha
             out.writeBoolean(true);
             rightMergePhase.writeTo(out);
         }
+
+        if (joinCondition == null) {
+            out.writeBoolean(false);
+        } else {
+            out.writeBoolean(true);
+            Symbols.toStream(joinCondition, out);
+        }
+
+        out.writeVInt(joinType.ordinal());
+        out.writeVInt(numLeftOutputs);
+        out.writeVInt(numRightOutputs);
     }
 
     @Override
     public String toString() {
         MoreObjects.ToStringHelper helper = MoreObjects.toStringHelper(this)
-                .add("executionPhaseId", executionPhaseId())
-                .add("name", name())
-                .add("outputTypes", outputTypes)
-                .add("jobId", jobId())
-                .add("executionNodes", executionNodes);
+            .add("executionPhaseId", phaseId())
+            .add("name", name())
+            .add("joinType", joinType)
+            .add("joinCondition", joinCondition)
+            .add("outputTypes", outputTypes)
+            .add("jobId", jobId())
+            .add("executionNodes", executionNodes);
         return helper.toString();
     }
 

@@ -22,13 +22,10 @@
 
 package io.crate.operation.projectors;
 
-import com.google.common.base.Supplier;
-import com.google.common.base.Suppliers;
 import com.google.common.base.Throwables;
 import com.google.common.cache.CacheBuilder;
 import com.google.common.cache.CacheLoader;
 import com.google.common.cache.LoadingCache;
-import com.google.common.collect.ImmutableList;
 import com.google.common.collect.Lists;
 import io.crate.metadata.PartitionName;
 import io.crate.metadata.TableIdent;
@@ -38,12 +35,15 @@ import org.apache.lucene.util.BytesRef;
 
 import javax.annotation.Nonnull;
 import javax.annotation.Nullable;
+import java.util.Collections;
 import java.util.List;
 import java.util.concurrent.ExecutionException;
+import java.util.function.Supplier;
 
 public class IndexNameResolver {
 
-    private IndexNameResolver() {};
+    private IndexNameResolver() {
+    }
 
     public static Supplier<String> create(TableIdent tableIdent,
                                           @Nullable String partitionIdent,
@@ -58,34 +58,34 @@ public class IndexNameResolver {
     }
 
     public static Supplier<String> forTable(final TableIdent tableIdent) {
-        return Suppliers.ofInstance(tableIdent.indexName());
+        return tableIdent::indexName;
     }
 
     public static Supplier<String> forPartition(TableIdent tableIdent, String partitionIdent) {
-        return Suppliers.ofInstance(PartitionName.indexName(tableIdent, partitionIdent));
+        return (Supplier) () -> PartitionName.indexName(tableIdent, partitionIdent);
     }
 
     public static Supplier<String> forPartition(final TableIdent tableIdent, final List<Input<?>> partitionedByInputs) {
         assert partitionedByInputs.size() > 0 : "must have at least 1 partitionedByInput";
         final LoadingCache<List<BytesRef>, String> cache = CacheBuilder.newBuilder()
-                .initialCapacity(10)
-                .maximumSize(20)
-                .build(new CacheLoader<List<BytesRef>, String>() {
-                    @Override
-                    public String load(@Nonnull List<BytesRef> key) throws Exception {
-                        return PartitionName.indexName(tableIdent, PartitionName.encodeIdent(key));
-                    }
-                });
-        return new Supplier<String>() {
-            @Override
-            public String get() {
-                // copy because transform returns a view and the values of the inputs are mutable
-                List<BytesRef> partitions = ImmutableList.copyOf(Lists.transform(partitionedByInputs, Inputs.TO_BYTES_REF));
-                try {
-                    return cache.get(partitions);
-                } catch (ExecutionException e) {
-                    throw Throwables.propagate(e);
+            .initialCapacity(10)
+            .maximumSize(20)
+            .build(new CacheLoader<List<BytesRef>, String>() {
+                @Override
+                public String load(@Nonnull List<BytesRef> key) throws Exception {
+                    return PartitionName.indexName(tableIdent, PartitionName.encodeIdent(key));
                 }
+            });
+        return () -> {
+            // copy because transform returns a view and the values of the inputs are mutable
+            List<BytesRef> partitions = Collections.unmodifiableList(
+                Lists.newArrayList(Lists.transform(
+                    partitionedByInputs,
+                    Inputs.TO_BYTES_REF)));
+            try {
+                return cache.get(partitions);
+            } catch (ExecutionException e) {
+                throw Throwables.propagate(e);
             }
         };
     }

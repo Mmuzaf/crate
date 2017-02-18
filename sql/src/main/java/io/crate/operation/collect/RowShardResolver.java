@@ -24,12 +24,12 @@ package io.crate.operation.collect;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.Lists;
 import io.crate.analyze.Id;
-import io.crate.analyze.symbol.*;
-import io.crate.analyze.symbol.format.SymbolFormatter;
-import io.crate.core.collections.Row;
+import io.crate.analyze.symbol.Symbol;
+import io.crate.data.Row;
 import io.crate.metadata.ColumnIdent;
-import io.crate.operation.ImplementationSymbolVisitor;
+import io.crate.metadata.Functions;
 import io.crate.operation.Input;
+import io.crate.operation.InputFactory;
 import io.crate.operation.Inputs;
 import org.apache.lucene.util.BytesRef;
 import org.elasticsearch.common.Nullable;
@@ -42,34 +42,38 @@ import java.util.List;
 @NotThreadSafe
 public class RowShardResolver {
 
-    private static final Visitor VISITOR = new Visitor();
-
     private final com.google.common.base.Function<List<BytesRef>, String> idFunction;
-    private final ImplementationSymbolVisitor.Context visitorContext;
     private final List<Input<?>> primaryKeyInputs;
     private final Input<?> routingInput;
+    private final Iterable<CollectExpression<Row, ?>> expressions;
 
     private String id;
     private String routing;
 
 
-    public RowShardResolver(List<ColumnIdent> pkColumns,
-                            List<Symbol> primaryKeySymbols,
+    public RowShardResolver(Functions functions,
+                            List<ColumnIdent> pkColumns,
+                            List<? extends Symbol> primaryKeySymbols,
                             @Nullable ColumnIdent clusteredByColumn,
                             @Nullable Symbol routingSymbol) {
-
-        idFunction = Id.compile(pkColumns, clusteredByColumn);
-        visitorContext = new ImplementationSymbolVisitor.Context();
-        routingInput = routingSymbol == null ? null : VISITOR.process(routingSymbol, visitorContext);
+        InputFactory inputFactory = new InputFactory(functions);
+        InputFactory.Context<CollectExpression<Row, ?>> context = inputFactory.ctxForInputColumns();
+        idFunction = Id.compileWithNullValidation(pkColumns, clusteredByColumn);
+        if (routingSymbol == null) {
+            routingInput = null;
+        } else {
+            routingInput = context.add(routingSymbol);
+        }
         primaryKeyInputs = new ArrayList<>(primaryKeySymbols.size());
         for (Symbol primaryKeySymbol : primaryKeySymbols) {
-            primaryKeyInputs.add(VISITOR.process(primaryKeySymbol, visitorContext));
+            primaryKeyInputs.add(context.add(primaryKeySymbol));
         }
+        expressions = context.expressions();
     }
 
 
     public void setNextRow(Row row) {
-        for (CollectExpression<Row, ?> expression : visitorContext.collectExpressions()) {
+        for (CollectExpression<Row, ?> expression : expressions) {
             expression.setNextRow(row);
         }
         id = idFunction.apply(pkValues(primaryKeyInputs));
@@ -100,23 +104,5 @@ public class RowShardResolver {
     @Nullable
     public String routing() {
         return routing;
-    }
-
-    static class Visitor extends SymbolVisitor<ImplementationSymbolVisitor.Context, Input<?>> {
-
-        @Override
-        protected Input<?> visitSymbol(Symbol symbol, ImplementationSymbolVisitor.Context context) {
-            throw new AssertionError(SymbolFormatter.format("Symbol %s not supported", symbol));
-        }
-
-        @Override
-        public Input<?> visitInputColumn(InputColumn inputColumn, ImplementationSymbolVisitor.Context context) {
-            return context.collectExpressionFor(inputColumn);
-        }
-
-        @Override
-        public Input<?> visitLiteral(Literal symbol, ImplementationSymbolVisitor.Context context) {
-            return symbol;
-        }
     }
 }

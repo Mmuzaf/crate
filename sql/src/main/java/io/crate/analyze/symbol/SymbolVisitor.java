@@ -21,6 +21,8 @@
 
 package io.crate.analyze.symbol;
 
+import io.crate.metadata.Reference;
+
 import javax.annotation.Nullable;
 
 
@@ -76,6 +78,14 @@ public class SymbolVisitor<C, R> {
 
     public R visitFetchReference(FetchReference fetchReference, C context) {
         return visitSymbol(fetchReference, context);
+    }
+
+    public R visitParameterSymbol(ParameterSymbol parameterSymbol, C context) {
+        return visitSymbol(parameterSymbol, context);
+    }
+
+    public R visitSelectSymbol(SelectSymbol selectSymbol, C context) {
+        return visitSymbol(selectSymbol, context);
     }
 }
 

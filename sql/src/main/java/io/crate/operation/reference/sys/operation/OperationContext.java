@@ -21,6 +21,7 @@
 
 package io.crate.operation.reference.sys.operation;
 
+import java.util.Objects;
 import java.util.UUID;
 
 public class OperationContext {
@@ -36,5 +37,19 @@ public class OperationContext {
         this.jobId = jobId;
         this.name = name;
         this.started = started;
+    }
+
+    @Override
+    public boolean equals(Object o) {
+        if (this == o) return true;
+        if (o == null || getClass() != o.getClass()) return false;
+        OperationContext that = (OperationContext) o;
+        if (id != that.id) return false;
+        return jobId.equals(that.jobId);
+    }
+
+    @Override
+    public int hashCode() {
+        return Objects.hash(id, jobId);
     }
 }

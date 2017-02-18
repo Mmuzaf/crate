@@ -26,10 +26,12 @@ import com.google.common.util.concurrent.FutureCallback;
 import com.google.common.util.concurrent.Futures;
 import com.google.common.util.concurrent.ListenableFuture;
 import io.crate.analyze.WhereClause;
-import io.crate.core.collections.Row1;
-import io.crate.operation.RowUpstream;
+import io.crate.data.Row1;
 import io.crate.operation.count.CountOperation;
+import io.crate.operation.projectors.RepeatHandle;
 import io.crate.operation.projectors.RowReceiver;
+import org.elasticsearch.common.logging.ESLogger;
+import org.elasticsearch.common.logging.Loggers;
 
 import javax.annotation.Nonnull;
 import javax.annotation.Nullable;
@@ -37,7 +39,9 @@ import java.io.IOException;
 import java.util.List;
 import java.util.Map;
 
-public class CountContext extends AbstractExecutionSubContext implements RowUpstream {
+public class CountContext extends AbstractExecutionSubContext {
+
+    private static final ESLogger LOGGER = Loggers.getLogger(CountContext.class);
 
     private final CountOperation countOperation;
     private final RowReceiver rowReceiver;
@@ -50,17 +54,11 @@ public class CountContext extends AbstractExecutionSubContext implements RowUpst
                         RowReceiver rowReceiver,
                         Map<String, List<Integer>> indexShardMap,
                         WhereClause whereClause) {
-        super(id);
+        super(id, LOGGER);
         this.countOperation = countOperation;
         this.rowReceiver = rowReceiver;
-        rowReceiver.setUpstream(this);
         this.indexShardMap = indexShardMap;
         this.whereClause = whereClause;
-    }
-
-    @Override
-    protected void innerPrepare() {
-        rowReceiver.prepare(this);
     }
 
     @Override
@@ -89,13 +87,13 @@ public class CountContext extends AbstractExecutionSubContext implements RowUpst
         if (countFuture != null) {
             countFuture.cancel(true);
         }
-        rowReceiver.fail(throwable);
+        rowReceiver.kill(throwable);
     }
 
     @Override
     protected void innerClose(@Nullable Throwable t) {
         if (t == null) {
-            rowReceiver.finish();
+            rowReceiver.finish(RepeatHandle.UNSUPPORTED);
         } else {
             rowReceiver.fail(t);
         }
@@ -104,20 +102,5 @@ public class CountContext extends AbstractExecutionSubContext implements RowUpst
     @Override
     public String name() {
         return "count(*)";
-    }
-
-    @Override
-    public void pause() {
-        throw new UnsupportedOperationException();
-    }
-
-    @Override
-    public void resume(boolean async) {
-        throw new UnsupportedOperationException();
-    }
-
-    @Override
-    public void repeat() {
-        throw new UnsupportedOperationException();
     }
 }

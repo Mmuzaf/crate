@@ -23,8 +23,11 @@ package io.crate.jobs;
 
 import javax.annotation.Nullable;
 
-public interface DownstreamExecutionSubContext extends ExecutionSubContext {
+/**
+ * An ExecutionSubContext which receives data from an upstream.
+ */
+public interface DownstreamExecutionSubContext {
 
     @Nullable
-    PageDownstreamContext pageDownstreamContext(byte inputId);
+    PageBucketReceiver getBucketReceiver(byte inputId);
 }

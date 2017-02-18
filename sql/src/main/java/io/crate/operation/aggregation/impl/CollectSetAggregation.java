@@ -47,8 +47,8 @@ public class CollectSetAggregation extends AggregationFunction<Set<Object>, Set<
     public static void register(AggregationImplModule mod) {
         for (final DataType dataType : DataTypes.PRIMITIVE_TYPES) {
             mod.register(new CollectSetAggregation(new FunctionInfo(new FunctionIdent(NAME,
-                    ImmutableList.of(dataType)),
-                    new SetType(dataType), FunctionInfo.Type.AGGREGATE)));
+                ImmutableList.of(dataType)),
+                new SetType(dataType), FunctionInfo.Type.AGGREGATE)));
         }
     }
 
@@ -69,14 +69,16 @@ public class CollectSetAggregation extends AggregationFunction<Set<Object>, Set<
             return state;
         }
         if (state.add(value)) {
-            ramAccountingContext.addBytes(innerTypeEstimator.estimateSize(value));
+            ramAccountingContext.addBytes(
+                RamAccountingContext.roundUp(innerTypeEstimator.estimateSize(value) + 36L) // values size + 32 bytes for entry, 4 bytes for increased capacity
+            );
         }
         return state;
     }
 
     @Override
     public Set<Object> newState(RamAccountingContext ramAccountingContext) {
-        ramAccountingContext.addBytes(36L); // overhead for the HashSet (map ref 8 + 28 for fields inside the map)
+        ramAccountingContext.addBytes(RamAccountingContext.roundUp(64L)); // overhead for HashSet: 32 * 0 + 16 * 4 bytes
         return new HashSet<>();
     }
 
@@ -89,7 +91,9 @@ public class CollectSetAggregation extends AggregationFunction<Set<Object>, Set<
     public Set<Object> reduce(RamAccountingContext ramAccountingContext, Set<Object> state1, Set<Object> state2) {
         for (Object newValue : state2) {
             if (state1.add(newValue)) {
-                ramAccountingContext.addBytes(innerTypeEstimator.estimateSize(newValue));
+                ramAccountingContext.addBytes(
+                    RamAccountingContext.roundUp(innerTypeEstimator.estimateSize(newValue) + 36L) // value size + 32 bytes for entry + 4 bytes for increased capacity
+                );
             }
         }
         return state1;

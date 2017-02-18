@@ -29,35 +29,46 @@ import org.elasticsearch.common.io.stream.StreamOutput;
 
 import javax.annotation.Nullable;
 import java.io.IOException;
+import java.util.ArrayList;
+import java.util.List;
 
 /**
  * A symbol which represents a column of a result array
  */
 public class InputColumn extends Symbol implements Comparable<InputColumn> {
 
-    public static final SymbolFactory<InputColumn> FACTORY = new SymbolFactory<InputColumn>() {
-        @Override
-        public InputColumn newInstance() {
-            return new InputColumn();
+    private final DataType dataType;
+    private final int index;
+
+    public static List<Symbol> numInputs(int size) {
+        List<Symbol> inputColumns = new ArrayList<>(size);
+        for (int i = 0; i < size; i++) {
+            inputColumns.add(new InputColumn(i));
         }
-    };
+        return inputColumns;
+    }
 
-    private DataType dataType;
-
-    private int index;
+    public static List<Symbol> fromSymbols(List<? extends Symbol> symbols) {
+        List<Symbol> inputColumns = new ArrayList<>(symbols.size());
+        for (int i = 0; i < symbols.size(); i++) {
+            inputColumns.add(new InputColumn(i, symbols.get(i).valueType()));
+        }
+        return inputColumns;
+    }
 
     public InputColumn(int index, @Nullable DataType dataType) {
-        assert index >= 0;
+        assert index >= 0 : "index must be >= 0";
         this.index = index;
         this.dataType = MoreObjects.firstNonNull(dataType, DataTypes.UNDEFINED);
     }
 
-    public InputColumn(int index) {
-        this(index, null);
+    public InputColumn(StreamInput in) throws IOException {
+        index = in.readVInt();
+        dataType = DataTypes.fromStream(in);
     }
 
-    public InputColumn() {
-
+    public InputColumn(int index) {
+        this(index, null);
     }
 
     public int index() {
@@ -80,12 +91,6 @@ public class InputColumn extends Symbol implements Comparable<InputColumn> {
     }
 
     @Override
-    public void readFrom(StreamInput in) throws IOException {
-        index = in.readVInt();
-        dataType = DataTypes.fromStream(in);
-    }
-
-    @Override
     public void writeTo(StreamOutput out) throws IOException {
         out.writeVInt(index);
         DataTypes.toStream(dataType, out);
@@ -99,9 +104,9 @@ public class InputColumn extends Symbol implements Comparable<InputColumn> {
     @Override
     public String toString() {
         return MoreObjects.toStringHelper(this)
-                .add("index", index)
-                .add("type", dataType)
-                .toString();
+            .add("index", index)
+            .add("type", dataType)
+            .toString();
     }
 
     @Override
@@ -121,4 +126,11 @@ public class InputColumn extends Symbol implements Comparable<InputColumn> {
         return index;
     }
 
+    public static List<Symbol> fromTypes(List<DataType> dataTypes) {
+        List<Symbol> inputColumns = new ArrayList<>(dataTypes.size());
+        for (int i = 0; i < dataTypes.size(); i++) {
+            inputColumns.add(new InputColumn(i, dataTypes.get(i)));
+        }
+        return inputColumns;
+    }
 }

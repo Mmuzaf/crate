@@ -1,21 +1,16 @@
 package io.crate.jobs;
 
-import com.google.common.util.concurrent.SettableFuture;
-import io.crate.executor.TaskResult;
 import io.crate.executor.transport.ShardResponse;
 import io.crate.executor.transport.ShardUpsertRequest;
-import io.crate.planner.node.dml.UpsertByIdNode;
+import io.crate.planner.node.dml.UpsertById;
+import io.crate.test.CauseMatcher;
 import io.crate.test.integration.CrateUnitTest;
-import io.crate.testing.TestingHelpers;
 import org.elasticsearch.action.ActionListener;
 import org.elasticsearch.action.bulk.BulkRequestExecutor;
 import org.junit.Before;
 import org.junit.Test;
 import org.mockito.ArgumentCaptor;
 import org.mockito.Mock;
-
-import java.util.concurrent.CancellationException;
-import java.util.concurrent.TimeUnit;
 
 import static org.mockito.Mockito.*;
 
@@ -25,15 +20,13 @@ public class UpsertByIdContextTest extends CrateUnitTest {
     public BulkRequestExecutor delegate;
 
     private UpsertByIdContext context;
-    private SettableFuture<TaskResult> future;
 
     @Before
     public void setUp() throws Exception {
         super.setUp();
         ShardUpsertRequest request = mock(ShardUpsertRequest.class);
-        UpsertByIdNode.Item item = mock(UpsertByIdNode.Item.class);
-        future = SettableFuture.create();
-        context = new UpsertByIdContext(1, request, item, future, delegate);
+        UpsertById.Item item = mock(UpsertById.Item.class);
+        context = new UpsertByIdContext(1, request, item, delegate);
     }
 
     @Test
@@ -49,16 +42,16 @@ public class UpsertByIdContextTest extends CrateUnitTest {
         ShardResponse response = mock(ShardResponse.class);
         listener.getValue().onResponse(response);
 
-        expectedException.expectCause(TestingHelpers.cause(CancellationException.class));
-        context.future().get(500, TimeUnit.MILLISECONDS);
+        expectedException.expectCause(CauseMatcher.cause(InterruptedException.class));
+        context.completionFuture().get();
     }
 
     @Test
     public void testKillBeforeStart() throws Exception {
         context.prepare();
         context.kill(null);
-        expectedException.expectCause(TestingHelpers.cause(CancellationException.class));
-        context.future().get(500, TimeUnit.MILLISECONDS);
+        expectedException.expectCause(CauseMatcher.cause(InterruptedException.class));
+        context.completionFuture().get();
     }
 
     @Test

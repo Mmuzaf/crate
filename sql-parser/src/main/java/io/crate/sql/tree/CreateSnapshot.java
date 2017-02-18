@@ -23,10 +23,9 @@ package io.crate.sql.tree;
 
 import com.google.common.base.MoreObjects;
 import com.google.common.base.Objects;
-import com.google.common.base.Optional;
 
-import javax.annotation.Nullable;
 import java.util.List;
+import java.util.Optional;
 
 public class CreateSnapshot extends Statement {
 
@@ -35,19 +34,18 @@ public class CreateSnapshot extends Statement {
     private final Optional<List<Table>> tableList;
 
     public CreateSnapshot(QualifiedName name,
-                          @Nullable GenericProperties genericProperties) {
+                          Optional<GenericProperties> genericProperties) {
         this.name = name;
-        this.properties = Optional.fromNullable(genericProperties);
-        this.tableList = Optional.absent();
-
+        this.properties = genericProperties;
+        this.tableList = Optional.empty();
     }
 
     public CreateSnapshot(QualifiedName name,
                           List<Table> tableList,
-                          @Nullable GenericProperties genericProperties) {
+                          Optional<GenericProperties> genericProperties) {
         this.name = name;
         this.tableList = Optional.of(tableList);
-        this.properties = Optional.fromNullable(genericProperties);
+        this.properties = genericProperties;
 
     }
 
@@ -73,7 +71,7 @@ public class CreateSnapshot extends Statement {
         if (this == obj) return true;
         if (obj == null || getClass() != obj.getClass()) return false;
 
-        CreateSnapshot that = (CreateSnapshot)obj;
+        CreateSnapshot that = (CreateSnapshot) obj;
         if (!name.equals(that.name)) return false;
         if (!properties.equals(that.properties)) return false;
         if (!tableList.equals(that.tableList)) return false;
@@ -83,10 +81,10 @@ public class CreateSnapshot extends Statement {
     @Override
     public String toString() {
         return MoreObjects.toStringHelper(this)
-                .add("name", name)
-                .add("properties", properties)
-                .add("tableList", tableList)
-                .toString();
+            .add("name", name)
+            .add("properties", properties)
+            .add("tableList", tableList)
+            .toString();
     }
 
     @Override

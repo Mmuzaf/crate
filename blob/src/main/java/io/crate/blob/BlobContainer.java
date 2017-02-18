@@ -21,24 +21,24 @@
 
 package io.crate.blob;
 
+import com.google.common.base.Throwables;
 import io.crate.blob.exceptions.DigestNotFoundException;
 import io.crate.common.Hex;
-import org.elasticsearch.ElasticsearchIllegalStateException;
-import org.elasticsearch.common.io.FileSystemUtils;
 import org.elasticsearch.common.logging.ESLogger;
 import org.elasticsearch.common.logging.Loggers;
 
-import java.io.*;
-import java.util.ArrayList;
-import java.util.List;
-import java.util.Locale;
-import java.util.UUID;
+import java.io.File;
+import java.io.FileNotFoundException;
+import java.io.IOException;
+import java.io.RandomAccessFile;
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.util.*;
 
 public class BlobContainer {
 
-    private final static ESLogger logger = Loggers.getLogger(BlobContainer.class);
-
-    public static final String[] SUB_DIRS = new String[256];
+    private static final ESLogger logger = Loggers.getLogger(BlobContainer.class);
+    private static final String[] SUB_DIRS = new String[256];
 
     public static final byte[] PREFIXES = new byte[256];
 
@@ -47,22 +47,32 @@ public class BlobContainer {
     static {
         for (int i = 0; i < 256; i++) {
             SUB_DIRS[i] = String.format(Locale.ENGLISH, "%02x", i & 0xFFFFF);
-            PREFIXES[i] = (byte)i;
+            PREFIXES[i] = (byte) i;
         }
     }
 
-    private final File baseDirectory;
-    private final File tmpDirectory;
-    private final File varDirectory;
+    private final Path baseDirectory;
+    private final Path tmpDirectory;
+    private final Path varDirectory;
 
-    public BlobContainer(File baseDirectory) {
+    public BlobContainer(Path baseDirectory) {
         this.baseDirectory = baseDirectory;
-        this.tmpDirectory = new File(baseDirectory, "tmp");
-        this.varDirectory = new File(baseDirectory, "var");
-        FileSystemUtils.mkdirs(this.varDirectory);
-        FileSystemUtils.mkdirs(this.tmpDirectory);
+        this.tmpDirectory = baseDirectory.resolve("tmp");
+        this.varDirectory = baseDirectory.resolve("var");
+        try {
+            Files.createDirectories(this.varDirectory);
+            createSubDirectories(this.varDirectory);
+        } catch (IOException e) {
+            logger.error("Could not create 'var' path {}", this.varDirectory);
+            Throwables.propagate(e);
+        }
 
-        createSubDirectories(this.varDirectory);
+        try {
+            Files.createDirectories(this.tmpDirectory);
+        } catch (IOException e) {
+            logger.error("Could not create 'tmp' path {}", this.tmpDirectory);
+            Throwables.propagate(e);
+        }
     }
 
     /**
@@ -72,37 +82,22 @@ public class BlobContainer {
      *
      * @param parentDir
      */
-    private void createSubDirectories(File parentDir) {
+    private void createSubDirectories(Path parentDir) throws IOException {
         for (int i = 0; i < SUB_DIRS.length; i++) {
-            subDirs[i] = new File(parentDir, SUB_DIRS[i]);
-            subDirs[i].mkdir();
+            Path subDir = parentDir.resolve(SUB_DIRS[i]);
+            subDirs[i] = subDir.toFile();
+            Files.createDirectories(subDir);
         }
     }
 
-    public interface FileVisitor {
-
-        public boolean visit(File file) throws IOException;
-
-    }
-
-    public void walkFiles(FilenameFilter filter, FileVisitor visitor) throws IOException {
-        for (File dir : subDirs) {
-            File[] files = dir.listFiles(filter);
-            if (files == null) {
-                continue;
-            }
-            for (File file : files) {
-                if (!visitor.visit(file)) {
-                    return;
-                }
-            }
-        }
+    public Iterable<File> getFiles() {
+        return new RecursiveFileIterable(subDirs);
     }
 
     /**
      * get all digests in a subfolder
      * the digests are returned as byte[][] instead as String[] to save overhead in the BlobRecovery
-     *
+     * <p>
      * incomplete files leftover from a previous recovery are deleted.
      *
      * @param prefix the subfolder for which to get the digests
@@ -112,10 +107,10 @@ public class BlobContainer {
         int index = prefix & 0xFF;  // byte is signed and may be negative, convert to int to get correct index
         String[] names = cleanDigests(subDirs[index].list(), index);
         byte[][] digests = new byte[names.length][];
-        for(int i = 0; i < names.length; i ++){
+        for (int i = 0; i < names.length; i++) {
             try {
                 digests[i] = Hex.decodeHex(names[i]);
-            } catch (ElasticsearchIllegalStateException ex) {
+            } catch (IllegalStateException ex) {
                 logger.error("Can't convert string {} to byte array", names[i]);
                 throw ex;
             }
@@ -145,20 +140,16 @@ public class BlobContainer {
         return newNames.toArray(new String[newNames.size()]);
     }
 
-    public File getBaseDirectory() {
+    public Path getBaseDirectory() {
         return baseDirectory;
     }
 
-    public File getTmpDirectory() {
+    public Path getTmpDirectory() {
         return tmpDirectory;
     }
 
-    public File getVarDirectory() {
-        return varDirectory;
-    }
-
     public File getFile(String digest) {
-        return new File(getVarDirectory(), digest.substring(0, 2) + File.separator + digest);
+        return varDirectory.resolve(digest.substring(0, 2)).resolve(digest).toFile();
     }
 
     public DigestBlob createBlob(String digest, UUID transferId) {
@@ -171,6 +162,65 @@ public class BlobContainer {
             return new RandomAccessFile(getFile(digest), "r");
         } catch (FileNotFoundException e) {
             throw new DigestNotFoundException(digest);
+        }
+    }
+
+    private static class RecursiveFileIterable implements Iterable<File> {
+
+        private final File[] subDirs;
+
+        private RecursiveFileIterable(File[] subDirs) {
+            this.subDirs = subDirs;
+        }
+
+        @Override
+        public Iterator<File> iterator() {
+            return new RecursiveFileIterator(subDirs);
+        }
+
+    }
+
+    private static class RecursiveFileIterator implements Iterator<File> {
+
+        private final File[] subDirs;
+        private int subDirIndex = -1;
+
+        private File[] files = null;
+        private int fileIndex = -1;
+
+        private RecursiveFileIterator(File[] subDirs) {
+            this.subDirs = subDirs;
+        }
+
+        /**
+         * Returns {@code true} if the current sub-directory have files to traverse. Otherwise, iterates
+         * until it finds the next sub-directory with files inside it.
+         * Returns {@code false} only after reaching the last file of the last sub-directory.
+         */
+        @Override
+        public boolean hasNext() {
+            if (files == null || (fileIndex + 1) == files.length) {
+                files = null;
+                fileIndex = -1;
+                while (subDirIndex + 1 < subDirs.length && (files == null || files.length == 0)) {
+                    files = subDirs[++subDirIndex].listFiles();
+                }
+            }
+            return (files != null && fileIndex + 1 < files.length);
+        }
+
+        @Override
+        public File next() {
+            if (hasNext()) {
+                return files[++fileIndex];
+            }
+
+            throw new NoSuchElementException("List of files is empty");
+        }
+
+        @Override
+        public void remove() {
+            throw new UnsupportedOperationException("remove is unsupported for " + BlobContainer.class.getSimpleName());
         }
     }
 }

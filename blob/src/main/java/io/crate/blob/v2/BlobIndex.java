@@ -21,35 +21,69 @@
 
 package io.crate.blob.v2;
 
-import org.elasticsearch.cluster.ClusterService;
-import org.elasticsearch.cluster.routing.ShardIterator;
-import org.elasticsearch.cluster.routing.operation.OperationRouting;
-import org.elasticsearch.common.inject.Inject;
-import org.elasticsearch.common.settings.Settings;
-import org.elasticsearch.index.AbstractIndexComponent;
-import org.elasticsearch.index.Index;
-import org.elasticsearch.index.settings.IndexSettings;
+import org.elasticsearch.common.Nullable;
+import org.elasticsearch.index.shard.IndexShard;
 import org.elasticsearch.index.shard.ShardId;
 
-public class BlobIndex extends AbstractIndexComponent {
+import java.nio.file.Path;
+import java.util.Map;
+import java.util.concurrent.ConcurrentHashMap;
 
+public class BlobIndex {
 
-    private final OperationRouting operationRouting;
-    private final ClusterService clusterService;
+    private static final String INDEX_PREFIX = ".blob_";
 
-    @Inject
-    BlobIndex(Index index, @IndexSettings Settings indexSettings,
-            OperationRouting operationRouting,
-            ClusterService clusterService) {
-        super(index, indexSettings);
-        this.operationRouting = operationRouting;
-        this.clusterService = clusterService;
+    /**
+     * check if this index is a blob table
+     * <p>
+     * This only works for indices that were created via SQL.
+     */
+    public static boolean isBlobIndex(String indexName) {
+        return indexName.startsWith(INDEX_PREFIX);
     }
 
-    public ShardId shardId(String digest) {
-        ShardIterator si = operationRouting.getShards(clusterService.state(), index.getName(), null, null, digest, "_only_local");
-        // TODO: check null and raise
-        return si.shardId();
+    /**
+     * Returns the full index name, adds blob index prefix.
+     */
+    public static String fullIndexName(String indexName) {
+        if (isBlobIndex(indexName)) {
+            return indexName;
+        }
+        return INDEX_PREFIX + indexName;
     }
 
+    /**
+     * Strips the blob index prefix from a full index name
+     */
+    public static String stripPrefix(String indexName) {
+        if (!isBlobIndex(indexName)) {
+            return indexName;
+        }
+        return indexName.substring(INDEX_PREFIX.length());
+    }
+
+
+    private final Map<Integer, BlobShard> shards = new ConcurrentHashMap<>();
+    private final Path globalBlobPath;
+
+
+    BlobIndex(@Nullable Path globalBlobPath) {
+        this.globalBlobPath = globalBlobPath;
+    }
+
+    void createShard(IndexShard indexShard) {
+        shards.put(indexShard.shardId().id(), new BlobShard(indexShard, globalBlobPath));
+    }
+
+    BlobShard removeShard(ShardId shardId) {
+        BlobShard shard = shards.remove(shardId.id());
+        if (shard != null) {
+            shard.deleteShard();
+        }
+        return shard;
+    }
+
+    BlobShard getShard(int shardId) {
+        return shards.get(shardId);
+    }
 }

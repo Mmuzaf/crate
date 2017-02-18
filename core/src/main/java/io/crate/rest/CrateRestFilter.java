@@ -41,10 +41,12 @@ public class CrateRestFilter extends RestFilter {
 
     public static final String ES_API_ENABLED_SETTING = "es.api.enabled";
     public static final Set<String> SUPPORTED_ENDPOINTS = ImmutableSet.of(
-            "/admin",
-            "/_sql",
-            "/_plugin",
-            "/_blobs"
+        "/index.html",
+        "/static",
+        "/admin",
+        "/_sql",
+        "/_plugin",
+        "/_blobs"
     );
 
     // handle possible (wrong) URL '//' too
@@ -67,13 +69,13 @@ public class CrateRestFilter extends RestFilter {
             filterChain.continueProcessing(request, channel);
         } else {
             channel.sendResponse(
-                    new BytesRestResponse(
-                            BAD_REQUEST,
-                            String.format(Locale.ENGLISH,
-                                    "No handler found for uri [%s] and method [%s]",
-                                    request.uri(),
-                                    request.method())
-            ));
+                new BytesRestResponse(
+                    BAD_REQUEST,
+                    String.format(Locale.ENGLISH,
+                        "No handler found for uri [%s] and method [%s]",
+                        request.uri(),
+                        request.method())
+                ));
         }
 
     }

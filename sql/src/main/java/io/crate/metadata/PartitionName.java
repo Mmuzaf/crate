@@ -29,8 +29,8 @@ import io.crate.types.StringType;
 import org.apache.commons.codec.binary.Base32;
 import org.apache.lucene.util.BytesRef;
 import org.elasticsearch.common.Nullable;
-import org.elasticsearch.common.io.stream.BytesStreamInput;
 import org.elasticsearch.common.io.stream.BytesStreamOutput;
+import org.elasticsearch.common.io.stream.StreamInput;
 
 import java.io.IOException;
 import java.util.ArrayList;
@@ -81,21 +81,16 @@ public class PartitionName {
             return ImmutableList.of();
         }
         byte[] inputBytes = BASE32.decode(ident.toUpperCase(Locale.ROOT));
-        try (BytesStreamInput in = new BytesStreamInput(inputBytes)) {
+        try (StreamInput in = StreamInput.wrap(inputBytes)) {
             int size = in.readVInt();
             List<BytesRef> values = new ArrayList<>(size);
             for (int i = 0; i < size; i++) {
-                BytesRef value = StringType.INSTANCE.streamer().readValueFrom(in);
-                if (value == null) {
-                    values.add(null);
-                } else {
-                    values.add(value);
-                }
+                values.add(StringType.INSTANCE.streamer().readValueFrom(in));
             }
             return values;
         } catch (IOException e) {
             throw new IllegalArgumentException(
-                    String.format(Locale.ENGLISH, "Invalid partition ident: %s", ident), e);
+                String.format(Locale.ENGLISH, "Invalid partition ident: %s", ident), e);
         }
     }
 
@@ -164,11 +159,11 @@ public class PartitionName {
         return values;
     }
 
-    public TableIdent tableIdent(){
+    public TableIdent tableIdent() {
         return tableIdent;
     }
 
-    @Nullable
+    @Override
     public String toString() {
         return asIndexName();
     }
@@ -190,12 +185,12 @@ public class PartitionName {
 
     /**
      * creates a PartitionName from an index or template Name
-     *
+     * <p>
      * an partition index has the format [&lt;schema&gt;.].partitioned.&lt;table&gt;.[&lt;ident&gt;]
      * a templateName has the same format but without the ident.
      */
     public static PartitionName fromIndexOrTemplate(String indexOrTemplate) {
-        assert indexOrTemplate != null;
+        assert indexOrTemplate != null : "indexOrTemplate must not be null";
 
         List<String> parts = SPLITTER.splitToList(indexOrTemplate);
 
@@ -203,7 +198,7 @@ public class PartitionName {
         String partitioned;
         String table;
         String ident;
-        switch(parts.size()) {
+        switch (parts.size()) {
             case 4:
                 // ""."partitioned"."table_name". ["ident"]
                 schema = null;
@@ -232,7 +227,8 @@ public class PartitionName {
 
     public static boolean isPartition(String index) {
         return index.length() > PARTITIONED_TABLE_PREFIX.length() + 1 &&
-                (index.startsWith(PARTITIONED_TABLE_PREFIX + ".") || index.contains("." + PARTITIONED_TABLE_PREFIX + "."));
+               (index.startsWith(PARTITIONED_TABLE_PREFIX + ".") ||
+                index.contains("." + PARTITIONED_TABLE_PREFIX + "."));
     }
 
     /**

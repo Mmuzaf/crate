@@ -46,12 +46,6 @@ public class AddColumnDefinition extends TableElement {
         this.constraints = MoreObjects.firstNonNull(constraints, ImmutableList.<ColumnConstraint>of());
     }
 
-    public AddColumnDefinition(Expression name,
-                               Expression generatedExpression,
-                               List<ColumnConstraint> constraints) {
-        this(name, generatedExpression, null, constraints);
-    }
-
     public Expression name() {
         return name;
     }
@@ -79,7 +73,7 @@ public class AddColumnDefinition extends TableElement {
 
         if (!name.equals(that.name)) return false;
         if (generatedExpression != null ? !generatedExpression.equals(that.generatedExpression) :
-                that.generatedExpression != null) return false;
+            that.generatedExpression != null) return false;
         if (type != null ? !type.equals(that.type) : that.type != null) return false;
         return constraints.equals(that.constraints);
 
@@ -97,11 +91,11 @@ public class AddColumnDefinition extends TableElement {
     @Override
     public String toString() {
         return MoreObjects.toStringHelper(this)
-                .add("name", name)
-                .add("generatedExpression", generatedExpression)
-                .add("type", type)
-                .add("constraints", constraints)
-                .toString();
+            .add("name", name)
+            .add("generatedExpression", generatedExpression)
+            .add("type", type)
+            .add("constraints", constraints)
+            .toString();
     }
 
     @Override

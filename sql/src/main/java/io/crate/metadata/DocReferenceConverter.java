@@ -21,12 +21,10 @@
 
 package io.crate.metadata;
 
-import com.google.common.base.Predicate;
-import io.crate.analyze.symbol.Reference;
 import io.crate.analyze.symbol.Symbol;
 import io.crate.metadata.doc.DocSysColumns;
 
-import javax.annotation.Nullable;
+import java.util.function.Predicate;
 
 /**
  * Visitor to change regular column references into references using the DOC sys column.
@@ -37,15 +35,11 @@ public class DocReferenceConverter {
 
     private final static Visitor VISITOR = new Visitor();
 
-    private final static Predicate<Reference> DEFAULT_PREDICATE = new Predicate<Reference>() {
-        @Override
-        public boolean apply(@Nullable Reference input) {
-            assert input != null;
-
-            ReferenceIdent ident = input.info().ident();
-            String schema = ident.tableIdent().schema();
-            return ReferenceInfos.isDefaultOrCustomSchema(schema);
-        }
+    private final static Predicate<Reference> DEFAULT_PREDICATE = input -> {
+        assert input != null : "input must not be null";
+        ReferenceIdent ident = input.ident();
+        String schema = ident.tableIdent().schema();
+        return Schemas.isDefaultOrCustomSchema(schema);
     };
 
     /**
@@ -56,13 +50,13 @@ public class DocReferenceConverter {
     }
 
     public static Reference toSourceLookup(Reference reference) {
-        ReferenceIdent ident = reference.info().ident();
+        ReferenceIdent ident = reference.ident();
         if (ident.columnIdent().isSystemColumn()) {
             return reference;
         }
-        if (reference.info().granularity() == RowGranularity.DOC) {
-            return new Reference(reference.info().getRelocated(
-                    new ReferenceIdent(ident.tableIdent(), ident.columnIdent().prepend(DocSysColumns.DOC.name()))));
+        if (reference.granularity() == RowGranularity.DOC) {
+            return reference.getRelocated(
+                new ReferenceIdent(ident.tableIdent(), ident.columnIdent().prepend(DocSysColumns.DOC.name())));
         }
         return reference;
     }
@@ -70,12 +64,12 @@ public class DocReferenceConverter {
     private static class Visitor extends ReplacingSymbolVisitor<Predicate<Reference>> {
 
         public Visitor() {
-            super(false);
+            super(ReplaceMode.COPY);
         }
 
         @Override
         public Symbol visitReference(Reference symbol, Predicate<Reference> predicate) {
-            if (predicate.apply(symbol)) {
+            if (predicate.test(symbol)) {
                 return toSourceLookup(symbol);
             }
             return symbol;
